@@ -1,0 +1,15 @@
+# MLX-Audio ASR Engine Requirements
+# For Apple Silicon (M1/M2/M3/M4) Macs
+
+# MLX Framework
+mlx>=0.20.0
+
+# MLX-Audio for ASR
+mlx-audio>=0.1.0
+
+# Audio processing
+soundfile>=0.12.1
+librosa>=0.10.1
+
+# Utilities
+numpy>=1.26.0

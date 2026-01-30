@@ -16,7 +16,6 @@
 **ターゲットプラットフォーム**: macOS (Apple Silicon)
 
 **参考プロジェクト**:
-- [Handy](https://github.com/cjpais/Handy) - Tauriベース音声文字化アプリケーション
 - [mlx-audio](https://github.com/Blaizzy/mlx-audio) - Apple Silicon最適化音声認識ライブラリ
 
 ---
@@ -106,7 +105,7 @@
    → React UIに表示
    ```
 
-3. **テキスト挿入フロー** (Handy方式)
+3. **テキスト挿入フロー** (Clipboard方式)
    ```
    文字起こし結果
    → tauri-plugin-clipboard-manager でクリップボードにコピー
@@ -298,7 +297,7 @@ echo/
 - クリップボード経由でペースト（安定性重視）
 - プラットフォーム固有のペーストショートカット対応
 
-**実装** (Handy方式に準拠):
+**実装**:
 - **Clipboard方式**（推奨）:
   - `tauri-plugin-clipboard-manager` v2.3+ でクリップボード操作
   - `enigo` v0.6+ でキーボードイベントシミュレート
@@ -309,8 +308,6 @@ echo/
 - **Direct方式**（参考）:
   - `enigo.text()` でUnicode文字を直接送信
   - キーボードレイアウト依存の問題あり（非推奨）
-
-**参考**: [Handy Issue #439](https://github.com/cjpais/Handy/issues/439) - Direct方式のキーボードレイアウト問題
 
 ### 5. 設定管理
 
@@ -386,7 +383,7 @@ const { transcribe, result, loading, error } = useTranscription();
 await transcribe('/path/to/audio.wav', 'ja');
 ```
 
-### Rust: Input Module (input.rs) - Handy方式
+### Rust: Input Module (input.rs)
 
 **責務**:
 - テキスト挿入処理
@@ -477,7 +474,7 @@ async fn insert_transcribed_text(
 }
 ```
 
-### Rust: Cargo.toml依存関係 (Handy準拠)
+### Rust: Cargo.toml依存関係
 
 ```toml
 [dependencies]
@@ -497,7 +494,7 @@ tauri-plugin-log = "2.7"
 cpal = "0.16"
 hound = "3.5"
 
-# キーボード/マウス制御（Handy方式）
+# キーボード/マウス制御
 enigo = "0.6.1"
 rdev = { git = "https://github.com/rustdesk-org/rdev" }
 
@@ -511,7 +508,7 @@ tauri-build = { version = "2.0", features = [] }
 ```
 
 **重要な依存関係の説明**:
-- `enigo` v0.6.1: キーボード/マウスイベントシミュレーション（Handyと同じバージョン）
+- `enigo` v0.6.1: キーボード/マウスイベントシミュレーション
 - `tauri-plugin-clipboard-manager`: クリップボード操作
 - `tauri-plugin-global-shortcut`: グローバルホットキー
 - `rdev`: 入力デバイスイベントハンドリング（rustdesk forkを使用）
@@ -650,19 +647,17 @@ Echo.app/
 
 ### 課題5: テキスト挿入のキーボードレイアウト問題
 
-**問題**: `enigo`のDirect方式（`.text()`メソッド）は、キーボードレイアウトを無視してスキャンコードベースで入力する既知のバグがある（[Handy Issue #439](https://github.com/cjpais/Handy/issues/439)参照）
+**問題**: `enigo`のDirect方式（`.text()`メソッド）は、キーボードレイアウトを無視してスキャンコードベースで入力する既知のバグがある
 
 **具体例**: ドイツ語キーボード（QWERTZ）で"zwei"と入力すると"ywei"になる
 
-**解決策** (Handy方式を採用):
+**解決策**:
 1. **Clipboard方式を優先**: クリップボード経由でのペーストを標準とする
 2. **Direct方式は使用しない**: `.text()`メソッドのバグ修正待ち
 3. **プラットフォーム別ペースト実装**:
    - macOS: `Cmd+V`
    - Windows/Linux: `Ctrl+V` または `Shift+Insert`
 4. **100ms遅延**: システム処理時間を確保
-
-**参考**: Handyでは複数のペースト方式を実装し、Clipboard方式を推奨している
 
 ---
 
@@ -725,10 +720,6 @@ Echo.app/
 - [Qwen3-ASR Technical Report](https://arxiv.org/abs/2601.21337)
 
 ### 参考実装
-- [Handy](https://github.com/cjpais/Handy) - Tauri音声文字化アプリ（本プロジェクトの主要参考）
-  - [input.rs](https://github.com/cjpais/Handy/blob/main/src-tauri/src/input.rs) - テキスト挿入実装
-  - [Cargo.toml](https://github.com/cjpais/Handy/blob/main/src-tauri/Cargo.toml) - 依存関係
-  - [Issue #439](https://github.com/cjpais/Handy/issues/439) - キーボードレイアウト問題
 - [whisper-rs](https://github.com/tazz4843/whisper-rs) - Rust Whisper実装
 
 ### ツール
