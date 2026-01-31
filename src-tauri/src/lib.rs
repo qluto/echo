@@ -9,7 +9,12 @@ mod input;
 mod transcription;
 
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{
+    image::Image,
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Manager, WindowEvent,
+};
 
 pub use input::EnigoState;
 pub use transcription::{ASREngine, ModelStatus};
@@ -347,6 +352,9 @@ pub fn run() {
                 make_window_transparent(&float_window);
             }
 
+            // Setup system tray
+            setup_system_tray(app)?;
+
             // Register default hotkey
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -358,6 +366,20 @@ pub fn run() {
             });
 
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Hide main window instead of closing the app
+            if window.label() == "main" {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    // Prevent default close behavior
+                    api.prevent_close();
+                    // Hide the window instead
+                    if let Err(e) = window.hide() {
+                        log::error!("Failed to hide window: {}", e);
+                    }
+                    log::info!("Main window hidden, app continues running in tray");
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             start_recording,
@@ -380,4 +402,57 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Setup system tray icon and menu
+fn setup_system_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    // Create menu items
+    let show_item = MenuItem::with_id(app, "show", "ウィンドウを表示", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
+
+    // Create menu
+    let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+
+    // Load tray icon using include_image! macro (embeds at compile time)
+    // Custom Echo icon with sound wave arcs
+    const TRAY_ICON: Image<'_> = tauri::include_image!("icons/tray-icon.png");
+
+    // Build tray icon
+    let _tray = TrayIconBuilder::new()
+        .icon(TRAY_ICON)
+        .icon_as_template(true) // Use as template for macOS (adapts to light/dark mode)
+        .tooltip("Echo - 音声入力")
+        .menu(&menu)
+        .show_menu_on_left_click(false) // Show menu on right-click only
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            "quit" => {
+                log::info!("Quit requested from tray menu");
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            // Show window on left-click
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                if let Some(window) = tray.app_handle().get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        })
+        .build(app)?;
+
+    log::info!("System tray initialized");
+    Ok(())
 }
