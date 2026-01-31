@@ -32,6 +32,10 @@ function App() {
 
   // Model parameter counts
   const MODEL_SIZES: Record<string, string> = {
+    // Qwen3-ASR models
+    "mlx-community/Qwen3-ASR-1.7B-8bit": "1.7B",
+    "mlx-community/Qwen3-ASR-0.6B-8bit": "0.6B",
+    // Whisper models
     "mlx-community/whisper-large-v3-turbo": "809M",
     "mlx-community/whisper-large-v3": "1.5B",
     "mlx-community/whisper-medium": "769M",
@@ -42,6 +46,12 @@ function App() {
 
   const getModelSize = (name: string): string => {
     return MODEL_SIZES[name] || "unknown";
+  };
+
+  const getModelFamily = (name: string): string => {
+    if (name.includes("Qwen3-ASR")) return "Qwen3";
+    if (name.includes("whisper")) return "Whisper";
+    return "Unknown";
   };
   const [showSuccess, setShowSuccess] = useState(false);
   const floatWindowRef = useRef<WebviewWindow | null>(null);
@@ -464,15 +474,23 @@ function App() {
             className="font-display text-[10px]"
             style={{ color: "var(--text-tertiary)" }}
           >
-            {modelName}
+            {modelName.split("/").pop()?.replace("-8bit", "") || modelName}
           </span>
           <div
             className="h-[18px] px-1.5 rounded flex items-center"
-            style={{ backgroundColor: "rgba(99, 102, 241, 0.12)" }}
+            style={{
+              backgroundColor: getModelFamily(modelName) === "Qwen3"
+                ? "rgba(0, 200, 150, 0.12)"
+                : "rgba(99, 102, 241, 0.12)"
+            }}
           >
             <span
               className="font-display text-[9px] font-medium"
-              style={{ color: "var(--glow-idle)" }}
+              style={{
+                color: getModelFamily(modelName) === "Qwen3"
+                  ? "var(--glow-success)"
+                  : "var(--glow-idle)"
+              }}
             >
               {getModelSize(modelName)}
             </span>
@@ -529,7 +547,19 @@ function App() {
       {/* Settings Panel */}
       <SettingsPanel
         isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
+        onClose={async () => {
+          setIsSettingsOpen(false);
+          // Refresh model status after settings panel closes
+          try {
+            const status = await getModelStatus();
+            if (status.model_name) {
+              setModelName(status.model_name);
+            }
+            setModelStatus(status.loaded ? "loaded" : "not_loaded");
+          } catch (e) {
+            console.error("Failed to refresh model status:", e);
+          }
+        }}
       />
     </div>
   );

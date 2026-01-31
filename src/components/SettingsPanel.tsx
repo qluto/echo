@@ -5,6 +5,8 @@ import {
   getAudioDevices,
   registerHotkey,
   getModelStatus,
+  setAsrModel,
+  loadAsrModel,
   AppSettings,
   AudioDevice,
 } from "../lib/tauri";
@@ -26,6 +28,10 @@ const SUPPORTED_LANGUAGES = [
 ];
 
 const MODEL_SIZES: Record<string, string> = {
+  // Qwen3-ASR models
+  "mlx-community/Qwen3-ASR-1.7B-8bit": "1.7B",
+  "mlx-community/Qwen3-ASR-0.6B-8bit": "0.6B",
+  // Whisper models
   "mlx-community/whisper-large-v3-turbo": "809M",
   "mlx-community/whisper-large-v3": "1.5B",
   "mlx-community/whisper-medium": "769M",
@@ -34,9 +40,30 @@ const MODEL_SIZES: Record<string, string> = {
   "mlx-community/whisper-tiny": "39M",
 };
 
+// Model display order (for UI)
+const MODEL_ORDER = [
+  "mlx-community/Qwen3-ASR-1.7B-8bit",
+  "mlx-community/Qwen3-ASR-0.6B-8bit",
+  "mlx-community/whisper-large-v3-turbo",
+  "mlx-community/whisper-large-v3",
+  "mlx-community/whisper-medium",
+  "mlx-community/whisper-small",
+  "mlx-community/whisper-base",
+  "mlx-community/whisper-tiny",
+];
+
 const getModelDisplayName = (name: string): string => {
   const parts = name.split("/");
   const modelPart = parts[parts.length - 1];
+
+  // Handle Qwen3-ASR models
+  if (modelPart.includes("Qwen3-ASR")) {
+    return modelPart
+      .replace("-8bit", "")
+      .replace("Qwen3-ASR-", "Qwen3 ASR ");
+  }
+
+  // Handle Whisper models
   return modelPart
     .replace("whisper-", "Whisper ")
     .split("-")
@@ -48,6 +75,12 @@ const getModelSize = (name: string): string => {
   return MODEL_SIZES[name] || "unknown";
 };
 
+const getModelFamily = (name: string): string => {
+  if (name.includes("Qwen3-ASR")) return "Qwen3";
+  if (name.includes("whisper")) return "Whisper";
+  return "Unknown";
+};
+
 export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [settings, setSettings] = useState<AppSettings>({
     hotkey: "CommandOrControl+Shift+Space",
@@ -57,7 +90,9 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   });
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [modelName, setModelName] = useState<string>("mlx-community/whisper-large-v3-turbo");
+  const [availableModels, setAvailableModels] = useState<string[]>(MODEL_ORDER);
   const [isLoading, setIsLoading] = useState(true);
+  const [isModelChanging, setIsModelChanging] = useState(false);
   const [hotkeyInput, setHotkeyInput] = useState("");
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
 
@@ -81,10 +116,40 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       if (modelStatus.model_name) {
         setModelName(modelStatus.model_name);
       }
+      if (modelStatus.available_models && modelStatus.available_models.length > 0) {
+        // Sort by our preferred order
+        const sortedModels = [...modelStatus.available_models].sort((a, b) => {
+          const aIndex = MODEL_ORDER.indexOf(a);
+          const bIndex = MODEL_ORDER.indexOf(b);
+          if (aIndex === -1 && bIndex === -1) return 0;
+          if (aIndex === -1) return 1;
+          if (bIndex === -1) return -1;
+          return aIndex - bIndex;
+        });
+        setAvailableModels(sortedModels);
+      }
     } catch (e) {
       console.error("Failed to load settings:", e);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleModelChange = async (newModel: string) => {
+    if (newModel === modelName || isModelChanging) return;
+
+    setIsModelChanging(true);
+    try {
+      // Set the new model (this unloads the current one)
+      await setAsrModel(newModel);
+      setModelName(newModel);
+
+      // Load the new model
+      await loadAsrModel();
+    } catch (e) {
+      console.error("Failed to change model:", e);
+    } finally {
+      setIsModelChanging(false);
     }
   };
 
@@ -216,36 +281,78 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 <div
                   className="h-11 px-3.5 rounded-[10px] bg-surface border border-subtle flex items-center justify-between"
                 >
-                  <div className="flex items-center gap-2.5">
-                    <svg
-                      className="w-4 h-4"
-                      fill="var(--text-tertiary)"
-                      viewBox="0 0 24 24"
-                    >
-                      <path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z" />
-                    </svg>
-                    <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
-                      ASR Model
-                    </span>
-                  </div>
+                  <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                    ASR Model
+                  </span>
                   <div className="flex items-center gap-1.5">
-                    <span
-                      className="font-display text-[11px]"
-                      style={{ color: "var(--text-primary)" }}
-                    >
-                      {getModelDisplayName(modelName)}
-                    </span>
-                    <div
-                      className="h-[18px] px-1.5 rounded flex items-center"
-                      style={{ backgroundColor: "rgba(99, 102, 241, 0.12)" }}
-                    >
-                      <span
-                        className="font-display text-[9px] font-medium"
-                        style={{ color: "var(--glow-idle)" }}
-                      >
-                        {getModelSize(modelName)}
-                      </span>
-                    </div>
+                    {isModelChanging ? (
+                      <div className="flex items-center gap-2">
+                        <div
+                          className="w-3 h-3 border-2 rounded-full animate-spin"
+                          style={{
+                            borderColor: "var(--border-subtle)",
+                            borderTopColor: "var(--glow-idle)",
+                          }}
+                        />
+                        <span
+                          className="font-display text-[11px]"
+                          style={{ color: "var(--text-tertiary)" }}
+                        >
+                          Loading...
+                        </span>
+                      </div>
+                    ) : (
+                      <>
+                        <select
+                          value={modelName}
+                          onChange={(e) => handleModelChange(e.target.value)}
+                          className="bg-transparent font-display text-[11px] text-right appearance-none cursor-pointer focus:outline-none max-w-[160px]"
+                          style={{ color: "var(--text-primary)" }}
+                        >
+                          {availableModels.map((model) => (
+                            <option
+                              key={model}
+                              value={model}
+                              className="bg-surface"
+                            >
+                              {getModelDisplayName(model)} ({getModelSize(model)})
+                            </option>
+                          ))}
+                        </select>
+                        <div
+                          className="h-[18px] px-1.5 rounded flex items-center"
+                          style={{
+                            backgroundColor: getModelFamily(modelName) === "Qwen3"
+                              ? "rgba(0, 200, 150, 0.12)"
+                              : "rgba(99, 102, 241, 0.12)"
+                          }}
+                        >
+                          <span
+                            className="font-display text-[9px] font-medium"
+                            style={{
+                              color: getModelFamily(modelName) === "Qwen3"
+                                ? "var(--glow-success)"
+                                : "var(--glow-idle)"
+                            }}
+                          >
+                            {getModelFamily(modelName)}
+                          </span>
+                        </div>
+                        <svg
+                          className="w-3.5 h-3.5"
+                          fill="none"
+                          stroke="var(--text-tertiary)"
+                          strokeWidth={2}
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M19.5 8.25l-7.5 7.5-7.5-7.5"
+                          />
+                        </svg>
+                      </>
+                    )}
                   </div>
                 </div>
 

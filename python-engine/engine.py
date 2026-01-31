@@ -28,10 +28,10 @@ logger = logging.getLogger(__name__)
 
 
 class ASREngine:
-    """MLX-Audio based ASR Engine using Whisper"""
+    """MLX-Audio based ASR Engine supporting Whisper and Qwen3-ASR"""
 
-    # Available models
-    AVAILABLE_MODELS = [
+    # Available models - Whisper models
+    WHISPER_MODELS = [
         "mlx-community/whisper-large-v3-turbo",
         "mlx-community/whisper-large-v3",
         "mlx-community/whisper-medium",
@@ -40,6 +40,20 @@ class ASREngine:
         "mlx-community/whisper-tiny",
     ]
 
+    # Qwen3-ASR models
+    QWEN3_ASR_MODELS = [
+        "mlx-community/Qwen3-ASR-1.7B-8bit",
+        "mlx-community/Qwen3-ASR-0.6B-8bit",
+    ]
+
+    # All available models
+    AVAILABLE_MODELS = QWEN3_ASR_MODELS + WHISPER_MODELS
+
+    @staticmethod
+    def is_qwen3_model(model_name: str) -> bool:
+        """Check if a model is a Qwen3-ASR model"""
+        return "Qwen3-ASR" in model_name
+
     def __init__(self, model_name: str = "mlx-community/whisper-large-v3-turbo"):
         self.model_name = model_name
         self._model_loaded = False
@@ -47,6 +61,7 @@ class ASREngine:
         self._load_error: Optional[str] = None
         self._model = None
         self._generate_fn = None
+        self._model_type: Optional[str] = None  # "whisper" or "qwen3"
 
     def get_status(self) -> dict:
         """Get current engine status"""
@@ -70,6 +85,8 @@ class ASREngine:
         self._model = None
         self._model_loaded = False
         self._load_error = None
+        self._generate_fn = None
+        self._model_type = None
         self.model_name = model_name
         logger.info(f"Model set to: {model_name}")
 
@@ -87,26 +104,38 @@ class ASREngine:
         self._load_error = None
 
         try:
-            from mlx_audio.stt.utils import load_model
-            from mlx_audio.stt.generate import generate_transcription
-            from transformers import WhisperProcessor
-
             logger.info(f"Loading model: {self.model_name}")
 
-            # Load MLX model weights
-            self._model = load_model(self.model_name)
+            if self.is_qwen3_model(self.model_name):
+                # Load Qwen3-ASR model using the new API
+                from mlx_audio.stt import load as load_qwen3
 
-            # MLX models don't include processor files, so we load from the original OpenAI model
-            # Map MLX model names to their OpenAI equivalents for processor
-            processor_model = self.model_name.replace("mlx-community/", "openai/")
-            logger.info(f"Loading processor from {processor_model}")
-            processor = WhisperProcessor.from_pretrained(processor_model)
-            self._model._processor = processor
+                self._model = load_qwen3(self.model_name)
+                self._model_type = "qwen3"
+                self._generate_fn = None  # Qwen3 uses model.generate() directly
+                logger.info(f"Qwen3-ASR model loaded: {self.model_name}")
+            else:
+                # Load Whisper model using the original API
+                from mlx_audio.stt.utils import load_model
+                from mlx_audio.stt.generate import generate_transcription
+                from transformers import WhisperProcessor
 
-            self._generate_fn = generate_transcription
+                # Load MLX model weights
+                self._model = load_model(self.model_name)
+
+                # MLX models don't include processor files, so we load from the original OpenAI model
+                # Map MLX model names to their OpenAI equivalents for processor
+                processor_model = self.model_name.replace("mlx-community/", "openai/")
+                logger.info(f"Loading processor from {processor_model}")
+                processor = WhisperProcessor.from_pretrained(processor_model)
+                self._model._processor = processor
+
+                self._generate_fn = generate_transcription
+                self._model_type = "whisper"
+                logger.info(f"Whisper model loaded: {self.model_name}")
+
             self._model_loaded = True
             self._loading = False
-            logger.info(f"MLX-Audio model loaded: {self.model_name}")
             return {"success": True, "model_name": self.model_name}
 
         except ImportError as e:
@@ -139,50 +168,25 @@ class ASREngine:
             }
 
         try:
-            logger.info(f"Transcribing: {audio_path}")
-
-            # Use MLX-Audio transcription
-            # Use temp directory to avoid creating transcript files that trigger Tauri hot-reload
-            temp_output = tempfile.mktemp(prefix="echo_transcript_")
+            logger.info(f"Transcribing with {self._model_type}: {audio_path}")
             effective_language = language if language and language != "auto" else None
-            logger.info(f"Calling generate_transcription with language={effective_language}")
-            result = self._generate_fn(
-                self._model,
-                audio_path,
-                language=effective_language,
-                output_path=temp_output,
-            )
-            # Clean up temp file
-            for ext in ['.txt', '.vtt', '.srt', '.json']:
-                try:
-                    os.remove(temp_output + ext)
-                except OSError:
-                    pass
 
-            # Parse result - STTOutput object with text, segments, language attributes
-            text = result.text.strip() if hasattr(result, 'text') else ""
-            detected_language = result.language if hasattr(result, 'language') else "auto"
+            if self._model_type == "qwen3":
+                # Use Qwen3-ASR API
+                result = self._transcribe_qwen3(audio_path, effective_language)
+            else:
+                # Use Whisper API
+                result = self._transcribe_whisper(audio_path, effective_language)
+
             # Use requested language if specified, otherwise use detected
-            output_language = language if language else detected_language
-            logger.info(f"Requested language: {language}, Detected language: {detected_language}, Output language: {output_language}")
-
-            # Convert segments to our format
-            segments = []
-            if hasattr(result, 'segments') and result.segments:
-                for seg in result.segments:
-                    if isinstance(seg, dict):
-                        segments.append({
-                            "start": float(seg.get("start", 0)),
-                            "end": float(seg.get("end", 0)),
-                            "text": seg.get("text", "").strip()
-                        })
-
-            logger.info(f"Transcription complete: {len(text)} chars, output language: {output_language}")
+            output_language = language if language else result.get("detected_language", "auto")
+            logger.info(f"Requested language: {language}, Detected language: {result.get('detected_language')}, Output language: {output_language}")
+            logger.info(f"Transcription complete: {len(result['text'])} chars, output language: {output_language}")
 
             return {
                 "success": True,
-                "text": text,
-                "segments": segments,
+                "text": result["text"],
+                "segments": result["segments"],
                 "language": output_language
             }
 
@@ -197,6 +201,109 @@ class ASREngine:
                 "language": language or "auto",
                 "error": str(e)
             }
+
+    def _transcribe_qwen3(self, audio_path: str, language: Optional[str]) -> dict:
+        """Transcribe using Qwen3-ASR model"""
+        logger.info(f"Calling Qwen3-ASR generate with language={language}")
+
+        # Qwen3-ASR uses model.generate() directly
+        # Language should be the full language name (e.g., "English", "Japanese")
+        # Note: Qwen3-ASR doesn't accept None for language - it defaults to "English"
+        lang_map = {
+            "en": "English",
+            "ja": "Japanese",
+            "zh": "Chinese",
+            "ko": "Korean",
+            "de": "German",
+            "fr": "French",
+            "es": "Spanish",
+            "it": "Italian",
+            "pt": "Portuguese",
+            "ru": "Russian",
+            "ar": "Arabic",
+            "th": "Thai",
+            "vi": "Vietnamese",
+        }
+
+        # Build kwargs - only include language if specified (otherwise use model default)
+        kwargs = {}
+        if language:
+            qwen_language = lang_map.get(language, language)
+            # Capitalize if it's a full language name that wasn't in our map
+            if qwen_language and qwen_language == language and len(language) > 2:
+                qwen_language = language.capitalize()
+            kwargs["language"] = qwen_language
+            logger.info(f"Using language: {qwen_language}")
+
+        result = self._model.generate(audio_path, **kwargs)
+
+        # Parse result
+        text = result.text.strip() if hasattr(result, 'text') else ""
+        # Qwen3-ASR may return None for language, default to "auto"
+        detected_language = result.language if hasattr(result, 'language') and result.language else "auto"
+
+        # Convert segments to our format
+        segments = []
+        if hasattr(result, 'segments') and result.segments:
+            for seg in result.segments:
+                if hasattr(seg, 'start') and hasattr(seg, 'end') and hasattr(seg, 'text'):
+                    segments.append({
+                        "start": float(seg.start),
+                        "end": float(seg.end),
+                        "text": seg.text.strip()
+                    })
+                elif isinstance(seg, dict):
+                    segments.append({
+                        "start": float(seg.get("start", 0)),
+                        "end": float(seg.get("end", 0)),
+                        "text": seg.get("text", "").strip()
+                    })
+
+        return {
+            "text": text,
+            "segments": segments,
+            "detected_language": detected_language
+        }
+
+    def _transcribe_whisper(self, audio_path: str, language: Optional[str]) -> dict:
+        """Transcribe using Whisper model"""
+        logger.info(f"Calling Whisper generate_transcription with language={language}")
+
+        # Use temp directory to avoid creating transcript files that trigger Tauri hot-reload
+        temp_output = tempfile.mktemp(prefix="echo_transcript_")
+        result = self._generate_fn(
+            self._model,
+            audio_path,
+            language=language,
+            output_path=temp_output,
+        )
+        # Clean up temp file
+        for ext in ['.txt', '.vtt', '.srt', '.json']:
+            try:
+                os.remove(temp_output + ext)
+            except OSError:
+                pass
+
+        # Parse result - STTOutput object with text, segments, language attributes
+        text = result.text.strip() if hasattr(result, 'text') else ""
+        detected_language = result.language if hasattr(result, 'language') else None
+
+        # Convert segments to our format
+        segments = []
+        if hasattr(result, 'segments') and result.segments:
+            for seg in result.segments:
+                if isinstance(seg, dict):
+                    segments.append({
+                        "start": float(seg.get("start", 0)),
+                        "end": float(seg.get("end", 0)),
+                        "text": seg.get("text", "").strip()
+                    })
+
+        return {
+            "text": text,
+            "segments": segments,
+            "detected_language": detected_language
+        }
 
 
 def run_daemon(engine: ASREngine):
