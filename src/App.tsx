@@ -36,7 +36,7 @@ function App() {
     "mlx-community/Qwen3-ASR-1.7B-8bit": "1.7B",
     "mlx-community/Qwen3-ASR-0.6B-8bit": "0.6B",
     // Whisper models
-    "mlx-community/whisper-large-v3-turbo": "809M",
+    "mlx-community/whisper-large-v3-turbo": "Turbo",
     "mlx-community/whisper-large-v3": "1.5B",
     "mlx-community/whisper-medium": "769M",
     "mlx-community/whisper-small": "244M",
@@ -53,6 +53,13 @@ function App() {
     if (name.includes("whisper")) return "Whisper";
     return "Unknown";
   };
+
+  const getModelShortName = (name: string): string => {
+    const family = getModelFamily(name);
+    const size = getModelSize(name);
+    return `${family} · ${size}`;
+  };
+
   const [showSuccess, setShowSuccess] = useState(false);
   const floatWindowRef = useRef<WebviewWindow | null>(null);
 
@@ -225,11 +232,11 @@ function App() {
   };
 
   return (
-    <div className="h-screen bg-void flex flex-col border border-subtle rounded-lg overflow-hidden select-none">
+    <div className="h-screen bg-surface-muted flex flex-col rounded-2xl overflow-hidden select-none card-shadow border border-subtle">
       {/* Header */}
       <header
         data-tauri-drag-region
-        className="h-[52px] flex items-center justify-between px-5 flex-shrink-0"
+        className="h-14 flex items-center justify-between px-5 flex-shrink-0"
       >
         {/* Traffic Lights */}
         <div className="flex items-center gap-2">
@@ -253,23 +260,22 @@ function App() {
         {/* Logo */}
         <div className="flex items-center gap-2.5" data-tauri-drag-region>
           <div
-            className="w-7 h-7 rounded-[14px] flex items-center justify-center relative"
+            className="w-7 h-7 rounded-full flex items-center justify-center"
             style={{
-              background:
-                "radial-gradient(circle, var(--glow-idle) 0%, transparent 100%)",
-              boxShadow: "0 0 16px var(--glow-idle-soft)",
+              background: "radial-gradient(circle at 30% 30%, #FAF8F5 0%, #E8E4DF 70%, #D5D0C8 100%)",
+              boxShadow: "0 2px 8px rgba(124, 144, 130, 0.2)",
             }}
           >
             <div
-              className="w-3 h-3 rounded-full"
+              className="w-2.5 h-2.5 rounded-full"
               style={{
                 backgroundColor: "var(--glow-idle)",
-                boxShadow: "0 0 8px 2px var(--glow-idle)",
+                boxShadow: "0 0 8px 2px var(--glow-idle-soft)",
               }}
             />
           </div>
           <span
-            className="font-display text-[15px] font-bold tracking-[2px]"
+            className="font-display text-[17px] font-semibold tracking-wide"
             style={{ color: "var(--text-primary)" }}
           >
             echo
@@ -279,10 +285,10 @@ function App() {
         {/* Settings Button */}
         <button
           onClick={() => setIsSettingsOpen(true)}
-          className="w-9 h-9 rounded-[10px] bg-surface flex items-center justify-center hover:bg-surface-elevated transition-colors"
+          className="w-9 h-9 rounded-xl bg-surface-muted flex items-center justify-center hover:bg-surface-elevated transition-colors border border-subtle"
         >
           <svg
-            className="w-4 h-4"
+            className="w-[18px] h-[18px]"
             fill="none"
             stroke="var(--text-secondary)"
             strokeWidth={1.5}
@@ -291,72 +297,51 @@ function App() {
             <path
               strokeLinecap="round"
               strokeLinejoin="round"
-              d="M10.5 6h9.75M10.5 6a1.5 1.5 0 11-3 0m3 0a1.5 1.5 0 10-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-9.75 0h9.75"
+              d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z"
+            />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"
             />
           </svg>
         </button>
       </header>
 
       {/* Content */}
-      <main className="flex-1 p-5 flex flex-col gap-4 overflow-auto">
+      <main className="flex-1 px-5 pb-5 flex flex-col gap-4 overflow-auto">
         {/* Hotkey Section */}
-        <div
-          className="flex items-center justify-between px-3.5 py-3 rounded-[10px] bg-surface border border-subtle"
-        >
-          <div className="flex items-center gap-2.5">
-            <div
-              className="w-7 h-7 rounded-lg flex items-center justify-center"
-              style={{ backgroundColor: "rgba(99, 102, 241, 0.08)" }}
-            >
-              <svg
-                className="w-4 h-4"
-                fill="var(--glow-idle)"
-                viewBox="0 0 24 24"
+        <div className="flex items-center justify-center gap-2 py-2">
+          <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+            Hold
+          </span>
+          <div className="flex items-center gap-1">
+            <div className="h-7 px-2.5 rounded-lg flex items-center bg-surface-muted border border-subtle">
+              <span
+                className="font-mono text-xs font-medium"
+                style={{ color: "var(--text-primary)" }}
               >
-                <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.91-3c-.49 0-.9.36-.98.85C16.52 14.2 14.47 16 12 16s-4.52-1.8-4.93-4.15c-.08-.49-.49-.85-.98-.85-.61 0-1.09.54-1 1.14.49 3 2.89 5.35 5.91 5.78V20c0 .55.45 1 1 1s1-.45 1-1v-2.08c3.02-.43 5.42-2.78 5.91-5.78.1-.6-.39-1.14-1-1.14z" />
-              </svg>
+                ⌘⇧Space
+              </span>
             </div>
-            <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
-              Hold to record
-            </span>
           </div>
-          <div
-            className="h-[26px] px-2.5 rounded-md flex items-center bg-surface-elevated border border-subtle"
-          >
-            <span
-              className="font-display text-[11px] tracking-[0.5px]"
-              style={{ color: "var(--text-primary)" }}
-            >
-              {"\u2318\u21E7Space"}
-            </span>
-          </div>
+          <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+            to record
+          </span>
         </div>
 
         {/* Transcript Section */}
-        <div className="flex flex-col gap-2.5 flex-1">
+        <div className="flex flex-col gap-2 flex-1">
           {/* Header */}
-          <div className="flex items-center justify-between">
-            <span
-              className="text-[11px] font-medium tracking-[0.5px]"
-              style={{ color: "var(--text-tertiary)" }}
-            >
-              Last transcript
-            </span>
-            {result && (
-              <span
-                className="font-display text-[10px]"
-                style={{ color: "var(--text-tertiary)" }}
-              >
-                {getDuration() ? `${getDuration()!.toFixed(1)}s` : ""}{" "}
-                {result.language ? `\u00B7 ${result.language}` : ""}
-              </span>
-            )}
-          </div>
+          <span
+            className="text-xs font-medium"
+            style={{ color: "var(--text-tertiary)" }}
+          >
+            Last transcript
+          </span>
 
           {/* Transcript Card */}
-          <div
-            className="flex-1 flex flex-col rounded-xl bg-surface border border-subtle p-4 gap-3"
-          >
+          <div className="flex-1 flex flex-col rounded-xl bg-surface border border-subtle p-4 gap-3">
             {error ? (
               <div className="flex-1 flex items-center justify-center">
                 <p className="text-sm" style={{ color: "var(--glow-recording)" }}>
@@ -365,56 +350,72 @@ function App() {
               </div>
             ) : result?.text ? (
               <>
+                {/* Duration & Language */}
+                <div className="flex items-center justify-between">
+                  <span
+                    className="font-mono text-xs"
+                    style={{ color: "var(--text-tertiary)" }}
+                  >
+                    {getDuration() ? `${getDuration()!.toFixed(1)}s` : ""}
+                  </span>
+                  {result.language && (
+                    <span
+                      className="font-mono text-xs capitalize"
+                      style={{ color: "var(--text-tertiary)" }}
+                    >
+                      {result.language}
+                    </span>
+                  )}
+                </div>
+
+                {/* Transcript Text */}
                 <p
-                  className="text-[13px] leading-relaxed flex-1"
+                  className="text-[15px] leading-relaxed flex-1"
                   style={{ color: "var(--text-primary)" }}
                 >
                   {result.text}
                 </p>
-                <div className="flex items-center justify-end gap-2">
+
+                {/* Action Buttons */}
+                <div className="flex items-center justify-end gap-2 pt-2">
                   <button
                     onClick={handleCopy}
-                    className="h-7 px-3 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors"
-                    style={{
-                      backgroundColor: "var(--surface-elevated)",
-                      color: "var(--text-secondary)",
-                    }}
+                    className="h-9 px-4 rounded-full text-sm font-medium flex items-center gap-2 transition-colors bg-surface border border-subtle hover:bg-surface-elevated"
+                    style={{ color: "var(--text-primary)" }}
                   >
                     <svg
-                      className="w-3.5 h-3.5"
+                      className="w-4 h-4"
                       fill="none"
                       stroke="currentColor"
-                      strokeWidth={2}
+                      strokeWidth={1.5}
                       viewBox="0 0 24 24"
                     >
                       <path
                         strokeLinecap="round"
                         strokeLinejoin="round"
-                        d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+                        d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H9.75"
                       />
                     </svg>
                     Copy
                   </button>
                   <button
                     onClick={handleInsert}
-                    className="h-7 px-3 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors"
+                    className="h-9 px-4 rounded-full text-sm font-medium flex items-center gap-2 transition-colors text-white"
                     style={{
-                      background:
-                        "linear-gradient(180deg, var(--glow-idle) 0%, #4F46E5 100%)",
-                      color: "white",
+                      backgroundColor: "var(--text-primary)",
                     }}
                   >
                     <svg
-                      className="w-3.5 h-3.5"
+                      className="w-4 h-4"
                       fill="none"
                       stroke="currentColor"
-                      strokeWidth={2}
+                      strokeWidth={1.5}
                       viewBox="0 0 24 24"
                     >
                       <path
                         strokeLinecap="round"
                         strokeLinejoin="round"
-                        d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+                        d="m7.49 12-3.75 3.75m0 0 3.75 3.75m-3.75-3.75h16.5V4.499"
                       />
                     </svg>
                     Insert
@@ -424,25 +425,22 @@ function App() {
             ) : (
               <div className="flex-1 flex flex-col items-center justify-center gap-3">
                 <div
-                  className="w-12 h-12 rounded-full flex items-center justify-center"
-                  style={{ backgroundColor: "var(--surface-elevated)" }}
+                  className="w-14 h-14 rounded-full flex items-center justify-center"
+                  style={{
+                    background: "radial-gradient(circle at 30% 30%, #FAF8F5 0%, #E8E4DF 70%, #D5D0C8 100%)",
+                    boxShadow: "0 4px 16px rgba(124, 144, 130, 0.15)",
+                  }}
                 >
-                  <svg
-                    className="w-6 h-6"
-                    fill="none"
-                    stroke="var(--text-tertiary)"
-                    strokeWidth={1.5}
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z"
-                    />
-                  </svg>
+                  <div
+                    className="w-4 h-4 rounded-full"
+                    style={{
+                      backgroundColor: "var(--glow-idle)",
+                      boxShadow: "0 0 12px 3px var(--glow-idle-soft)",
+                    }}
+                  />
                 </div>
                 <p
-                  className="text-xs text-center"
+                  className="text-sm text-center"
                   style={{ color: "var(--text-tertiary)" }}
                 >
                   Press and hold the hotkey to start recording
@@ -454,60 +452,29 @@ function App() {
       </main>
 
       {/* Footer */}
-      <footer
-        className="h-11 flex items-center justify-between px-5 border-t border-subtle flex-shrink-0"
-      >
+      <footer className="h-11 flex items-center justify-between px-5 border-t border-subtle flex-shrink-0">
         {/* Model Info */}
         <div className="flex items-center gap-2">
-          <div
-            className="w-5 h-5 rounded-[5px] bg-surface flex items-center justify-center"
+          <svg
+            className="w-4 h-4"
+            fill="var(--text-tertiary)"
+            viewBox="0 0 24 24"
           >
-            <svg
-              className="w-[11px] h-[11px]"
-              fill="var(--text-tertiary)"
-              viewBox="0 0 24 24"
-            >
-              <path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z" />
-            </svg>
-          </div>
+            <path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z" />
+          </svg>
           <span
-            className="font-display text-[10px]"
+            className="font-mono text-xs"
             style={{ color: "var(--text-tertiary)" }}
           >
-            {modelName.split("/").pop()?.replace("-8bit", "") || modelName}
+            {getModelShortName(modelName)}
           </span>
-          <div
-            className="h-[18px] px-1.5 rounded flex items-center"
-            style={{
-              backgroundColor: getModelFamily(modelName) === "Qwen3"
-                ? "rgba(0, 200, 150, 0.12)"
-                : "rgba(99, 102, 241, 0.12)"
-            }}
-          >
-            <span
-              className="font-display text-[9px] font-medium"
-              style={{
-                color: getModelFamily(modelName) === "Qwen3"
-                  ? "var(--glow-success)"
-                  : "var(--glow-idle)"
-              }}
-            >
-              {getModelSize(modelName)}
-            </span>
-          </div>
         </div>
 
         {/* Status */}
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2">
           <div
-            className={`w-1.5 h-1.5 rounded-full ${
-              modelStatus === "loaded"
-                ? "glow-success"
-                : modelStatus === "loading"
-                ? "glow-processing animate-glow-pulse"
-                : engineStatus === "error" || modelStatus === "error"
-                ? "glow-recording"
-                : ""
+            className={`w-2 h-2 rounded-full ${
+              modelStatus === "loading" ? "animate-glow-pulse" : ""
             }`}
             style={{
               backgroundColor:
@@ -521,7 +488,7 @@ function App() {
             }}
           />
           <span
-            className="font-display text-[10px]"
+            className="font-mono text-xs"
             style={{
               color:
                 modelStatus === "loaded"

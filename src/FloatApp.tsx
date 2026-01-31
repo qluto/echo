@@ -57,11 +57,11 @@ function FloatApp() {
     <div className="h-screen w-screen flex items-center justify-center bg-transparent">
       {state === "recording" && (
         <div
-          className="flex items-center gap-3.5 h-11 px-4 pl-4 rounded-[22px] border"
+          className="flex items-center gap-3.5 h-11 px-5 pl-4 rounded-full border animate-float-in"
           style={{
-            background: "linear-gradient(180deg, #12121A 0%, #0A0A0F 100%)",
-            borderColor: "rgba(255, 59, 92, 0.3)",
-            boxShadow: "0 4px 40px rgba(255, 59, 92, 0.18)",
+            background: "#FFFFFF",
+            borderColor: "var(--border-subtle)",
+            boxShadow: "0 4px 20px rgba(198, 125, 99, 0.2)",
           }}
         >
           {/* Glow Orb */}
@@ -70,13 +70,13 @@ function FloatApp() {
             style={{
               backgroundColor: "var(--glow-recording)",
               boxShadow:
-                "0 0 12px 2px var(--glow-recording), 0 0 24px var(--glow-recording-soft)",
+                "0 0 8px 2px var(--glow-recording), 0 0 16px var(--glow-recording-soft)",
             }}
           />
 
           {/* Label */}
           <span
-            className="font-display text-[11px] tracking-[0.5px]"
+            className="font-mono text-[11px] tracking-wide"
             style={{ color: "var(--glow-recording)" }}
           >
             recording
@@ -85,7 +85,7 @@ function FloatApp() {
           {/* Divider */}
           <div
             className="w-px h-4"
-            style={{ backgroundColor: "rgba(255, 59, 92, 0.3)" }}
+            style={{ backgroundColor: "var(--glow-recording-soft)" }}
           />
 
           {/* Duration */}
@@ -114,11 +114,11 @@ function FloatApp() {
 
       {state === "processing" && (
         <div
-          className="flex items-center gap-3 h-11 px-4 pl-4 rounded-[22px] border"
+          className="flex items-center gap-3 h-11 px-5 pl-4 rounded-full border animate-float-in"
           style={{
-            background: "linear-gradient(180deg, #14140A 0%, #0C0C08 100%)",
-            borderColor: "rgba(255, 184, 0, 0.3)",
-            boxShadow: "0 4px 40px rgba(255, 184, 0, 0.15)",
+            background: "#FFFFFF",
+            borderColor: "var(--border-subtle)",
+            boxShadow: "0 4px 20px rgba(212, 165, 116, 0.2)",
           }}
         >
           {/* Glow Orb */}
@@ -127,13 +127,13 @@ function FloatApp() {
             style={{
               backgroundColor: "var(--glow-processing)",
               boxShadow:
-                "0 0 12px 2px var(--glow-processing), 0 0 24px var(--glow-processing-soft)",
+                "0 0 8px 2px var(--glow-processing), 0 0 16px var(--glow-processing-soft)",
             }}
           />
 
           {/* Label */}
           <span
-            className="font-display text-[11px] tracking-[0.5px]"
+            className="font-mono text-[11px] tracking-wide"
             style={{ color: "var(--glow-processing)" }}
           >
             transcribing
@@ -157,11 +157,11 @@ function FloatApp() {
 
       {state === "success" && (
         <div
-          className="flex items-center gap-2.5 h-11 px-5 pl-4 rounded-[22px] border"
+          className="flex items-center gap-2.5 h-11 px-5 pl-4 rounded-full border animate-float-in"
           style={{
-            background: "linear-gradient(180deg, #0A140E 0%, #080F0A 100%)",
-            borderColor: "rgba(0, 255, 148, 0.3)",
-            boxShadow: "0 4px 40px rgba(0, 255, 148, 0.15)",
+            background: "#FFFFFF",
+            borderColor: "var(--border-subtle)",
+            boxShadow: "0 4px 20px rgba(124, 144, 130, 0.2)",
           }}
         >
           {/* Glow Orb */}
@@ -170,13 +170,13 @@ function FloatApp() {
             style={{
               backgroundColor: "var(--glow-success)",
               boxShadow:
-                "0 0 12px 2px var(--glow-success), 0 0 24px var(--glow-success-soft)",
+                "0 0 8px 2px var(--glow-success), 0 0 16px var(--glow-success-soft)",
             }}
           />
 
           {/* Label */}
           <span
-            className="font-display text-[11px] tracking-[0.5px]"
+            className="font-mono text-[11px] tracking-wide"
             style={{ color: "var(--glow-success)" }}
           >
             inserted

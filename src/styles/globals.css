@@ -1,45 +1,45 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  /* Background colors */
-  --void: #050508;
-  --surface: #0C0C10;
-  --surface-elevated: #121218;
-  --border-subtle: #1A1A24;
+  /* Background colors - Warm natural palette */
+  --void: #F5F3EF;
+  --surface: #FFFFFF;
+  --surface-elevated: #FAF8F5;
+  --surface-muted: #F7F6F3;
+  --border-subtle: #E8E4DF;
 
   /* Text colors */
-  --text-primary: #F8F8FC;
-  --text-secondary: #8888A0;
-  --text-tertiary: #4A4A60;
+  --text-primary: #2D2D2D;
+  --text-secondary: #6B6B6B;
+  --text-tertiary: #9A9A9A;
 
-  /* Glow colors - Idle (indigo) */
-  --glow-idle: #6366F1;
-  --glow-idle-soft: rgba(99, 102, 241, 0.25);
+  /* Glow colors - Idle/Success (sage green) */
+  --glow-idle: #7C9082;
+  --glow-idle-soft: rgba(124, 144, 130, 0.25);
+  --glow-success: #7C9070;
+  --glow-success-soft: rgba(124, 144, 112, 0.25);
 
-  /* Glow colors - Recording (red) */
-  --glow-recording: #FF3B5C;
-  --glow-recording-soft: rgba(255, 59, 92, 0.25);
+  /* Glow colors - Recording (terracotta) */
+  --glow-recording: #C67D63;
+  --glow-recording-soft: rgba(198, 125, 99, 0.25);
 
   /* Glow colors - Processing (amber) */
-  --glow-processing: #FFB800;
-  --glow-processing-soft: rgba(255, 184, 0, 0.25);
-
-  /* Glow colors - Success (green) */
-  --glow-success: #00FF94;
-  --glow-success-soft: rgba(0, 255, 148, 0.25);
+  --glow-processing: #D4A574;
+  --glow-processing-soft: rgba(212, 165, 116, 0.25);
 
   /* Fonts */
-  --font-body: 'DM Sans', system-ui, sans-serif;
-  --font-display: 'Space Mono', monospace;
+  --font-body: 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif;
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-mono: 'IBM Plex Mono', monospace;
 
   font-family: var(--font-body);
   line-height: 1.5;
   font-weight: 400;
-  color-scheme: dark;
+  color-scheme: light;
   color: var(--text-primary);
   background-color: var(--void);
 
@@ -247,4 +247,32 @@ html.float-window #root,
 
 .glow-success {
   box-shadow: 0 0 12px 2px var(--glow-success), 0 0 24px var(--glow-success-soft);
+}
+
+/* Monospace font utility */
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+/* New design system utilities */
+.bg-surface-muted {
+  background-color: var(--surface-muted);
+}
+
+/* Float pill shadows */
+.float-shadow-recording {
+  box-shadow: 0 4px 20px rgba(198, 125, 99, 0.2);
+}
+
+.float-shadow-processing {
+  box-shadow: 0 4px 20px rgba(212, 165, 116, 0.2);
+}
+
+.float-shadow-success {
+  box-shadow: 0 4px 20px rgba(124, 144, 130, 0.2);
+}
+
+/* Card shadow */
+.card-shadow {
+  box-shadow: 0 2px 30px rgba(0, 0, 0, 0.04);
 }
