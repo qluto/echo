@@ -186,10 +186,11 @@ function App() {
     }
   }, [result]);
 
-  // Auto-insert effect
+  // Auto-insert is now handled by the backend (hotkey.rs)
+  // Frontend only shows success state when result arrives
   useEffect(() => {
-    if (result?.text && !showSuccess) {
-      handleInsert();
+    if (result?.text) {
+      setShowSuccess(true);
     }
   }, [result]);
 

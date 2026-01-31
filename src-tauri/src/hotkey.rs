@@ -175,24 +175,28 @@ fn handle_hotkey_released(app: &AppHandle) {
 
                 // Auto-insert if enabled
                 if auto_insert && !result.text.is_empty() {
-                    log::info!("Auto-inserting text");
+                    log::info!("Auto-inserting text via main thread");
 
-                    // Copy to clipboard
-                    if let Err(e) = crate::clipboard::set_clipboard_text(&app_clone, &result.text)
-                    {
-                        log::error!("Failed to copy to clipboard: {}", e);
-                    } else {
-                        // Wait for clipboard
-                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    let text = result.text.clone();
+                    let app_for_paste = app_clone.clone();
 
-                        // Paste with Cmd+V / Ctrl+V
-                        if let Some(enigo_state) = app_clone.try_state::<crate::EnigoState>() {
-                            if let Err(e) = crate::input::send_paste(&enigo_state) {
+                    // Execute paste on main thread for reliability
+                    if let Err(e) = app_clone.run_on_main_thread(move || {
+                        if let Some(enigo_state) = app_for_paste.try_state::<crate::EnigoState>() {
+                            if let Err(e) = crate::clipboard::paste_with_restore(
+                                &app_for_paste,
+                                &text,
+                                &enigo_state,
+                            ) {
                                 log::error!("Failed to paste: {}", e);
                             } else {
                                 log::info!("Text inserted successfully");
                             }
+                        } else {
+                            log::error!("EnigoState not available");
                         }
+                    }) {
+                        log::error!("Failed to run paste on main thread: {:?}", e);
                     }
                 }
             }

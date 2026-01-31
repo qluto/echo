@@ -182,9 +182,8 @@ fn insert_text(
     app: tauri::AppHandle,
     enigo_state: tauri::State<'_, EnigoState>,
 ) -> Result<(), String> {
-    clipboard::set_clipboard_text(&app, &text).map_err(|e| e.to_string())?;
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    input::send_paste(&enigo_state).map_err(|e| e.to_string())
+    clipboard::paste_with_restore(&app, &text, &enigo_state)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
