@@ -164,3 +164,20 @@ export function onError(
     callback(event.payload);
   });
 }
+
+// Accessibility permissions
+export async function checkAccessibilityPermission(): Promise<boolean> {
+  return invoke("check_accessibility_permission");
+}
+
+export async function requestAccessibilityPermission(): Promise<boolean> {
+  return invoke("request_accessibility_permission");
+}
+
+export async function openAccessibilitySettings(): Promise<void> {
+  return invoke("open_accessibility_settings");
+}
+
+export async function restartApp(): Promise<void> {
+  return invoke("restart_app");
+}

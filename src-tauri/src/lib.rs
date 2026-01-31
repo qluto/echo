@@ -14,7 +14,7 @@ use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent,
+    Emitter, Manager, WindowEvent,
 };
 use tauri_plugin_store::StoreExt;
 
@@ -320,7 +320,14 @@ fn update_settings(
 
 #[tauri::command]
 fn register_global_hotkey(hotkey: String, app: tauri::AppHandle) -> Result<(), String> {
-    handy_keys::register_hotkey(&app, &hotkey)
+    let result = handy_keys::register_hotkey(&app, &hotkey);
+    if result.is_ok() {
+        // Emit success event
+        app.emit("hotkey-registered", serde_json::json!({
+            "hotkey": hotkey
+        })).ok();
+    }
+    result
 }
 
 #[tauri::command]
@@ -394,6 +401,108 @@ fn set_asr_model(model_name: String, app: tauri::AppHandle, state: tauri::State<
     Ok(result)
 }
 
+/// Check if accessibility permissions are granted
+#[tauri::command]
+fn check_accessibility_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "ApplicationServices", kind = "framework")]
+        extern "C" {
+            fn AXIsProcessTrusted() -> bool;
+        }
+
+        unsafe { AXIsProcessTrusted() }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// Request accessibility permissions (shows system prompt on macOS)
+#[tauri::command]
+fn request_accessibility_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::c_void;
+        use std::ptr;
+
+        #[link(name = "ApplicationServices", kind = "framework")]
+        extern "C" {
+            fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+        }
+
+        #[link(name = "CoreFoundation", kind = "framework")]
+        extern "C" {
+            fn CFDictionaryCreate(
+                allocator: *const c_void,
+                keys: *const *const c_void,
+                values: *const *const c_void,
+                num_values: isize,
+                key_callbacks: *const c_void,
+                value_callbacks: *const c_void,
+            ) -> *const c_void;
+            fn CFRelease(cf: *const c_void);
+            static kCFTypeDictionaryKeyCallBacks: c_void;
+            static kCFTypeDictionaryValueCallBacks: c_void;
+            static kCFBooleanTrue: *const c_void;
+        }
+
+        // kAXTrustedCheckOptionPrompt key
+        extern "C" {
+            static kAXTrustedCheckOptionPrompt: *const c_void;
+        }
+
+        unsafe {
+            let keys = [kAXTrustedCheckOptionPrompt];
+            let values = [kCFBooleanTrue];
+
+            let options = CFDictionaryCreate(
+                ptr::null(),
+                keys.as_ptr(),
+                values.as_ptr(),
+                1,
+                &kCFTypeDictionaryKeyCallBacks,
+                &kCFTypeDictionaryValueCallBacks,
+            );
+
+            let result = AXIsProcessTrustedWithOptions(options);
+            CFRelease(options);
+            result
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// Open System Settings to Accessibility pane
+#[tauri::command]
+fn open_accessibility_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+            .spawn()
+            .map_err(|e| format!("Failed to open System Settings: {}", e))?;
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
+}
+
+/// Restart the application
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) {
+    app.restart();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -447,15 +556,51 @@ pub fn run() {
             setup_system_tray(app)?;
 
             // Initialize handy-keys and register saved hotkey
+            // Use a blocking spawn to ensure initialization completes before the app is ready
             let app_handle = app.handle().clone();
             let hotkey_clone = hotkey.clone();
-            tauri::async_runtime::spawn(async move {
+            std::thread::spawn(move || {
+                // Small delay to ensure the app is fully initialized
+                std::thread::sleep(std::time::Duration::from_millis(100));
+
                 if let Err(e) = handy_keys::init(&app_handle) {
                     log::error!("Failed to initialize handy-keys: {}", e);
+                    // Emit error to frontend
+                    app_handle.emit("hotkey-init-error", serde_json::json!({
+                        "error": format!("Failed to initialize hotkey system: {}. Please ensure Echo has accessibility permissions in System Settings > Privacy & Security > Accessibility.", e)
+                    })).ok();
                     return;
                 }
-                if let Err(e) = handy_keys::register_hotkey(&app_handle, &hotkey_clone) {
-                    log::error!("Failed to register hotkey '{}': {}", hotkey_clone, e);
+
+                // Retry hotkey registration a few times in case of timing issues
+                let mut last_error = None;
+                for attempt in 0..3 {
+                    if attempt > 0 {
+                        log::info!("Retrying hotkey registration (attempt {})", attempt + 1);
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                    }
+
+                    match handy_keys::register_hotkey(&app_handle, &hotkey_clone) {
+                        Ok(()) => {
+                            log::info!("Hotkey '{}' registered successfully", hotkey_clone);
+                            // Emit success to frontend
+                            app_handle.emit("hotkey-registered", serde_json::json!({
+                                "hotkey": hotkey_clone
+                            })).ok();
+                            return;
+                        }
+                        Err(e) => {
+                            last_error = Some(e);
+                        }
+                    }
+                }
+
+                // All attempts failed
+                if let Some(e) = last_error {
+                    log::error!("Failed to register hotkey '{}' after 3 attempts: {}", hotkey_clone, e);
+                    app_handle.emit("hotkey-init-error", serde_json::json!({
+                        "error": format!("Failed to register hotkey '{}': {}. Please check accessibility permissions.", hotkey_clone, e)
+                    })).ok();
                 }
             });
 
@@ -495,6 +640,10 @@ pub fn run() {
             get_model_status,
             load_asr_model,
             set_asr_model,
+            check_accessibility_permission,
+            request_accessibility_permission,
+            open_accessibility_settings,
+            restart_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

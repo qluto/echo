@@ -61,7 +61,7 @@
       "entitlements": "entitlements.plist",
       "exceptionDomain": null,
       "frameworks": [],
-      "signingIdentity": null,
+      "signingIdentity": "-",
       "infoPlist": "Info.plist"
     },
     "resources": {

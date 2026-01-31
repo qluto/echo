@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getCurrentWindow, currentMonitor, LogicalPosition } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { useTranscription } from "./hooks/useTranscription";
 import {
@@ -11,6 +11,9 @@ import {
   getModelStatus,
   loadAsrModel,
   getSettings,
+  requestAccessibilityPermission,
+  openAccessibilitySettings,
+  restartApp,
 } from "./lib/tauri";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 
@@ -31,6 +34,8 @@ function App() {
   const [modelStatus, setModelStatus] = useState<ModelLoadStatus>("not_loaded");
   const [modelName, setModelName] = useState<string>("mlx-community/whisper-large-v3-turbo");
   const [hotkey, setHotkey] = useState<string>("command+shift+space");
+  const [hotkeyError, setHotkeyError] = useState<string | null>(null);
+  const [showRestartPrompt, setShowRestartPrompt] = useState(false);
 
   // Model parameter counts
   const MODEL_SIZES: Record<string, string> = {
@@ -193,6 +198,32 @@ function App() {
     initializeEngine();
   }, []);
 
+  // Listen for hotkey initialization events
+  useEffect(() => {
+    let unlistenError: (() => void) | null = null;
+    let unlistenRegistered: (() => void) | null = null;
+
+    const setupListeners = async () => {
+      unlistenError = await listen<{ error: string }>("hotkey-init-error", (event) => {
+        console.error("Hotkey init error:", event.payload.error);
+        setHotkeyError(event.payload.error);
+      });
+
+      unlistenRegistered = await listen<{ hotkey: string }>("hotkey-registered", (event) => {
+        console.log("Hotkey registered:", event.payload.hotkey);
+        setHotkeyError(null);
+        setHotkey(event.payload.hotkey);
+      });
+    };
+
+    setupListeners();
+
+    return () => {
+      unlistenError?.();
+      unlistenRegistered?.();
+    };
+  }, []);
+
   // Reload hotkey when settings panel closes
   useEffect(() => {
     if (!isSettingsOpen) {
@@ -350,23 +381,96 @@ function App() {
       {/* Content */}
       <main className="flex-1 px-5 pb-5 flex flex-col gap-4 overflow-auto">
         {/* Hotkey Section */}
-        <div className="flex items-center justify-center gap-2 py-2">
-          <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
-            Hold
-          </span>
-          <div className="flex items-center gap-1">
-            <div className="h-7 px-2.5 rounded-lg flex items-center bg-surface-muted border border-subtle">
-              <span
-                className="font-mono text-xs font-medium"
-                style={{ color: "var(--text-primary)" }}
-              >
-                {formatHotkey(hotkey)}
-              </span>
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-center gap-2 py-2">
+            <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+              Hold
+            </span>
+            <div className="flex items-center gap-1">
+              <div className="h-7 px-2.5 rounded-lg flex items-center bg-surface-muted border border-subtle">
+                <span
+                  className="font-mono text-xs font-medium"
+                  style={{ color: "var(--text-primary)" }}
+                >
+                  {formatHotkey(hotkey)}
+                </span>
+              </div>
             </div>
+            <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+              to transcribe
+            </span>
           </div>
-          <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
-            to transcribe
-          </span>
+          {hotkeyError && (
+            <div
+              className="mx-4 px-3 py-2.5 rounded-lg text-xs flex flex-col gap-2.5"
+              style={{
+                backgroundColor: "rgba(198, 125, 99, 0.15)",
+                color: "var(--glow-recording)",
+              }}
+            >
+              <div className="flex items-start gap-2">
+                <svg
+                  className="w-4 h-4 flex-shrink-0 mt-0.5"
+                  fill="currentColor"
+                  viewBox="0 0 20 20"
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+                <span>
+                  {showRestartPrompt
+                    ? "Permission granted? Restart to apply."
+                    : "Accessibility permission required for hotkey"}
+                </span>
+              </div>
+              <div className="flex gap-2">
+                {!showRestartPrompt ? (
+                  <button
+                    onClick={async () => {
+                      await requestAccessibilityPermission();
+                      await openAccessibilitySettings();
+                      setShowRestartPrompt(true);
+                    }}
+                    className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+                    style={{
+                      backgroundColor: "var(--glow-recording)",
+                      color: "white",
+                    }}
+                  >
+                    Open System Settings
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => restartApp()}
+                      className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+                      style={{
+                        backgroundColor: "var(--glow-idle)",
+                        color: "white",
+                      }}
+                    >
+                      Restart App
+                    </button>
+                    <button
+                      onClick={async () => {
+                        await openAccessibilitySettings();
+                      }}
+                      className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors border"
+                      style={{
+                        borderColor: "var(--border-subtle)",
+                        color: "var(--text-secondary)",
+                      }}
+                    >
+                      Open Settings
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Transcript Section */}
