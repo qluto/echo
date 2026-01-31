@@ -175,28 +175,45 @@ fn handle_hotkey_released(app: &AppHandle) {
 
                 // Auto-insert if enabled
                 if auto_insert && !result.text.is_empty() {
-                    log::info!("Auto-inserting text via main thread");
+                    log::info!("Auto-inserting text");
 
-                    let text = result.text.clone();
-                    let app_for_paste = app_clone.clone();
-
-                    // Execute paste on main thread for reliability
-                    if let Err(e) = app_clone.run_on_main_thread(move || {
-                        if let Some(enigo_state) = app_for_paste.try_state::<crate::EnigoState>() {
-                            if let Err(e) = crate::clipboard::paste_with_restore(
-                                &app_for_paste,
-                                &text,
-                                &enigo_state,
-                            ) {
-                                log::error!("Failed to paste: {}", e);
-                            } else {
-                                log::info!("Text inserted successfully");
+                    // Try to get or initialize EnigoState
+                    let enigo_state = match app_clone.try_state::<crate::EnigoState>() {
+                        Some(state) => Some(state),
+                        None => {
+                            // Try to initialize
+                            log::info!("EnigoState not available, trying to initialize...");
+                            match crate::EnigoState::new() {
+                                Ok(state) => {
+                                    app_clone.manage(state);
+                                    log::info!("Enigo initialized successfully");
+                                    app_clone.try_state::<crate::EnigoState>()
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to initialize Enigo: {} (accessibility permissions may not be granted)", e);
+                                    None
+                                }
                             }
-                        } else {
-                            log::error!("EnigoState not available");
                         }
-                    }) {
-                        log::error!("Failed to run paste on main thread: {:?}", e);
+                    };
+
+                    if let Some(enigo_state) = enigo_state {
+                        match enigo_state.0.lock() {
+                            Ok(mut enigo) => {
+                                if let Err(e) = crate::clipboard::paste_via_clipboard(
+                                    &mut enigo,
+                                    &result.text,
+                                    &app_clone,
+                                ) {
+                                    log::error!("Failed to paste: {}", e);
+                                } else {
+                                    log::info!("Text inserted successfully");
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Failed to lock Enigo: {}", e);
+                            }
+                        }
                     }
                 }
             }

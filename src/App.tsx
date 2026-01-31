@@ -28,8 +28,21 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [engineStatus, setEngineStatus] = useState<EngineStatus>("starting");
   const [modelStatus, setModelStatus] = useState<ModelLoadStatus>("not_loaded");
-  const [modelName, setModelName] = useState<string>("Qwen3-ASR");
-  const [modelSize] = useState<string>("1.7B");
+  const [modelName, setModelName] = useState<string>("mlx-community/whisper-large-v3-turbo");
+
+  // Model parameter counts
+  const MODEL_SIZES: Record<string, string> = {
+    "mlx-community/whisper-large-v3-turbo": "809M",
+    "mlx-community/whisper-large-v3": "1.5B",
+    "mlx-community/whisper-medium": "769M",
+    "mlx-community/whisper-small": "244M",
+    "mlx-community/whisper-base": "74M",
+    "mlx-community/whisper-tiny": "39M",
+  };
+
+  const getModelSize = (name: string): string => {
+    return MODEL_SIZES[name] || "unknown";
+  };
   const [showSuccess, setShowSuccess] = useState(false);
   const floatWindowRef = useRef<WebviewWindow | null>(null);
 
@@ -140,7 +153,7 @@ function App() {
       setEngineStatus("ready");
 
       const status = await getModelStatus();
-      setModelName(status.model_name || "Qwen3-ASR");
+      setModelName(status.model_name || "mlx-community/whisper-large-v3-turbo");
 
       if (status.loaded) {
         setModelStatus("loaded");
@@ -157,7 +170,7 @@ function App() {
     setModelStatus("loading");
     try {
       const status = await loadAsrModel();
-      setModelName(status.model_name || "Qwen3-ASR");
+      setModelName(status.model_name || "mlx-community/whisper-large-v3-turbo");
       setModelStatus("loaded");
     } catch (e) {
       console.error("Failed to load model:", e);
@@ -461,7 +474,7 @@ function App() {
               className="font-display text-[9px] font-medium"
               style={{ color: "var(--glow-idle)" }}
             >
-              {modelSize}
+              {getModelSize(modelName)}
             </span>
           </div>
         </div>

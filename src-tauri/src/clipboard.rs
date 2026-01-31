@@ -4,10 +4,9 @@
 //! using tauri-plugin-clipboard-manager.
 
 use anyhow::Result;
+use enigo::Enigo;
 use tauri::AppHandle;
 use tauri_plugin_clipboard_manager::ClipboardExt;
-
-use crate::input::EnigoState;
 
 /// Set text to clipboard
 pub fn set_clipboard_text(app: &AppHandle, text: &str) -> Result<()> {
@@ -53,40 +52,29 @@ impl Default for ClipboardManager {
     }
 }
 
-/// Paste text with clipboard preservation
-///
-/// This function:
-/// 1. Saves the original clipboard content
-/// 2. Writes new text to clipboard
-/// 3. Waits for clipboard to be ready
-/// 4. Sends paste command (Cmd+V / Ctrl+V)
-/// 5. Waits for paste to complete
-/// 6. Restores original clipboard content
-pub fn paste_with_restore(
-    app: &AppHandle,
+/// Pastes text using the clipboard: saves current content, writes text, sends paste keystroke, restores clipboard.
+/// This matches the Handy implementation.
+pub fn paste_via_clipboard(
+    enigo: &mut Enigo,
     text: &str,
-    enigo_state: &EnigoState,
+    app: &AppHandle,
 ) -> Result<()> {
-    // 1. Save original clipboard content
-    let original = get_clipboard_text(app).unwrap_or_default();
+    // Save original clipboard content
+    let clipboard_content = get_clipboard_text(app).unwrap_or_default();
 
-    // 2. Write new text to clipboard
+    // Write text to clipboard
     set_clipboard_text(app, text)?;
 
-    // 3. Wait for clipboard to be ready
     std::thread::sleep(std::time::Duration::from_millis(50));
 
-    // 4. Send paste command
-    crate::input::send_paste(enigo_state)?;
+    // Send paste key combo (Cmd+V on macOS)
+    crate::input::send_paste_ctrl_v(enigo)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    // 5. Wait for paste to complete
     std::thread::sleep(std::time::Duration::from_millis(50));
 
-    // 6. Restore original clipboard content (only if there was content)
-    if !original.is_empty() {
-        set_clipboard_text(app, &original)?;
-        log::debug!("Restored original clipboard content");
-    }
+    // Restore original clipboard content
+    set_clipboard_text(app, &clipboard_content)?;
 
     log::info!("Text pasted with clipboard restoration");
     Ok(())

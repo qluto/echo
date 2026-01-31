@@ -176,13 +176,48 @@ fn transcribe(
         .map_err(|e| e.to_string())
 }
 
+/// Try to initialize Enigo (keyboard/mouse simulation).
+/// On macOS, this will return an error if accessibility permissions are not granted.
 #[tauri::command]
-fn insert_text(
-    text: String,
-    app: tauri::AppHandle,
-    enigo_state: tauri::State<'_, EnigoState>,
-) -> Result<(), String> {
-    clipboard::paste_with_restore(&app, &text, &enigo_state)
+fn initialize_enigo(app: tauri::AppHandle) -> Result<(), String> {
+    // Check if already initialized
+    if app.try_state::<EnigoState>().is_some() {
+        log::debug!("Enigo already initialized");
+        return Ok(());
+    }
+
+    // Try to initialize
+    match EnigoState::new() {
+        Ok(enigo_state) => {
+            app.manage(enigo_state);
+            log::info!("Enigo initialized successfully after permission grant");
+            Ok(())
+        }
+        Err(e) => {
+            log::warn!(
+                "Failed to initialize Enigo: {} (accessibility permissions may not be granted)",
+                e
+            );
+            Err(format!("Failed to initialize input system: {}", e))
+        }
+    }
+}
+
+#[tauri::command]
+fn insert_text(text: String, app: tauri::AppHandle) -> Result<(), String> {
+    // Try to get or initialize EnigoState
+    let enigo_state = match app.try_state::<EnigoState>() {
+        Some(state) => state,
+        None => {
+            // Try to initialize
+            initialize_enigo(app.clone())?;
+            app.try_state::<EnigoState>()
+                .ok_or_else(|| "Failed to initialize Enigo".to_string())?
+        }
+    };
+
+    let mut enigo = enigo_state.0.lock().map_err(|e| format!("Failed to lock Enigo: {}", e))?;
+    clipboard::paste_via_clipboard(&mut enigo, &text, &app)
         .map_err(|e| e.to_string())
 }
 
@@ -283,7 +318,20 @@ pub fn run() {
                 recording_state: Mutex::new(RecordingState::default()),
             };
             app.manage(app_state);
-            app.manage(EnigoState::new());
+
+            // Try to initialize Enigo, but don't fail if permissions are not granted
+            match EnigoState::new() {
+                Ok(enigo_state) => {
+                    app.manage(enigo_state);
+                    log::info!("Enigo initialized successfully");
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Enigo initialization deferred: {} (will initialize when accessibility permission is granted)",
+                        e
+                    );
+                }
+            }
 
             // Make float window transparent on macOS
             if let Some(float_window) = app.get_webview_window("float") {
@@ -306,6 +354,7 @@ pub fn run() {
             start_recording,
             stop_recording,
             transcribe,
+            initialize_enigo,
             insert_text,
             get_audio_devices,
             set_audio_device,

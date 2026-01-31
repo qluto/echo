@@ -4,6 +4,7 @@ import {
   updateSettings,
   getAudioDevices,
   registerHotkey,
+  getModelStatus,
   AppSettings,
   AudioDevice,
 } from "../lib/tauri";
@@ -24,6 +25,29 @@ const SUPPORTED_LANGUAGES = [
   { code: "es", name: "Spanish" },
 ];
 
+const MODEL_SIZES: Record<string, string> = {
+  "mlx-community/whisper-large-v3-turbo": "809M",
+  "mlx-community/whisper-large-v3": "1.5B",
+  "mlx-community/whisper-medium": "769M",
+  "mlx-community/whisper-small": "244M",
+  "mlx-community/whisper-base": "74M",
+  "mlx-community/whisper-tiny": "39M",
+};
+
+const getModelDisplayName = (name: string): string => {
+  const parts = name.split("/");
+  const modelPart = parts[parts.length - 1];
+  return modelPart
+    .replace("whisper-", "Whisper ")
+    .split("-")
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+    .join(" ");
+};
+
+const getModelSize = (name: string): string => {
+  return MODEL_SIZES[name] || "unknown";
+};
+
 export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [settings, setSettings] = useState<AppSettings>({
     hotkey: "CommandOrControl+Shift+Space",
@@ -32,6 +56,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     device_name: null,
   });
   const [devices, setDevices] = useState<AudioDevice[]>([]);
+  const [modelName, setModelName] = useState<string>("mlx-community/whisper-large-v3-turbo");
   const [isLoading, setIsLoading] = useState(true);
   const [hotkeyInput, setHotkeyInput] = useState("");
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
@@ -45,13 +70,17 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const loadSettings = async () => {
     setIsLoading(true);
     try {
-      const [loadedSettings, loadedDevices] = await Promise.all([
+      const [loadedSettings, loadedDevices, modelStatus] = await Promise.all([
         getSettings(),
         getAudioDevices(),
+        getModelStatus(),
       ]);
       setSettings(loadedSettings);
       setDevices(loadedDevices);
       setHotkeyInput(loadedSettings.hotkey);
+      if (modelStatus.model_name) {
+        setModelName(modelStatus.model_name);
+      }
     } catch (e) {
       console.error("Failed to load settings:", e);
     } finally {
@@ -204,7 +233,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                       className="font-display text-[11px]"
                       style={{ color: "var(--text-primary)" }}
                     >
-                      Qwen3-ASR
+                      {getModelDisplayName(modelName)}
                     </span>
                     <div
                       className="h-[18px] px-1.5 rounded flex items-center"
@@ -214,7 +243,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                         className="font-display text-[9px] font-medium"
                         style={{ color: "var(--glow-idle)" }}
                       >
-                        1.7B
+                        {getModelSize(modelName)}
                       </span>
                     </div>
                   </div>

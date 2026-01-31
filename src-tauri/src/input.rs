@@ -1,95 +1,106 @@
-//! Input simulation module using enigo
-//!
-//! This module handles keyboard input simulation for pasting text
-//! from the clipboard into the active application.
-//!
-//! Note: Enigo is not Send-safe on macOS due to CGEventSource,
-//! so we create it on-demand rather than storing in Tauri state.
-
-use anyhow::Result;
 use enigo::{Enigo, Key, Keyboard, Settings};
-use std::time::Duration;
+use std::sync::Mutex;
 
-/// Dummy state for Tauri compatibility
-/// The actual Enigo instance is created on-demand in each function
-pub struct EnigoState;
+/// Wrapper for Enigo to store in Tauri's managed state.
+/// Enigo is wrapped in a Mutex since it requires mutable access.
+pub struct EnigoState(pub Mutex<Enigo>);
 
 impl EnigoState {
-    pub fn new() -> Self {
-        Self
+    pub fn new() -> Result<Self, String> {
+        let settings = Settings {
+            // Don't open the system prompt for permissions - we'll handle this gracefully
+            open_prompt_to_get_permissions: false,
+            ..Settings::default()
+        };
+        let enigo = Enigo::new(&settings)
+            .map_err(|e| format!("Failed to initialize Enigo: {}", e))?;
+        Ok(Self(Mutex::new(enigo)))
     }
 }
 
-impl Default for EnigoState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Send paste command (Cmd+V on macOS, Ctrl+V on others)
-/// Creates Enigo on-demand to avoid Send/Sync requirements
-pub fn send_paste(_enigo_state: &EnigoState) -> Result<()> {
-    let mut enigo = Enigo::new(&Settings::default())?;
-    send_paste_impl(&mut enigo)
-}
-
-fn send_paste_impl(enigo: &mut Enigo) -> Result<()> {
+/// Sends a Ctrl+V or Cmd+V paste command using platform-specific virtual key codes.
+/// This ensures the paste works regardless of keyboard layout (e.g., Russian, AZERTY, DVORAK).
+pub fn send_paste_ctrl_v(enigo: &mut Enigo) -> Result<(), String> {
+    // Platform-specific key definitions
     #[cfg(target_os = "macos")]
-    {
-        // macOS: Use Key::Other(9) for 'v' keycode
-        let v_key = Key::Other(9);
+    let (modifier_key, v_key_code) = (Key::Meta, Key::Other(9));
+    #[cfg(target_os = "windows")]
+    let (modifier_key, v_key_code) = (Key::Control, Key::Other(0x56)); // VK_V
+    #[cfg(target_os = "linux")]
+    let (modifier_key, v_key_code) = (Key::Control, Key::Unicode('v'));
 
-        enigo.key(Key::Meta, enigo::Direction::Press)?;
-        enigo.key(v_key, enigo::Direction::Click)?;
-        std::thread::sleep(Duration::from_millis(100));
-        enigo.key(Key::Meta, enigo::Direction::Release)?;
-    }
+    // Press modifier + V
+    enigo
+        .key(modifier_key, enigo::Direction::Press)
+        .map_err(|e| format!("Failed to press modifier key: {}", e))?;
+    enigo
+        .key(v_key_code, enigo::Direction::Click)
+        .map_err(|e| format!("Failed to click V key: {}", e))?;
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        enigo.key(Key::Control, enigo::Direction::Press)?;
-        enigo.key(Key::Unicode('v'), enigo::Direction::Click)?;
-        std::thread::sleep(Duration::from_millis(100));
-        enigo.key(Key::Control, enigo::Direction::Release)?;
-    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
-    log::info!("Paste command sent");
+    enigo
+        .key(modifier_key, enigo::Direction::Release)
+        .map_err(|e| format!("Failed to release modifier key: {}", e))?;
+
+    log::info!("Paste command sent (Cmd+V)");
     Ok(())
 }
 
-/// Send Ctrl+Shift+V paste command (for terminals)
+/// Sends a Ctrl+Shift+V paste command.
 #[allow(dead_code)]
-pub fn send_paste_ctrl_shift_v(_enigo_state: &EnigoState) -> Result<()> {
-    let mut enigo = Enigo::new(&Settings::default())?;
-
+pub fn send_paste_ctrl_shift_v(enigo: &mut Enigo) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    {
-        let v_key = Key::Other(9);
+    let (modifier_key, v_key_code) = (Key::Meta, Key::Other(9));
+    #[cfg(target_os = "windows")]
+    let (modifier_key, v_key_code) = (Key::Control, Key::Other(0x56));
+    #[cfg(target_os = "linux")]
+    let (modifier_key, v_key_code) = (Key::Control, Key::Unicode('v'));
 
-        enigo.key(Key::Meta, enigo::Direction::Press)?;
-        enigo.key(Key::Shift, enigo::Direction::Press)?;
-        enigo.key(v_key, enigo::Direction::Click)?;
-        std::thread::sleep(Duration::from_millis(100));
-        enigo.key(Key::Shift, enigo::Direction::Release)?;
-        enigo.key(Key::Meta, enigo::Direction::Release)?;
-    }
+    enigo
+        .key(modifier_key, enigo::Direction::Press)
+        .map_err(|e| format!("Failed to press modifier key: {}", e))?;
+    enigo
+        .key(Key::Shift, enigo::Direction::Press)
+        .map_err(|e| format!("Failed to press Shift key: {}", e))?;
+    enigo
+        .key(v_key_code, enigo::Direction::Click)
+        .map_err(|e| format!("Failed to click V key: {}", e))?;
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        enigo.key(Key::Control, enigo::Direction::Press)?;
-        enigo.key(Key::Shift, enigo::Direction::Press)?;
-        enigo.key(Key::Unicode('v'), enigo::Direction::Click)?;
-        std::thread::sleep(Duration::from_millis(100));
-        enigo.key(Key::Shift, enigo::Direction::Release)?;
-        enigo.key(Key::Control, enigo::Direction::Release)?;
-    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
+    enigo
+        .key(Key::Shift, enigo::Direction::Release)
+        .map_err(|e| format!("Failed to release Shift key: {}", e))?;
+    enigo
+        .key(modifier_key, enigo::Direction::Release)
+        .map_err(|e| format!("Failed to release modifier key: {}", e))?;
+
+    log::info!("Paste command sent (Cmd+Shift+V)");
     Ok(())
 }
 
-/// Send Shift+Insert paste command (legacy method)
+/// Sends a Shift+Insert paste command (legacy method)
 #[allow(dead_code)]
-pub fn send_paste_shift_insert(_enigo_state: &EnigoState) -> Result<()> {
-    log::warn!("Shift+Insert not supported, use send_paste instead");
+pub fn send_paste_shift_insert(enigo: &mut Enigo) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let insert_key_code = Key::Other(0x2D);
+    #[cfg(not(target_os = "windows"))]
+    let insert_key_code = Key::Other(0x76);
+
+    enigo
+        .key(Key::Shift, enigo::Direction::Press)
+        .map_err(|e| format!("Failed to press Shift key: {}", e))?;
+    enigo
+        .key(insert_key_code, enigo::Direction::Click)
+        .map_err(|e| format!("Failed to click Insert key: {}", e))?;
+
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    enigo
+        .key(Key::Shift, enigo::Direction::Release)
+        .map_err(|e| format!("Failed to release Shift key: {}", e))?;
+
+    log::info!("Paste command sent (Shift+Insert)");
     Ok(())
 }
