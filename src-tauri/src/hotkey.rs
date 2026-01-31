@@ -160,7 +160,13 @@ fn handle_hotkey_released(app: &AppHandle) {
 
         match transcription_result {
             Ok(result) => {
-                log::info!("Transcription complete: {} chars", result.text.len());
+                // Check if no speech was detected
+                let is_no_speech = result.no_speech.unwrap_or(false);
+                if is_no_speech {
+                    log::info!("No speech detected in recording, skipping transcription");
+                } else {
+                    log::info!("Transcription complete: {} chars", result.text.len());
+                }
 
                 // Emit transcription result
                 app_clone
@@ -168,13 +174,14 @@ fn handle_hotkey_released(app: &AppHandle) {
                         "transcription-complete",
                         serde_json::json!({
                             "result": result,
+                            "no_speech": is_no_speech,
                             "error": null
                         }),
                     )
                     .ok();
 
-                // Auto-insert if enabled
-                if auto_insert && !result.text.is_empty() {
+                // Auto-insert if enabled (skip if no speech detected)
+                if auto_insert && !result.text.is_empty() && !is_no_speech {
                     log::info!("Auto-inserting text");
 
                     // Try to get or initialize EnigoState

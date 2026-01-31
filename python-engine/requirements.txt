@@ -13,3 +13,6 @@ librosa>=0.10.1
 
 # Utilities
 numpy>=1.26.0
+
+# VAD (Voice Activity Detection)
+silero-vad>=5.1.0

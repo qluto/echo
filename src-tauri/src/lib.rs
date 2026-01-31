@@ -41,6 +41,8 @@ pub struct TranscriptionResult {
     pub text: String,
     pub segments: Vec<TranscriptionSegment>,
     pub language: String,
+    /// True if VAD detected no speech in the audio
+    pub no_speech: Option<bool>,
 }
 
 /// Transcription segment with timestamps
@@ -294,7 +296,14 @@ fn get_model_status(state: tauri::State<'_, AppState>) -> Result<ModelStatus, St
 #[tauri::command]
 fn load_asr_model(state: tauri::State<'_, AppState>) -> Result<ModelStatus, String> {
     let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    asr_engine.load_model().map_err(|e| e.to_string())
+    let result = asr_engine.load_model().map_err(|e| e.to_string())?;
+
+    // Also load VAD model for speech detection
+    if let Err(e) = asr_engine.load_vad() {
+        log::warn!("Failed to load VAD model (VAD will be disabled): {}", e);
+    }
+
+    Ok(result)
 }
 
 #[tauri::command]

@@ -42,6 +42,7 @@ struct ASRResultInner {
     segments: Vec<SegmentInner>,
     language: String,
     error: Option<String>,
+    no_speech: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -460,6 +461,53 @@ impl ASREngine {
         })
     }
 
+    /// Load the VAD model
+    pub fn load_vad(&mut self) -> Result<()> {
+        let process = match self.process.as_mut() {
+            Some(p) => p,
+            None => {
+                return Err(anyhow!("Engine not running"));
+            }
+        };
+
+        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        let request = ASRRequest {
+            command: "load_vad".to_string(),
+            id,
+            audio_path: None,
+            language: None,
+            model_name: None,
+        };
+
+        let json = serde_json::to_string(&request)?;
+        writeln!(process.stdin, "{}", json)?;
+        process.stdin.flush()?;
+
+        let mut line = String::new();
+        process
+            .stdout
+            .read_line(&mut line)
+            .map_err(|e| anyhow!("Failed to read response: {}", e))?;
+
+        let response: ModelOperationResponse = serde_json::from_str(&line)?;
+
+        if let Some(error) = response.error {
+            return Err(anyhow!("Failed to load VAD: {}", error));
+        }
+
+        let result = response.result.ok_or_else(|| anyhow!("No result in response"))?;
+
+        if result.success == Some(false) {
+            return Err(anyhow!(
+                "Failed to load VAD: {}",
+                result.error.unwrap_or_else(|| "unknown error".to_string())
+            ));
+        }
+
+        log::info!("VAD model loaded successfully");
+        Ok(())
+    }
+
     /// Set the model (requires reload)
     pub fn set_model(&mut self, model_name: &str) -> Result<ModelStatus> {
         let process = match self.process.as_mut() {
@@ -655,6 +703,7 @@ impl ASREngine {
             text: result.text,
             segments,
             language: result.language,
+            no_speech: result.no_speech,
         })
     }
 }
