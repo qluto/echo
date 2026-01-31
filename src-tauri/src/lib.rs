@@ -15,6 +15,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, WindowEvent,
 };
+use tauri_plugin_store::StoreExt;
 
 pub use input::EnigoState;
 pub use transcription::{ASREngine, ModelStatus};
@@ -26,6 +27,7 @@ pub struct Settings {
     pub language: String,
     pub auto_insert: bool,
     pub device_name: Option<String>,
+    pub model_name: Option<String>,
 }
 
 impl Default for Settings {
@@ -35,8 +37,53 @@ impl Default for Settings {
             language: "auto".to_string(),
             auto_insert: true,
             device_name: None,
+            model_name: None,
         }
     }
+}
+
+const SETTINGS_STORE_FILE: &str = "settings.json";
+const SETTINGS_KEY: &str = "settings";
+
+/// Load settings from persistent store
+fn load_settings_from_store(app: &tauri::App) -> Settings {
+    match app.store(SETTINGS_STORE_FILE) {
+        Ok(store) => {
+            match store.get(SETTINGS_KEY) {
+                Some(value) => {
+                    match serde_json::from_value::<Settings>(value.clone()) {
+                        Ok(settings) => {
+                            log::info!("Loaded settings from store: language={}, hotkey={}, model={:?}",
+                                settings.language, settings.hotkey, settings.model_name);
+                            settings
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to deserialize settings, using defaults: {}", e);
+                            Settings::default()
+                        }
+                    }
+                }
+                None => {
+                    log::info!("No saved settings found, using defaults");
+                    Settings::default()
+                }
+            }
+        }
+        Err(e) => {
+            log::warn!("Failed to open settings store, using defaults: {}", e);
+            Settings::default()
+        }
+    }
+}
+
+/// Save settings to persistent store
+fn save_settings_to_store(app: &tauri::AppHandle, settings: &Settings) -> Result<(), String> {
+    let store = app.store(SETTINGS_STORE_FILE).map_err(|e| e.to_string())?;
+    let value = serde_json::to_value(settings).map_err(|e| e.to_string())?;
+    store.set(SETTINGS_KEY, value);
+    store.save().map_err(|e| e.to_string())?;
+    log::info!("Settings saved to store");
+    Ok(())
 }
 
 /// Transcription result
@@ -236,10 +283,14 @@ fn get_audio_devices() -> Result<Vec<AudioDevice>, String> {
 #[tauri::command]
 fn set_audio_device(
     device_name: String,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
     settings.device_name = Some(device_name);
+    let settings_clone = settings.clone();
+    drop(settings);
+    save_settings_to_store(&app, &settings_clone)?;
     Ok(())
 }
 
@@ -252,12 +303,17 @@ fn get_settings(state: tauri::State<'_, AppState>) -> Result<Settings, String> {
 #[tauri::command]
 fn update_settings(
     settings: Settings,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    log::info!("Updating settings: language={}, hotkey={}, auto_insert={}",
-        settings.language, settings.hotkey, settings.auto_insert);
+    log::info!("Updating settings: language={}, hotkey={}, auto_insert={}, model={:?}",
+        settings.language, settings.hotkey, settings.auto_insert, settings.model_name);
     let mut current_settings = state.settings.lock().map_err(|e| e.to_string())?;
-    *current_settings = settings;
+    *current_settings = settings.clone();
+    drop(current_settings);
+
+    // Persist to store
+    save_settings_to_store(&app, &settings)?;
     Ok(())
 }
 
@@ -312,9 +368,19 @@ fn load_asr_model(state: tauri::State<'_, AppState>) -> Result<ModelStatus, Stri
 }
 
 #[tauri::command]
-fn set_asr_model(model_name: String, state: tauri::State<'_, AppState>) -> Result<ModelStatus, String> {
+fn set_asr_model(model_name: String, app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<ModelStatus, String> {
     let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    asr_engine.set_model(&model_name).map_err(|e| e.to_string())
+    let result = asr_engine.set_model(&model_name).map_err(|e| e.to_string())?;
+    drop(asr_engine);
+
+    // Update and save settings with new model name
+    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+    settings.model_name = Some(model_name);
+    let settings_clone = settings.clone();
+    drop(settings);
+    save_settings_to_store(&app, &settings_clone)?;
+
+    Ok(result)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -326,9 +392,23 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_log::Builder::new().build())
         .setup(|app| {
+            // Load settings from persistent store
+            let settings = load_settings_from_store(app);
+            let hotkey = settings.hotkey.clone();
+            let model_name = settings.model_name.clone();
+
+            // Create ASR engine and apply saved model name if present
+            let mut asr_engine = ASREngine::new();
+            if let Some(ref model) = model_name {
+                log::info!("Applying saved model: {}", model);
+                if let Err(e) = asr_engine.set_model(model) {
+                    log::warn!("Failed to set saved model '{}': {}", model, e);
+                }
+            }
+
             let app_state = AppState {
-                asr_engine: Mutex::new(ASREngine::new()),
-                settings: Mutex::new(Settings::default()),
+                asr_engine: Mutex::new(asr_engine),
+                settings: Mutex::new(settings),
                 recording_state: Mutex::new(RecordingState::default()),
             };
             app.manage(app_state);
@@ -355,13 +435,11 @@ pub fn run() {
             // Setup system tray
             setup_system_tray(app)?;
 
-            // Register default hotkey
+            // Register saved hotkey (or default if not set)
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) =
-                    hotkey::register_hotkey(&app_handle, "CommandOrControl+Shift+Space")
-                {
-                    log::error!("Failed to register default hotkey: {}", e);
+                if let Err(e) = hotkey::register_hotkey(&app_handle, &hotkey) {
+                    log::error!("Failed to register hotkey '{}': {}", hotkey, e);
                 }
             });
 

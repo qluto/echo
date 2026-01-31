@@ -25,6 +25,7 @@ export interface AppSettings {
   language: string;
   auto_insert: boolean;
   device_name: string | null;
+  model_name: string | null;
 }
 
 // Tauri commands

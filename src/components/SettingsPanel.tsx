@@ -81,6 +81,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     language: "auto",
     auto_insert: true,
     device_name: null,
+    model_name: null,
   });
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [modelName, setModelName] = useState<string>("mlx-community/whisper-large-v3-turbo");
