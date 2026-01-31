@@ -72,6 +72,30 @@ export async function unregisterHotkey(): Promise<void> {
   return invoke("unregister_global_hotkey");
 }
 
+export async function startHotkeyRecording(): Promise<void> {
+  return invoke("start_hotkey_recording");
+}
+
+export async function stopHotkeyRecording(): Promise<void> {
+  return invoke("stop_hotkey_recording");
+}
+
+// Handy-keys event types
+export interface HandyKeysEvent {
+  modifiers: string[];
+  key: string | null;
+  is_key_down: boolean;
+  hotkey_string: string;
+}
+
+export function onHandyKeysEvent(
+  callback: (event: HandyKeysEvent) => void
+): Promise<UnlistenFn> {
+  return listen<HandyKeysEvent>("handy-keys-event", (event) => {
+    callback(event.payload);
+  });
+}
+
 export async function pingAsrEngine(): Promise<boolean> {
   return invoke("ping_asr_engine");
 }

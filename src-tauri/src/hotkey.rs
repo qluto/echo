@@ -9,9 +9,14 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 /// Register a global hotkey
 pub fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<()> {
+    // Unregister all existing hotkeys first
+    if let Err(e) = app.global_shortcut().unregister_all() {
+        log::warn!("Failed to unregister existing hotkeys: {}", e);
+    }
+
     let shortcut: Shortcut = hotkey
         .parse()
-        .map_err(|e| anyhow::anyhow!("Invalid hotkey: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Invalid hotkey '{}': {}", hotkey, e))?;
 
     let app_handle = app.clone();
     app.global_shortcut()
@@ -30,6 +35,16 @@ pub fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<()> {
     log::info!("Registered hotkey: {}", hotkey);
 
     Ok(())
+}
+
+/// Trigger hotkey pressed event (can be called from handy_keys module)
+pub fn trigger_hotkey_pressed(app: &AppHandle) {
+    handle_hotkey_pressed(app);
+}
+
+/// Trigger hotkey released event (can be called from handy_keys module)
+pub fn trigger_hotkey_released(app: &AppHandle) {
+    handle_hotkey_released(app);
 }
 
 fn handle_hotkey_pressed(app: &AppHandle) {

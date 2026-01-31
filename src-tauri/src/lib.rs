@@ -4,6 +4,7 @@ extern crate objc;
 
 mod audio_capture;
 mod clipboard;
+mod handy_keys;
 mod hotkey;
 mod input;
 mod transcription;
@@ -319,12 +320,22 @@ fn update_settings(
 
 #[tauri::command]
 fn register_global_hotkey(hotkey: String, app: tauri::AppHandle) -> Result<(), String> {
-    hotkey::register_hotkey(&app, &hotkey).map_err(|e| e.to_string())
+    handy_keys::register_hotkey(&app, &hotkey)
 }
 
 #[tauri::command]
 fn unregister_global_hotkey(app: tauri::AppHandle) -> Result<(), String> {
-    hotkey::unregister_all_hotkeys(&app).map_err(|e| e.to_string())
+    handy_keys::unregister_hotkey(&app)
+}
+
+#[tauri::command]
+fn start_hotkey_recording(app: tauri::AppHandle) -> Result<(), String> {
+    handy_keys::start_recording(&app)
+}
+
+#[tauri::command]
+fn stop_hotkey_recording(app: tauri::AppHandle) -> Result<(), String> {
+    handy_keys::stop_recording(&app)
 }
 
 #[tauri::command]
@@ -435,11 +446,16 @@ pub fn run() {
             // Setup system tray
             setup_system_tray(app)?;
 
-            // Register saved hotkey (or default if not set)
+            // Initialize handy-keys and register saved hotkey
             let app_handle = app.handle().clone();
+            let hotkey_clone = hotkey.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = hotkey::register_hotkey(&app_handle, &hotkey) {
-                    log::error!("Failed to register hotkey '{}': {}", hotkey, e);
+                if let Err(e) = handy_keys::init(&app_handle) {
+                    log::error!("Failed to initialize handy-keys: {}", e);
+                    return;
+                }
+                if let Err(e) = handy_keys::register_hotkey(&app_handle, &hotkey_clone) {
+                    log::error!("Failed to register hotkey '{}': {}", hotkey_clone, e);
                 }
             });
 
@@ -471,6 +487,8 @@ pub fn run() {
             update_settings,
             register_global_hotkey,
             unregister_global_hotkey,
+            start_hotkey_recording,
+            stop_hotkey_recording,
             ping_asr_engine,
             start_asr_engine,
             stop_asr_engine,

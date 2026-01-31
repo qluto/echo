@@ -10,6 +10,7 @@ import {
   insertText,
   getModelStatus,
   loadAsrModel,
+  getSettings,
 } from "./lib/tauri";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 
@@ -29,6 +30,7 @@ function App() {
   const [engineStatus, setEngineStatus] = useState<EngineStatus>("starting");
   const [modelStatus, setModelStatus] = useState<ModelLoadStatus>("not_loaded");
   const [modelName, setModelName] = useState<string>("mlx-community/whisper-large-v3-turbo");
+  const [hotkey, setHotkey] = useState<string>("command+shift+space");
 
   // Model parameter counts
   const MODEL_SIZES: Record<string, string> = {
@@ -58,6 +60,30 @@ function App() {
     const family = getModelFamily(name);
     const size = getModelSize(name);
     return `${family} · ${size}`;
+  };
+
+  // Format hotkey for display
+  const formatHotkey = (hk: string): string => {
+    return hk
+      // Remove fn when combined with function keys (fn+f12 -> f12)
+      .replace(/\bfn\+?(f(?:[1-9]|1[0-9]|2[0-4]))\b/gi, "$1")
+      .replace(/command/gi, "⌘")
+      .replace(/ctrl/gi, "⌃")
+      .replace(/control/gi, "⌃")
+      .replace(/shift/gi, "⇧")
+      .replace(/option/gi, "⌥")
+      .replace(/alt/gi, "⌥")
+      .replace(/\bfn\b/gi, "🌐")  // Fn key alone
+      .replace(/return/gi, "↵")
+      .replace(/space/gi, "␣")
+      .replace(/escape/gi, "⎋")
+      .replace(/backspace/gi, "⌫")
+      .replace(/delete/gi, "⌦")
+      .replace(/tab/gi, "⇥")
+      // Function keys - uppercase for readability
+      .replace(/\b(f[1-9]|f1[0-9]|f2[0-4])\b/gi, (match) => match.toUpperCase())
+      .replace("CommandOrControl", "⌘")
+      .replace(/\+/g, "");
   };
 
   const [showSuccess, setShowSuccess] = useState(false);
@@ -152,9 +178,27 @@ function App() {
     }
   }, []);
 
+  // Load settings (hotkey)
+  const loadHotkey = async () => {
+    try {
+      const settings = await getSettings();
+      setHotkey(settings.hotkey);
+    } catch (e) {
+      console.error("Failed to load settings:", e);
+    }
+  };
+
   useEffect(() => {
+    loadHotkey();
     initializeEngine();
   }, []);
+
+  // Reload hotkey when settings panel closes
+  useEffect(() => {
+    if (!isSettingsOpen) {
+      loadHotkey();
+    }
+  }, [isSettingsOpen]);
 
   const initializeEngine = async () => {
     setEngineStatus("starting");
@@ -321,7 +365,7 @@ function App() {
                 className="font-mono text-xs font-medium"
                 style={{ color: "var(--text-primary)" }}
               >
-                ⌘⇧Space
+                {formatHotkey(hotkey)}
               </span>
             </div>
           </div>

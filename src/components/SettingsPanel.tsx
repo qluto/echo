@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import {
   getSettings,
   updateSettings,
@@ -7,8 +7,12 @@ import {
   getModelStatus,
   setAsrModel,
   loadAsrModel,
+  startHotkeyRecording,
+  stopHotkeyRecording,
+  onHandyKeysEvent,
   AppSettings,
   AudioDevice,
+  HandyKeysEvent,
 } from "../lib/tauri";
 
 interface SettingsPanelProps {
@@ -90,6 +94,10 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [isModelChanging, setIsModelChanging] = useState(false);
   const [hotkeyInput, setHotkeyInput] = useState("");
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
+  const [currentKeys, setCurrentKeys] = useState("");
+  const [hotkeyError, setHotkeyError] = useState<string | null>(null);
+  const currentKeysRef = useRef("");
+  const unlistenRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -161,36 +169,147 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     }
   };
 
-  const handleHotkeyRecord = (e: React.KeyboardEvent) => {
+  // Cancel recording mode
+  const cancelRecording = useCallback(async () => {
     if (!isRecordingHotkey) return;
 
-    e.preventDefault();
-    const keys: string[] = [];
-
-    if (e.metaKey || e.ctrlKey) keys.push("CommandOrControl");
-    if (e.altKey) keys.push("Alt");
-    if (e.shiftKey) keys.push("Shift");
-
-    if (e.key && !["Control", "Alt", "Shift", "Meta"].includes(e.key)) {
-      keys.push(e.key.length === 1 ? e.key.toUpperCase() : e.key);
+    // Stop listening for backend events
+    if (unlistenRef.current) {
+      unlistenRef.current();
+      unlistenRef.current = null;
     }
 
-    if (keys.length > 1) {
-      const newHotkey = keys.join("+");
-      setHotkeyInput(newHotkey);
-      setIsRecordingHotkey(false);
-      registerHotkey(newHotkey).then(() => {
-        handleSettingChange("hotkey", newHotkey);
+    // Stop backend recording
+    await stopHotkeyRecording().catch(console.error);
+
+    setIsRecordingHotkey(false);
+    setCurrentKeys("");
+    currentKeysRef.current = "";
+  }, [isRecordingHotkey]);
+
+  // Set up event listener for handy-keys events
+  useEffect(() => {
+    if (!isRecordingHotkey) return;
+
+    let cleanup = false;
+
+    const setupListener = async () => {
+      const unlisten = await onHandyKeysEvent(async (event: HandyKeysEvent) => {
+        if (cleanup) return;
+
+        const { hotkey_string, is_key_down } = event;
+
+        if (is_key_down && hotkey_string) {
+          // Update both state (for display) and ref (for release handler)
+          currentKeysRef.current = hotkey_string;
+          setCurrentKeys(hotkey_string);
+        } else if (!is_key_down && currentKeysRef.current) {
+          // Key released - commit the shortcut
+          const newHotkey = currentKeysRef.current;
+
+          // Stop recording first
+          if (unlistenRef.current) {
+            unlistenRef.current();
+            unlistenRef.current = null;
+          }
+          await stopHotkeyRecording().catch(console.error);
+          setIsRecordingHotkey(false);
+          setCurrentKeys("");
+          currentKeysRef.current = "";
+
+          try {
+            setHotkeyError(null);
+            await registerHotkey(newHotkey);
+            await handleSettingChange("hotkey", newHotkey);
+            setHotkeyInput(newHotkey);
+          } catch (err) {
+            console.error("Failed to register hotkey:", err);
+            // Show error message
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            setHotkeyError(errorMsg);
+            // Revert to previous hotkey and re-register it
+            setHotkeyInput(settings.hotkey);
+            try {
+              await registerHotkey(settings.hotkey);
+            } catch {
+              // Ignore re-registration error
+            }
+          }
+        }
       });
+
+      unlistenRef.current = unlisten;
+    };
+
+    setupListener();
+
+    return () => {
+      cleanup = true;
+      if (unlistenRef.current) {
+        unlistenRef.current();
+        unlistenRef.current = null;
+      }
+      stopHotkeyRecording().catch(console.error);
+    };
+  }, [isRecordingHotkey, settings.hotkey]);
+
+  // Handle click outside to cancel recording
+  useEffect(() => {
+    if (!isRecordingHotkey) return;
+
+    const handleClickOutside = () => {
+      cancelRecording();
+    };
+
+    // Delay adding the listener to avoid immediate trigger
+    const timer = setTimeout(() => {
+      window.addEventListener("click", handleClickOutside);
+    }, 100);
+
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("click", handleClickOutside);
+    };
+  }, [isRecordingHotkey, cancelRecording]);
+
+  // Start recording mode
+  const startRecording = async () => {
+    if (isRecordingHotkey) return;
+
+    try {
+      await startHotkeyRecording();
+      setIsRecordingHotkey(true);
+      setCurrentKeys("");
+      currentKeysRef.current = "";
+    } catch (err) {
+      console.error("Failed to start recording:", err);
     }
   };
 
   const formatHotkey = (hotkey: string): string => {
-    return hotkey
+    // handy-keys uses lowercase with + separator
+    let formatted = hotkey
+      // Remove fn when combined with function keys (fn+f12 -> f12)
+      .replace(/\bfn\+?(f(?:[1-9]|1[0-9]|2[0-4]))\b/gi, "$1")
+      .replace(/command/gi, "⌘")
+      .replace(/ctrl/gi, "⌃")
+      .replace(/control/gi, "⌃")
+      .replace(/shift/gi, "⇧")
+      .replace(/option/gi, "⌥")
+      .replace(/alt/gi, "⌥")
+      .replace(/\bfn\b/gi, "🌐")  // Fn key alone
+      .replace(/return/gi, "↵")
+      .replace(/space/gi, "␣")
+      .replace(/escape/gi, "⎋")
+      .replace(/backspace/gi, "⌫")
+      .replace(/delete/gi, "⌦")
+      .replace(/tab/gi, "⇥")
+      // Function keys - uppercase for readability
+      .replace(/\b(f[1-9]|f1[0-9]|f2[0-4])\b/gi, (match) => match.toUpperCase())
+      // Legacy format support
       .replace("CommandOrControl", "⌘")
-      .replace("Shift", "⇧")
-      .replace("Alt", "⌥")
       .replace(/\+/g, "");
+    return formatted;
   };
 
   if (!isOpen) return null;
@@ -436,30 +555,51 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 </div>
 
                 {/* Hotkey Field */}
-                <div className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between">
-                  <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
-                    Hotkey
-                  </span>
-                  <button
-                    onClick={() => setIsRecordingHotkey(true)}
-                    onKeyDown={handleHotkeyRecord}
-                    onBlur={() => setIsRecordingHotkey(false)}
-                    className={`h-7 px-3 rounded-lg flex items-center bg-surface-muted border transition-colors ${
-                      isRecordingHotkey ? "border-glow-idle" : "border-subtle"
-                    }`}
-                    style={{
-                      borderColor: isRecordingHotkey
-                        ? "var(--glow-idle)"
-                        : "var(--border-subtle)",
-                    }}
-                  >
-                    <span
-                      className="font-mono text-xs"
-                      style={{ color: "var(--text-primary)" }}
-                    >
-                      {isRecordingHotkey ? "Press keys..." : formatHotkey(hotkeyInput)}
+                <div className="flex flex-col gap-2">
+                  <div className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between">
+                    <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                      Hotkey
                     </span>
-                  </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!isRecordingHotkey) {
+                          setHotkeyError(null);
+                          startRecording();
+                        }
+                      }}
+                      className={`h-7 px-3 rounded-lg flex items-center bg-surface-muted border transition-colors ${
+                        isRecordingHotkey ? "border-glow-idle" : "border-subtle"
+                      }`}
+                      style={{
+                        borderColor: isRecordingHotkey
+                          ? "var(--glow-idle)"
+                          : "var(--border-subtle)",
+                      }}
+                    >
+                      <span
+                        className="font-mono text-xs"
+                        style={{ color: "var(--text-primary)" }}
+                      >
+                        {isRecordingHotkey
+                          ? currentKeys
+                            ? formatHotkey(currentKeys)
+                            : "Press keys..."
+                          : formatHotkey(hotkeyInput)}
+                      </span>
+                    </button>
+                  </div>
+                  {hotkeyError && (
+                    <div
+                      className="px-4 py-2 rounded-lg text-xs"
+                      style={{
+                        backgroundColor: "rgba(198, 125, 99, 0.15)",
+                        color: "var(--glow-recording)",
+                      }}
+                    >
+                      {hotkeyError}
+                    </div>
+                  )}
                 </div>
               </section>
 
