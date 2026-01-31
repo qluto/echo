@@ -303,23 +303,18 @@ function App() {
 
         {/* Logo */}
         <div className="flex items-center gap-2.5" data-tauri-drag-region>
-          <div
-            className="w-7 h-7 rounded-full flex items-center justify-center"
-            style={{
-              background: "radial-gradient(circle at 30% 30%, #FAF8F5 0%, #E8E4DF 70%, #D5D0C8 100%)",
-              boxShadow: "0 2px 8px rgba(124, 144, 130, 0.2)",
-            }}
-          >
-            <div
-              className="w-2.5 h-2.5 rounded-full"
-              style={{
-                backgroundColor: "var(--glow-idle)",
-                boxShadow: "0 0 8px 2px var(--glow-idle-soft)",
-              }}
-            />
+          <div className="w-7 h-7 rounded-lg overflow-hidden" style={{ backgroundColor: "#7C9082" }}>
+            <svg viewBox="0 0 28 28" className="w-full h-full">
+              {/* Wave rings */}
+              <ellipse cx="14" cy="14" rx="11" ry="11" fill="none" stroke="white" strokeOpacity="0.25" strokeWidth="1"/>
+              <ellipse cx="14" cy="14" rx="8" ry="8" fill="none" stroke="white" strokeOpacity="0.44" strokeWidth="1"/>
+              <ellipse cx="14" cy="14" rx="5" ry="5" fill="none" stroke="white" strokeOpacity="0.63" strokeWidth="1"/>
+              {/* Core */}
+              <ellipse cx="14" cy="14" rx="3" ry="3" fill="white"/>
+            </svg>
           </div>
           <span
-            className="font-display text-[17px] font-semibold tracking-wide"
+            className="font-display text-xl tracking-tight"
             style={{ color: "var(--text-primary)" }}
           >
             echo
@@ -467,22 +462,7 @@ function App() {
                 </div>
               </>
             ) : (
-              <div className="flex-1 flex flex-col items-center justify-center gap-3">
-                <div
-                  className="w-14 h-14 rounded-full flex items-center justify-center"
-                  style={{
-                    background: "radial-gradient(circle at 30% 30%, #FAF8F5 0%, #E8E4DF 70%, #D5D0C8 100%)",
-                    boxShadow: "0 4px 16px rgba(124, 144, 130, 0.15)",
-                  }}
-                >
-                  <div
-                    className="w-4 h-4 rounded-full"
-                    style={{
-                      backgroundColor: "var(--glow-idle)",
-                      boxShadow: "0 0 12px 3px var(--glow-idle-soft)",
-                    }}
-                  />
-                </div>
+              <div className="flex-1 flex items-center justify-center">
                 <p
                   className="text-sm text-center"
                   style={{ color: "var(--text-tertiary)" }}
