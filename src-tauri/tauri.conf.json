@@ -42,9 +42,12 @@
       "entitlements": "entitlements.plist",
       "exceptionDomain": null,
       "frameworks": [],
-      "signingIdentity": null
+      "signingIdentity": null,
+      "infoPlist": "Info.plist"
     },
-    "resources": []
+    "resources": {
+      "../python-engine/engine.py": "engine.py"
+    }
   },
   "plugins": {}
 }

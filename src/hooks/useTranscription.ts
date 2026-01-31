@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   startRecording,
   stopRecording,
   transcribe,
   insertText,
+  getSettings,
   onRecordingStateChange,
   onTranscriptionComplete,
   onError,
@@ -27,6 +28,20 @@ export function useTranscription(): UseTranscriptionReturn {
   const [state, setState] = useState<RecordingState>("idle");
   const [result, setResult] = useState<TranscriptionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const languageRef = useRef<string>("auto");
+
+  // Load language setting on mount and keep it updated
+  useEffect(() => {
+    const loadLanguage = async () => {
+      try {
+        const settings = await getSettings();
+        languageRef.current = settings.language;
+      } catch (e) {
+        console.error("Failed to load language setting:", e);
+      }
+    };
+    loadLanguage();
+  }, []);
 
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
@@ -66,7 +81,16 @@ export function useTranscription(): UseTranscriptionReturn {
     try {
       const audioPath = await stopRecording();
       setState("transcribing");
-      const transcriptionResult = await transcribe(audioPath);
+      // Get fresh language setting before transcribing
+      try {
+        const settings = await getSettings();
+        languageRef.current = settings.language;
+      } catch {
+        // Use cached value if settings fetch fails
+      }
+      const language = languageRef.current === "auto" ? undefined : languageRef.current;
+      console.log("Transcribing with language:", language, "(raw setting:", languageRef.current, ")");
+      const transcriptionResult = await transcribe(audioPath, language);
       setResult(transcriptionResult);
       setState("idle");
     } catch (e) {

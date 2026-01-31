@@ -30,19 +30,64 @@ logger = logging.getLogger(__name__)
 class ASREngine:
     """MLX-Audio based ASR Engine using Whisper"""
 
+    # Available models
+    AVAILABLE_MODELS = [
+        "mlx-community/whisper-large-v3-turbo",
+        "mlx-community/whisper-large-v3",
+        "mlx-community/whisper-medium",
+        "mlx-community/whisper-small",
+        "mlx-community/whisper-base",
+        "mlx-community/whisper-tiny",
+    ]
+
     def __init__(self, model_name: str = "mlx-community/whisper-large-v3-turbo"):
         self.model_name = model_name
         self._model_loaded = False
+        self._loading = False
+        self._load_error: Optional[str] = None
         self._model = None
         self._generate_fn = None
 
-    def load_model(self) -> bool:
+    def get_status(self) -> dict:
+        """Get current engine status"""
+        return {
+            "model_name": self.model_name,
+            "loaded": self._model_loaded,
+            "loading": self._loading,
+            "error": self._load_error,
+            "available_models": self.AVAILABLE_MODELS,
+        }
+
+    def set_model(self, model_name: str) -> dict:
+        """Set a new model (requires reload)"""
+        if model_name not in self.AVAILABLE_MODELS:
+            return {
+                "success": False,
+                "error": f"Unknown model: {model_name}. Available: {self.AVAILABLE_MODELS}"
+            }
+
+        # Unload current model
+        self._model = None
+        self._model_loaded = False
+        self._load_error = None
+        self.model_name = model_name
+        logger.info(f"Model set to: {model_name}")
+
+        return {"success": True, "model_name": model_name}
+
+    def load_model(self) -> dict:
         """Load the ASR model"""
         if self._model_loaded:
-            return True
+            return {"success": True, "model_name": self.model_name, "already_loaded": True}
+
+        if self._loading:
+            return {"success": False, "error": "Model is already loading"}
+
+        self._loading = True
+        self._load_error = None
 
         try:
-            from mlx_audio.stt import load_model
+            from mlx_audio.stt.utils import load_model
             from mlx_audio.stt.generate import generate_transcription
             from transformers import WhisperProcessor
 
@@ -52,29 +97,34 @@ class ASREngine:
             self._model = load_model(self.model_name)
 
             # MLX models don't include processor files, so we load from the original OpenAI model
-            logger.info("Loading processor from openai/whisper-large-v3-turbo")
-            processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3-turbo")
+            # Map MLX model names to their OpenAI equivalents for processor
+            processor_model = self.model_name.replace("mlx-community/", "openai/")
+            logger.info(f"Loading processor from {processor_model}")
+            processor = WhisperProcessor.from_pretrained(processor_model)
             self._model._processor = processor
 
             self._generate_fn = generate_transcription
             self._model_loaded = True
+            self._loading = False
             logger.info(f"MLX-Audio model loaded: {self.model_name}")
-            return True
+            return {"success": True, "model_name": self.model_name}
 
         except ImportError as e:
-            logger.error(f"MLX-Audio is not installed: {e}")
-            logger.error("Please install mlx-audio: pip install mlx-audio")
-            raise RuntimeError(
-                "MLX-Audio is required but not installed. "
-                "Install with: pip install mlx-audio"
-            ) from e
+            self._loading = False
+            self._load_error = f"MLX-Audio is not installed: {e}"
+            logger.error(self._load_error)
+            return {"success": False, "error": self._load_error}
 
         except Exception as e:
-            logger.error(f"Failed to load model: {e}")
-            raise RuntimeError(f"Failed to load ASR model: {e}") from e
+            self._loading = False
+            self._load_error = f"Failed to load model: {e}"
+            logger.error(self._load_error)
+            return {"success": False, "error": self._load_error}
 
     def transcribe(self, audio_path: str, language: Optional[str] = None) -> dict:
         """Transcribe an audio file"""
+        logger.info(f"Transcribe called with language={language}")
+
         if not self._model_loaded:
             self.load_model()
 
@@ -94,10 +144,12 @@ class ASREngine:
             # Use MLX-Audio transcription
             # Use temp directory to avoid creating transcript files that trigger Tauri hot-reload
             temp_output = tempfile.mktemp(prefix="echo_transcript_")
+            effective_language = language if language and language != "auto" else None
+            logger.info(f"Calling generate_transcription with language={effective_language}")
             result = self._generate_fn(
                 self._model,
                 audio_path,
-                language=language if language and language != "auto" else None,
+                language=effective_language,
                 output_path=temp_output,
             )
             # Clean up temp file
@@ -109,7 +161,10 @@ class ASREngine:
 
             # Parse result - STTOutput object with text, segments, language attributes
             text = result.text.strip() if hasattr(result, 'text') else ""
-            detected_language = result.language if hasattr(result, 'language') else (language or "auto")
+            detected_language = result.language if hasattr(result, 'language') else "auto"
+            # Use requested language if specified, otherwise use detected
+            output_language = language if language else detected_language
+            logger.info(f"Requested language: {language}, Detected language: {detected_language}, Output language: {output_language}")
 
             # Convert segments to our format
             segments = []
@@ -122,13 +177,13 @@ class ASREngine:
                             "text": seg.get("text", "").strip()
                         })
 
-            logger.info(f"Transcription complete: {len(text)} chars, language: {detected_language}")
+            logger.info(f"Transcription complete: {len(text)} chars, output language: {output_language}")
 
             return {
                 "success": True,
                 "text": text,
                 "segments": segments,
-                "language": detected_language
+                "language": output_language
             }
 
         except Exception as e:
@@ -146,9 +201,9 @@ class ASREngine:
 
 def run_daemon(engine: ASREngine):
     """Run the engine in daemon mode (JSON-RPC over stdin/stdout)"""
-    logger.info("Starting daemon mode")
+    logger.info("Starting daemon mode (model not loaded yet)")
 
-    # Signal ready to parent process
+    # Signal ready to parent process (engine ready, but model not loaded)
     print(json.dumps({"status": "ready"}), flush=True)
 
     for line in sys.stdin:
@@ -167,14 +222,47 @@ def run_daemon(engine: ASREngine):
                     "result": {"pong": True}
                 }
 
+            elif command == "get_status":
+                response = {
+                    "id": request_id,
+                    "result": engine.get_status()
+                }
+
+            elif command == "load_model":
+                result = engine.load_model()
+                response = {
+                    "id": request_id,
+                    "result": result
+                }
+
+            elif command == "set_model":
+                model_name = request.get("model_name", "")
+                if not model_name:
+                    response = {
+                        "id": request_id,
+                        "error": "Missing model_name parameter"
+                    }
+                else:
+                    result = engine.set_model(model_name)
+                    response = {
+                        "id": request_id,
+                        "result": result
+                    }
+
             elif command == "transcribe":
                 audio_path = request.get("audio_path", "")
                 language = request.get("language")
+                logger.info(f"Received transcribe command: audio_path={audio_path}, language={language}")
 
                 if not audio_path:
                     response = {
                         "id": request_id,
                         "error": "Missing audio_path parameter"
+                    }
+                elif not engine._model_loaded:
+                    response = {
+                        "id": request_id,
+                        "error": "Model not loaded. Call load_model first."
                     }
                 else:
                     result = engine.transcribe(audio_path, language)
@@ -221,17 +309,11 @@ def main():
 
     mode = sys.argv[1]
 
-    # Initialize engine
+    # Initialize engine (model will be loaded lazily)
     engine = ASREngine()
 
-    # Load model (will raise error if mlx_audio is not installed)
-    try:
-        engine.load_model()
-    except RuntimeError as e:
-        logger.error(str(e))
-        sys.exit(1)
-
     if mode == "daemon":
+        # In daemon mode, model is loaded on demand via load_model command
         run_daemon(engine)
     elif mode == "single":
         if len(sys.argv) < 3:
@@ -239,6 +321,11 @@ def main():
             sys.exit(1)
         audio_path = sys.argv[2]
         language = sys.argv[3] if len(sys.argv) > 3 else None
+        # For single mode, load model immediately
+        result = engine.load_model()
+        if not result.get("success"):
+            logger.error(result.get("error", "Unknown error"))
+            sys.exit(1)
         run_single(engine, audio_path, language)
     else:
         print(f"Unknown mode: {mode}")

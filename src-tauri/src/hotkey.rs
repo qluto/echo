@@ -137,15 +137,17 @@ fn handle_hotkey_released(app: &AppHandle) {
             }
         };
 
-        log::info!("Transcribing: {}", file_path);
+        log::info!("Transcribing: {} with language setting: {}", file_path, language);
 
         // Call ASR engine to transcribe
         let transcription_result =
             if let Some(state) = app_clone.try_state::<crate::AppState>() {
                 if let Ok(mut asr_engine) = state.asr_engine.lock() {
                     let lang = if language == "auto" {
+                        log::info!("Language is auto, passing None to ASR engine");
                         None
                     } else {
+                        log::info!("Passing language '{}' to ASR engine", language);
                         Some(language.as_str())
                     };
                     asr_engine.transcribe(&file_path, lang)

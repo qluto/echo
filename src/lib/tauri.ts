@@ -83,6 +83,27 @@ export async function stopAsrEngine(): Promise<void> {
   return invoke("stop_asr_engine");
 }
 
+// Model status and management
+export interface ModelStatus {
+  model_name: string;
+  loaded: boolean;
+  loading: boolean;
+  error: string | null;
+  available_models: string[];
+}
+
+export async function getModelStatus(): Promise<ModelStatus> {
+  return invoke("get_model_status");
+}
+
+export async function loadAsrModel(): Promise<ModelStatus> {
+  return invoke("load_asr_model");
+}
+
+export async function setAsrModel(modelName: string): Promise<ModelStatus> {
+  return invoke("set_asr_model", { modelName });
+}
+
 // Event listeners
 export type RecordingState = "idle" | "recording" | "transcribing";
 

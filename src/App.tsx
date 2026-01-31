@@ -3,8 +3,17 @@ import { RecordingOverlay } from "./components/RecordingOverlay";
 import { TranscriptionDisplay } from "./components/TranscriptionDisplay";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { useTranscription } from "./hooks/useTranscription";
-import { pingAsrEngine, startAsrEngine, insertText } from "./lib/tauri";
+import {
+  pingAsrEngine,
+  startAsrEngine,
+  insertText,
+  getModelStatus,
+  loadAsrModel,
+} from "./lib/tauri";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+
+type EngineStatus = "starting" | "ready" | "error";
+type ModelLoadStatus = "not_loaded" | "loading" | "loaded" | "error";
 
 function App() {
   const {
@@ -17,26 +26,79 @@ function App() {
   } = useTranscription();
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [engineStatus, setEngineStatus] = useState<"checking" | "ready" | "error">("checking");
+  const [engineStatus, setEngineStatus] = useState<EngineStatus>("starting");
+  const [modelStatus, setModelStatus] = useState<ModelLoadStatus>("not_loaded");
+  const [modelName, setModelName] = useState<string>("");
+  const [modelError, setModelError] = useState<string | null>(null);
 
   useEffect(() => {
-    checkEngineStatus();
+    initializeEngine();
   }, []);
 
-  const checkEngineStatus = async () => {
-    setEngineStatus("checking");
+  const initializeEngine = async () => {
+    setEngineStatus("starting");
+    setModelStatus("not_loaded");
+
     try {
+      // Start the engine process
       const isReady = await pingAsrEngine();
-      if (isReady) {
-        setEngineStatus("ready");
-      } else {
+      if (!isReady) {
+        console.log("ASR engine not ready, starting...");
         await startAsrEngine();
-        setEngineStatus("ready");
+        console.log("ASR engine started successfully");
       }
-    } catch {
+      setEngineStatus("ready");
+
+      // Get model status
+      const status = await getModelStatus();
+      setModelName(status.model_name);
+
+      if (status.loaded) {
+        setModelStatus("loaded");
+      } else {
+        // Start loading the model
+        await loadModel();
+      }
+    } catch (e) {
+      console.error("Failed to initialize engine:", e);
       setEngineStatus("error");
+      setModelError(String(e));
     }
   };
+
+  const loadModel = async () => {
+    setModelStatus("loading");
+    setModelError(null);
+
+    try {
+      const status = await loadAsrModel();
+      setModelName(status.model_name);
+      setModelStatus("loaded");
+      console.log("Model loaded:", status.model_name);
+    } catch (e) {
+      console.error("Failed to load model:", e);
+      setModelStatus("error");
+      setModelError(String(e));
+    }
+  };
+
+  const getStatusText = () => {
+    if (engineStatus === "starting") return "エンジン起動中...";
+    if (engineStatus === "error") return "エンジンエラー";
+    if (modelStatus === "loading") return "モデル読み込み中...";
+    if (modelStatus === "error") return "モデルエラー";
+    if (modelStatus === "not_loaded") return "モデル未読込";
+    return "準備完了";
+  };
+
+  const getStatusColor = () => {
+    if (engineStatus === "error" || modelStatus === "error") return "bg-red-500";
+    if (engineStatus === "starting" || modelStatus === "loading") return "bg-yellow-500 animate-pulse";
+    if (modelStatus === "loaded") return "bg-green-500";
+    return "bg-gray-500";
+  };
+
+  const isReady = engineStatus === "ready" && modelStatus === "loaded";
 
   const handleCopy = useCallback(async () => {
     if (result?.text) {
@@ -74,20 +136,8 @@ function App() {
         </div>
         <div className="flex items-center gap-2">
           <div
-            className={`w-2 h-2 rounded-full ${
-              engineStatus === "ready"
-                ? "bg-green-500"
-                : engineStatus === "checking"
-                ? "bg-yellow-500 animate-pulse"
-                : "bg-red-500"
-            }`}
-            title={
-              engineStatus === "ready"
-                ? "エンジン準備完了"
-                : engineStatus === "checking"
-                ? "エンジン起動中..."
-                : "エンジンエラー"
-            }
+            className={`w-2 h-2 rounded-full ${getStatusColor()}`}
+            title={getStatusText()}
           />
           <button
             onClick={() => setIsSettingsOpen(true)}
@@ -113,20 +163,52 @@ function App() {
 
       {/* Main content */}
       <div className="flex-1 p-4 flex flex-col gap-4">
-        {/* Status */}
+        {/* Engine & Model Status */}
+        <div className="bg-gray-800/50 rounded-lg p-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className={`w-2 h-2 rounded-full ${getStatusColor()}`} />
+              <div className="flex flex-col">
+                <span className="text-sm font-medium text-gray-200">{getStatusText()}</span>
+                {modelName && (
+                  <span className="text-xs text-gray-500">{modelName}</span>
+                )}
+              </div>
+            </div>
+            {modelStatus === "error" && modelError && (
+              <button
+                onClick={loadModel}
+                className="px-2 py-1 text-xs bg-primary-600 hover:bg-primary-500 text-white rounded transition-colors"
+              >
+                再試行
+              </button>
+            )}
+          </div>
+          {modelError && (
+            <div className="mt-2 text-xs text-red-400 bg-red-900/20 rounded p-2">
+              {modelError}
+            </div>
+          )}
+        </div>
+
+        {/* Recording Status */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="text-sm text-gray-400">状態:</span>
             <span
               className={`text-sm font-medium ${
-                state === "idle"
+                !isReady
+                  ? "text-gray-500"
+                  : state === "idle"
                   ? "text-gray-300"
                   : state === "recording"
                   ? "text-red-400"
                   : "text-primary-400"
               }`}
             >
-              {state === "idle"
+              {!isReady
+                ? "準備中..."
+                : state === "idle"
                 ? "待機中"
                 : state === "recording"
                 ? "録音中"

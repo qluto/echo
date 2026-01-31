@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use tauri::Manager;
 
 pub use input::EnigoState;
-pub use transcription::ASREngine;
+pub use transcription::{ASREngine, ModelStatus};
 
 /// Application settings
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -157,6 +157,8 @@ fn update_settings(
     settings: Settings,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    log::info!("Updating settings: language={}, hotkey={}, auto_insert={}",
+        settings.language, settings.hotkey, settings.auto_insert);
     let mut current_settings = state.settings.lock().map_err(|e| e.to_string())?;
     *current_settings = settings;
     Ok(())
@@ -191,6 +193,24 @@ fn start_asr_engine(
 fn stop_asr_engine(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
     asr_engine.stop().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_model_status(state: tauri::State<'_, AppState>) -> Result<ModelStatus, String> {
+    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
+    asr_engine.get_model_status().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn load_asr_model(state: tauri::State<'_, AppState>) -> Result<ModelStatus, String> {
+    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
+    asr_engine.load_model().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_asr_model(model_name: String, state: tauri::State<'_, AppState>) -> Result<ModelStatus, String> {
+    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
+    asr_engine.set_model(&model_name).map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -236,6 +256,9 @@ pub fn run() {
             ping_asr_engine,
             start_asr_engine,
             stop_asr_engine,
+            get_model_status,
+            load_asr_model,
+            set_asr_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -22,6 +22,8 @@ struct ASRRequest {
     audio_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_name: Option<String>,
 }
 
 /// Response from the ASR engine
@@ -55,6 +57,35 @@ struct StatusResponse {
     status: Option<String>,
 }
 
+/// Model status response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelStatus {
+    pub model_name: String,
+    pub loaded: bool,
+    pub loading: bool,
+    pub error: Option<String>,
+    pub available_models: Vec<String>,
+}
+
+/// Generic response for model operations
+#[derive(Debug, Deserialize)]
+struct ModelOperationResponse {
+    id: Option<u64>,
+    result: Option<ModelOperationResult>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelOperationResult {
+    success: Option<bool>,
+    model_name: Option<String>,
+    loaded: Option<bool>,
+    loading: Option<bool>,
+    error: Option<String>,
+    available_models: Option<Vec<String>>,
+    already_loaded: Option<bool>,
+}
+
 /// Process handle with I/O streams
 struct ASRProcess {
     child: Child,
@@ -83,20 +114,64 @@ impl ASREngine {
             return Ok(());
         }
 
-        // Get the sidecar path
-        let sidecar_path = app
+        // Get the resource directory for bundled Python script
+        let resource_dir = app
             .path()
             .resource_dir()
-            .map_err(|e| anyhow!("Failed to get resource dir: {}", e))?
-            .join("binaries")
-            .join(get_sidecar_name());
+            .map_err(|e| anyhow!("Failed to get resource dir: {}", e))?;
+
+        // Check for bundled Python script in resources first
+        let bundled_script = resource_dir.join("engine.py");
 
         // Determine how to run the engine
-        let (program, args) = if sidecar_path.exists() {
-            log::info!("Using bundled sidecar: {:?}", sidecar_path);
+        let (program, args) = if bundled_script.exists() {
+            // Bundled app mode: use Python script from resources
+            log::info!("Using bundled Python script: {:?}", bundled_script);
+
+            // Find Python executable - check common locations for macOS
+            // Bundled apps don't have access to user's PATH, so we search explicitly
+            // Priority: venv with mlx-audio installed > Homebrew > System Python
+
+            // First, check for venv in common locations (these have mlx-audio pre-installed)
+            let venv_candidates: Vec<std::path::PathBuf> = [
+                // Check in common development locations
+                dirs::home_dir()
+                    .map(|h| h.join("conductor/workspaces/echo/lisbon/python-engine/venv/bin/python3")),
+                // Check in home directory for a dedicated Echo venv
+                dirs::home_dir().map(|h| h.join(".echo/venv/bin/python3")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+
+            // Build the full list of candidates
+            let mut python_candidates: Vec<String> = venv_candidates
+                .iter()
+                .filter(|p| p.exists())
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
+
+            // Add system Python paths as fallbacks
+            python_candidates.extend([
+                "/opt/homebrew/bin/python3".to_string(),
+                "/usr/local/bin/python3".to_string(),
+                "/usr/bin/python3".to_string(),
+            ]);
+
+            let python_executable = python_candidates
+                .iter()
+                .find(|p| std::path::Path::new(p).exists())
+                .cloned()
+                .unwrap_or_else(|| "python3".to_string());
+
+            log::info!("Using Python executable: {}", python_executable);
+
             (
-                sidecar_path.to_string_lossy().to_string(),
-                vec!["daemon".to_string()],
+                python_executable,
+                vec![
+                    bundled_script.to_string_lossy().to_string(),
+                    "daemon".to_string(),
+                ],
             )
         } else {
             // Development mode: run Python script directly
@@ -143,11 +218,51 @@ impl ASREngine {
 
         log::info!("Starting ASR engine: {} {:?}", program, args);
 
-        let mut child = Command::new(&program)
-            .args(&args)
+        // Build command with proper environment
+        let mut cmd = Command::new(&program);
+        cmd.args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit()) // Let stderr pass through for logging
+            .stderr(Stdio::inherit()); // Let stderr pass through for logging
+
+        // For bundled apps using system Python (not venv), we need to set PYTHONPATH
+        // because macOS app bundles don't inherit the user's shell environment
+        // Skip this if using a venv (which has packages pre-installed)
+        let is_venv = program.contains("/venv/");
+        if bundled_script.exists() && !is_venv {
+            // Get user's home directory
+            if let Some(home) = dirs::home_dir() {
+                let mut paths: Vec<String> = Vec::new();
+
+                // Check common Python versions for user site-packages
+                for version in ["3.9", "3.10", "3.11", "3.12", "3.13"] {
+                    let user_site = home
+                        .join("Library/Python")
+                        .join(version)
+                        .join("lib/python/site-packages");
+                    if user_site.exists() {
+                        paths.push(user_site.to_string_lossy().to_string());
+                    }
+
+                    // Also check Homebrew site-packages
+                    let homebrew_site = std::path::PathBuf::from(format!(
+                        "/opt/homebrew/lib/python{}/site-packages",
+                        version
+                    ));
+                    if homebrew_site.exists() {
+                        paths.push(homebrew_site.to_string_lossy().to_string());
+                    }
+                }
+
+                if !paths.is_empty() {
+                    let python_path = paths.join(":");
+                    log::info!("Setting PYTHONPATH: {}", python_path);
+                    cmd.env("PYTHONPATH", &python_path);
+                }
+            }
+        }
+
+        let mut child = cmd
             .spawn()
             .map_err(|e| anyhow!("Failed to start ASR engine: {}", e))?;
 
@@ -224,6 +339,7 @@ impl ASREngine {
                 id: 0,
                 audio_path: None,
                 language: None,
+                model_name: None,
             };
 
             if let Ok(json) = serde_json::to_string(&request) {
@@ -241,6 +357,156 @@ impl ASREngine {
             log::info!("ASR engine stopped");
         }
         Ok(())
+    }
+
+    /// Get model status from the engine
+    pub fn get_model_status(&mut self) -> Result<ModelStatus> {
+        let process = match self.process.as_mut() {
+            Some(p) => p,
+            None => {
+                return Ok(ModelStatus {
+                    model_name: "unknown".to_string(),
+                    loaded: false,
+                    loading: false,
+                    error: Some("Engine not running".to_string()),
+                    available_models: vec![],
+                });
+            }
+        };
+
+        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        let request = ASRRequest {
+            command: "get_status".to_string(),
+            id,
+            audio_path: None,
+            language: None,
+            model_name: None,
+        };
+
+        let json = serde_json::to_string(&request)?;
+        writeln!(process.stdin, "{}", json)?;
+        process.stdin.flush()?;
+
+        let mut line = String::new();
+        process.stdout.read_line(&mut line)?;
+
+        let response: ModelOperationResponse = serde_json::from_str(&line)?;
+
+        if let Some(error) = response.error {
+            return Err(anyhow!("Failed to get status: {}", error));
+        }
+
+        let result = response.result.ok_or_else(|| anyhow!("No result in response"))?;
+
+        Ok(ModelStatus {
+            model_name: result.model_name.unwrap_or_else(|| "unknown".to_string()),
+            loaded: result.loaded.unwrap_or(false),
+            loading: result.loading.unwrap_or(false),
+            error: result.error,
+            available_models: result.available_models.unwrap_or_default(),
+        })
+    }
+
+    /// Load the model
+    pub fn load_model(&mut self) -> Result<ModelStatus> {
+        let process = match self.process.as_mut() {
+            Some(p) => p,
+            None => {
+                return Err(anyhow!("Engine not running"));
+            }
+        };
+
+        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        let request = ASRRequest {
+            command: "load_model".to_string(),
+            id,
+            audio_path: None,
+            language: None,
+            model_name: None,
+        };
+
+        let json = serde_json::to_string(&request)?;
+        writeln!(process.stdin, "{}", json)?;
+        process.stdin.flush()?;
+
+        // Model loading can take a long time, so we need to handle timeouts
+        let mut line = String::new();
+        process
+            .stdout
+            .read_line(&mut line)
+            .map_err(|e| anyhow!("Failed to read response: {}", e))?;
+
+        let response: ModelOperationResponse = serde_json::from_str(&line)?;
+
+        if let Some(error) = response.error {
+            return Err(anyhow!("Failed to load model: {}", error));
+        }
+
+        let result = response.result.ok_or_else(|| anyhow!("No result in response"))?;
+
+        if result.success == Some(false) {
+            return Err(anyhow!(
+                "Failed to load model: {}",
+                result.error.unwrap_or_else(|| "unknown error".to_string())
+            ));
+        }
+
+        Ok(ModelStatus {
+            model_name: result.model_name.unwrap_or_else(|| "unknown".to_string()),
+            loaded: true,
+            loading: false,
+            error: None,
+            available_models: vec![],
+        })
+    }
+
+    /// Set the model (requires reload)
+    pub fn set_model(&mut self, model_name: &str) -> Result<ModelStatus> {
+        let process = match self.process.as_mut() {
+            Some(p) => p,
+            None => {
+                return Err(anyhow!("Engine not running"));
+            }
+        };
+
+        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        let request = ASRRequest {
+            command: "set_model".to_string(),
+            id,
+            audio_path: None,
+            language: None,
+            model_name: Some(model_name.to_string()),
+        };
+
+        let json = serde_json::to_string(&request)?;
+        writeln!(process.stdin, "{}", json)?;
+        process.stdin.flush()?;
+
+        let mut line = String::new();
+        process.stdout.read_line(&mut line)?;
+
+        let response: ModelOperationResponse = serde_json::from_str(&line)?;
+
+        if let Some(error) = response.error {
+            return Err(anyhow!("Failed to set model: {}", error));
+        }
+
+        let result = response.result.ok_or_else(|| anyhow!("No result in response"))?;
+
+        if result.success == Some(false) {
+            return Err(anyhow!(
+                "Failed to set model: {}",
+                result.error.unwrap_or_else(|| "unknown error".to_string())
+            ));
+        }
+
+        Ok(ModelStatus {
+            model_name: result.model_name.unwrap_or_else(|| model_name.to_string()),
+            loaded: false, // Model needs to be reloaded after setting
+            loading: false,
+            error: None,
+            available_models: vec![],
+        })
     }
 
     /// Check if the engine is running
@@ -268,6 +534,7 @@ impl ASREngine {
             id,
             audio_path: None,
             language: None,
+            model_name: None,
         };
 
         let json = serde_json::to_string(&request)?;
@@ -322,9 +589,10 @@ impl ASREngine {
             id,
             audio_path: Some(audio_path.to_string()),
             language: language.map(|s| s.to_string()),
+            model_name: None,
         };
 
-        log::info!("Sending transcribe request for: {}", audio_path);
+        log::info!("Sending transcribe request for: {} with language: {:?}", audio_path, language);
 
         // Send request
         let json = serde_json::to_string(&request)?;
@@ -400,21 +668,5 @@ impl Default for ASREngine {
 impl Drop for ASREngine {
     fn drop(&mut self) {
         self.stop().ok();
-    }
-}
-
-/// Get the sidecar binary name for the current platform
-fn get_sidecar_name() -> &'static str {
-    #[cfg(target_os = "macos")]
-    {
-        "mlx-asr-engine-aarch64-apple-darwin"
-    }
-    #[cfg(target_os = "windows")]
-    {
-        "mlx-asr-engine-x86_64-pc-windows-msvc.exe"
-    }
-    #[cfg(target_os = "linux")]
-    {
-        "mlx-asr-engine-x86_64-unknown-linux-gnu"
     }
 }
