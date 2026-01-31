@@ -4,7 +4,8 @@ Apple Silicon最適化されたオフライン音声入力デスクトップア�
 
 ## 機能
 
-- **高精度音声認識**: MLX-Audio + Whisper による高精度な音声認識
+- **高精度音声認識**: MLX-Audio + Whisper/Qwen3-ASR による高精度な音声認識
+- **モデル切り替え**: Whisper と Qwen3-ASR を設定画面から切り替え可能
 - **グローバルホットキー**: システム全体で動作するショートカットキー
 - **リアルタイム文字起こし**: 録音終了後即座に文字起こし
 - **テキスト自動挿入**: 文字起こし結果を任意のアプリケーションに挿入
@@ -15,7 +16,18 @@ Apple Silicon最適化されたオフライン音声入力デスクトップア�
 - **OS**: macOS 14.0 (Sonoma) 以降
 - **CPU**: Apple Silicon (M1/M2/M3/M4)
 - **メモリ**: 8GB以上推奨
-- **ストレージ**: 1GB以上の空き容量
+- **ストレージ**: 2GB以上の空き容量（モデルサイズによる）
+
+## 対応モデル
+
+### Qwen3-ASR（推奨）
+- `Qwen3-ASR-1.7B-8bit` - 高精度、52言語対応
+- `Qwen3-ASR-0.6B-8bit` - 軽量、高速
+
+### Whisper（OpenAI）
+- `whisper-large-v3-turbo` - バランス型（デフォルト）
+- `whisper-large-v3` - 最高精度
+- `whisper-medium` / `small` / `base` / `tiny` - 軽量モデル
 
 ## 開発環境セットアップ
 
@@ -69,6 +81,7 @@ npm run tauri:build
 
 設定画面から以下の項目をカスタマイズできます：
 
+- **ASRモデル**: Qwen3-ASR または Whisper から選択
 - **ホットキー**: 録音開始/終了のショートカット
 - **認識言語**: 自動検出または手動指定
 - **入力デバイス**: マイク選択
@@ -78,7 +91,7 @@ npm run tauri:build
 
 - **フロントエンド**: React, TypeScript, Vite, Tailwind CSS
 - **バックエンド**: Tauri 2, Rust
-- **音声認識**: MLX-Audio, Whisper
+- **音声認識**: MLX-Audio, Whisper, Qwen3-ASR
 
 ## ライセンス
 
