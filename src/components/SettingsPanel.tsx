@@ -327,7 +327,10 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
         className="relative ml-auto h-full w-[380px] bg-surface-muted flex flex-col overflow-hidden animate-float-in card-shadow rounded-2xl"
       >
         {/* Header */}
-        <header className="h-[52px] flex items-center gap-3 px-5 flex-shrink-0">
+        <header
+          data-tauri-drag-region
+          className="h-[52px] flex items-center gap-3 px-5 flex-shrink-0"
+        >
           <button
             onClick={onClose}
             className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-surface-elevated transition-colors"
@@ -347,7 +350,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
             </svg>
           </button>
           <span
-            className="font-display text-lg font-semibold"
+            className="font-display text-lg font-semibold pointer-events-none"
             style={{ color: "var(--text-primary)" }}
           >
             Settings
@@ -373,14 +376,26 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 <div className="flex items-center gap-2.5">
                   <div
                     className="w-6 h-6 rounded-md flex items-center justify-center"
-                    style={{ backgroundColor: "rgba(124, 144, 130, 0.12)" }}
+                    style={{ backgroundColor: "rgba(124, 144, 112, 0.12)" }}
                   >
                     <svg
                       className="w-3.5 h-3.5"
-                      fill="var(--glow-idle)"
                       viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="var(--glow-idle)"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
                     >
-                      <path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z" />
+                      <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z" />
+                      <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z" />
+                      <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" />
+                      <path d="M17.599 6.5a3 3 0 0 0 .399-1.375" />
+                      <path d="M6.003 5.125A3 3 0 0 0 6.401 6.5" />
+                      <path d="M3.477 10.896a4 4 0 0 1 .585-.396" />
+                      <path d="M19.938 10.5a4 4 0 0 1 .585.396" />
+                      <path d="M6 18a4 4 0 0 1-1.967-.516" />
+                      <path d="M19.967 17.484A4 4 0 0 1 18 18" />
                     </svg>
                   </div>
                   <span
@@ -393,10 +408,10 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
 
                 {/* ASR Model Field */}
                 <div className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between">
-                  <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                  <span className="text-sm flex-shrink-0" style={{ color: "var(--text-secondary)" }}>
                     ASR Model
                   </span>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 w-[160px] justify-end">
                     {isModelChanging ? (
                       <div className="flex items-center gap-2">
                         <div
@@ -418,7 +433,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                         <select
                           value={modelName}
                           onChange={(e) => handleModelChange(e.target.value)}
-                          className="bg-transparent font-mono text-xs text-right appearance-none cursor-pointer focus:outline-none max-w-[160px]"
+                          className="bg-transparent font-mono text-xs appearance-none cursor-pointer focus:outline-none w-full"
                           style={{ color: "var(--text-primary)" }}
                         >
                           {availableModels.map((model) => (
@@ -432,7 +447,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                           ))}
                         </select>
                         <svg
-                          className="w-4 h-4"
+                          className="w-4 h-4 flex-shrink-0"
                           fill="none"
                           stroke="var(--text-tertiary)"
                           strokeWidth={2}
@@ -451,14 +466,14 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
 
                 {/* Language Field */}
                 <div className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between">
-                  <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                  <span className="text-sm flex-shrink-0" style={{ color: "var(--text-secondary)" }}>
                     Language
                   </span>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 w-[160px] justify-end">
                     <select
                       value={settings.language}
                       onChange={(e) => handleSettingChange("language", e.target.value)}
-                      className="bg-transparent font-mono text-xs text-right appearance-none cursor-pointer focus:outline-none"
+                      className="bg-transparent font-mono text-xs appearance-none cursor-pointer focus:outline-none w-full"
                       style={{ color: "var(--text-primary)" }}
                     >
                       {SUPPORTED_LANGUAGES.map((lang) => (
@@ -472,7 +487,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                       ))}
                     </select>
                     <svg
-                      className="w-4 h-4"
+                      className="w-4 h-4 flex-shrink-0"
                       fill="none"
                       stroke="var(--text-tertiary)"
                       strokeWidth={2}
@@ -513,16 +528,16 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
 
                 {/* Microphone Field */}
                 <div className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between">
-                  <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                  <span className="text-sm flex-shrink-0" style={{ color: "var(--text-secondary)" }}>
                     Microphone
                   </span>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 w-[160px] justify-end">
                     <select
                       value={settings.device_name || ""}
                       onChange={(e) =>
                         handleSettingChange("device_name", e.target.value || null)
                       }
-                      className="bg-transparent font-mono text-xs text-right appearance-none cursor-pointer focus:outline-none max-w-[140px] truncate"
+                      className="bg-transparent font-mono text-xs appearance-none cursor-pointer focus:outline-none w-full truncate"
                       style={{ color: "var(--text-primary)" }}
                     >
                       <option value="" className="bg-surface">
@@ -539,7 +554,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                       ))}
                     </select>
                     <svg
-                      className="w-4 h-4"
+                      className="w-4 h-4 flex-shrink-0"
                       fill="none"
                       stroke="var(--text-tertiary)"
                       strokeWidth={2}
@@ -557,7 +572,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 {/* Hotkey Field */}
                 <div className="flex flex-col gap-2">
                   <div className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between">
-                    <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                    <span className="text-sm flex-shrink-0" style={{ color: "var(--text-secondary)" }}>
                       Hotkey
                     </span>
                     <button
@@ -612,10 +627,18 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                   >
                     <svg
                       className="w-3.5 h-3.5"
-                      fill="var(--glow-success)"
                       viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="var(--glow-idle)"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
                     >
-                      <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
+                      <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z" />
+                      <path d="M20 3v4" />
+                      <path d="M22 5h-4" />
+                      <path d="M4 17v2" />
+                      <path d="M5 18H3" />
                     </svg>
                   </div>
                   <span

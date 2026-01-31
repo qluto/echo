@@ -79,7 +79,7 @@ function FloatApp() {
             className="font-mono text-[11px] tracking-wide"
             style={{ color: "var(--glow-recording)" }}
           >
-            recording
+            transcribing
           </span>
 
           {/* Divider */}
