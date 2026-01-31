@@ -14,14 +14,14 @@ interface SettingsPanelProps {
 }
 
 const SUPPORTED_LANGUAGES = [
-  { code: "auto", name: "自動検出" },
-  { code: "ja", name: "日本語" },
+  { code: "auto", name: "Auto-detect" },
+  { code: "ja", name: "Japanese" },
   { code: "en", name: "English" },
-  { code: "zh", name: "中文" },
-  { code: "ko", name: "한국어" },
-  { code: "de", name: "Deutsch" },
-  { code: "fr", name: "Français" },
-  { code: "es", name: "Español" },
+  { code: "zh", name: "Chinese" },
+  { code: "ko", name: "Korean" },
+  { code: "de", name: "German" },
+  { code: "fr", name: "French" },
+  { code: "es", name: "Spanish" },
 ];
 
 export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
@@ -33,7 +33,6 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   });
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
   const [hotkeyInput, setHotkeyInput] = useState("");
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
 
@@ -60,19 +59,16 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     }
   };
 
-  const handleSave = async () => {
-    setIsSaving(true);
+  const handleSettingChange = async <K extends keyof AppSettings>(
+    key: K,
+    value: AppSettings[K]
+  ) => {
+    const newSettings = { ...settings, [key]: value };
+    setSettings(newSettings);
     try {
-      await updateSettings(settings);
-      if (hotkeyInput !== settings.hotkey) {
-        await registerHotkey(hotkeyInput);
-        setSettings((prev) => ({ ...prev, hotkey: hotkeyInput }));
-      }
-      onClose();
+      await updateSettings(newSettings);
     } catch (e) {
       console.error("Failed to save settings:", e);
-    } finally {
-      setIsSaving(false);
     }
   };
 
@@ -91,180 +87,384 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     }
 
     if (keys.length > 1) {
-      setHotkeyInput(keys.join("+"));
+      const newHotkey = keys.join("+");
+      setHotkeyInput(newHotkey);
       setIsRecordingHotkey(false);
+      registerHotkey(newHotkey).then(() => {
+        handleSettingChange("hotkey", newHotkey);
+      });
     }
+  };
+
+  const formatHotkey = (hotkey: string): string => {
+    return hotkey
+      .replace("CommandOrControl", "\u2318")
+      .replace("Shift", "\u21E7")
+      .replace("Alt", "\u2325")
+      .replace(/\+/g, "");
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-gray-800 rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
-        <div className="p-4 border-b border-gray-700 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">設定</h2>
+    <div className="fixed inset-0 z-50 flex">
+      {/* Backdrop */}
+      <div
+        className="absolute inset-0 bg-black/60"
+        onClick={onClose}
+      />
+
+      {/* Panel */}
+      <div
+        className="relative ml-auto h-full w-[380px] bg-void border-l border-subtle flex flex-col overflow-hidden animate-float-in"
+      >
+        {/* Header */}
+        <header className="h-[52px] flex items-center gap-3 px-5 flex-shrink-0">
           <button
             onClick={onClose}
-            className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+            className="w-8 h-8 rounded-lg bg-surface flex items-center justify-center hover:bg-surface-elevated transition-colors"
           >
-            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-              <path
-                fillRule="evenodd"
-                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                clipRule="evenodd"
-              />
-            </svg>
-          </button>
-        </div>
-
-        {isLoading ? (
-          <div className="p-8 flex items-center justify-center">
             <svg
-              className="w-8 h-8 text-primary-500 animate-spin"
+              className="w-4 h-4"
               fill="none"
+              stroke="var(--text-secondary)"
+              strokeWidth={2}
               viewBox="0 0 24 24"
             >
-              <circle
-                className="opacity-25"
-                cx="12"
-                cy="12"
-                r="10"
-                stroke="currentColor"
-                strokeWidth="4"
-              />
               <path
-                className="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18"
               />
             </svg>
-          </div>
-        ) : (
-          <div className="p-4 space-y-6">
-            {/* Hotkey */}
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">
-                録音ホットキー
-              </label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={hotkeyInput}
-                  readOnly
-                  onKeyDown={handleHotkeyRecord}
-                  onFocus={() => setIsRecordingHotkey(true)}
-                  onBlur={() => setIsRecordingHotkey(false)}
-                  className={`flex-1 px-3 py-2 bg-gray-700 border rounded text-white focus:outline-none focus:ring-2 focus:ring-primary-500 ${
-                    isRecordingHotkey
-                      ? "border-primary-500"
-                      : "border-gray-600"
-                  }`}
-                  placeholder="キーを押して設定..."
-                />
-                <button
-                  onClick={() => setIsRecordingHotkey(true)}
-                  className="px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded transition-colors"
+          </button>
+          <span
+            className="text-base font-semibold"
+            style={{ color: "var(--text-primary)" }}
+          >
+            Settings
+          </span>
+        </header>
+
+        {/* Content */}
+        <main className="flex-1 overflow-auto p-5 flex flex-col gap-6">
+          {isLoading ? (
+            <div className="flex-1 flex items-center justify-center">
+              <div
+                className="w-6 h-6 border-2 rounded-full animate-spin"
+                style={{
+                  borderColor: "var(--border-subtle)",
+                  borderTopColor: "var(--glow-idle)",
+                }}
+              />
+            </div>
+          ) : (
+            <>
+              {/* Model Section */}
+              <section className="flex flex-col gap-3">
+                <div className="flex items-center gap-2">
+                  <div
+                    className="w-6 h-6 rounded-md flex items-center justify-center"
+                    style={{ backgroundColor: "rgba(99, 102, 241, 0.08)" }}
+                  >
+                    <svg
+                      className="w-3.5 h-3.5"
+                      fill="var(--glow-idle)"
+                      viewBox="0 0 24 24"
+                    >
+                      <path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z" />
+                    </svg>
+                  </div>
+                  <span
+                    className="text-xs font-semibold"
+                    style={{ color: "var(--text-primary)" }}
+                  >
+                    Model
+                  </span>
+                </div>
+
+                {/* Model Field */}
+                <div
+                  className="h-11 px-3.5 rounded-[10px] bg-surface border border-subtle flex items-center justify-between"
                 >
-                  変更
-                </button>
-              </div>
-              {isRecordingHotkey && (
-                <p className="text-xs text-primary-400 mt-1">
-                  新しいホットキーを押してください...
-                </p>
-              )}
-            </div>
+                  <div className="flex items-center gap-2.5">
+                    <svg
+                      className="w-4 h-4"
+                      fill="var(--text-tertiary)"
+                      viewBox="0 0 24 24"
+                    >
+                      <path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z" />
+                    </svg>
+                    <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                      ASR Model
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className="font-display text-[11px]"
+                      style={{ color: "var(--text-primary)" }}
+                    >
+                      Qwen3-ASR
+                    </span>
+                    <div
+                      className="h-[18px] px-1.5 rounded flex items-center"
+                      style={{ backgroundColor: "rgba(99, 102, 241, 0.12)" }}
+                    >
+                      <span
+                        className="font-display text-[9px] font-medium"
+                        style={{ color: "var(--glow-idle)" }}
+                      >
+                        1.7B
+                      </span>
+                    </div>
+                  </div>
+                </div>
 
-            {/* Language */}
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">
-                認識言語
-              </label>
-              <select
-                value={settings.language}
-                onChange={(e) =>
-                  setSettings((prev) => ({ ...prev, language: e.target.value }))
-                }
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white focus:outline-none focus:ring-2 focus:ring-primary-500"
-              >
-                {SUPPORTED_LANGUAGES.map((lang) => (
-                  <option key={lang.code} value={lang.code}>
-                    {lang.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+                {/* Language Field */}
+                <div
+                  className="h-11 px-3.5 rounded-[10px] bg-surface border border-subtle flex items-center justify-between"
+                >
+                  <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                    Language
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <select
+                      value={settings.language}
+                      onChange={(e) => handleSettingChange("language", e.target.value)}
+                      className="bg-transparent font-display text-[11px] text-right appearance-none cursor-pointer focus:outline-none"
+                      style={{ color: "var(--text-primary)" }}
+                    >
+                      {SUPPORTED_LANGUAGES.map((lang) => (
+                        <option
+                          key={lang.code}
+                          value={lang.code}
+                          className="bg-surface"
+                        >
+                          {lang.name}
+                        </option>
+                      ))}
+                    </select>
+                    <svg
+                      className="w-3.5 h-3.5"
+                      fill="none"
+                      stroke="var(--text-tertiary)"
+                      strokeWidth={2}
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M19.5 8.25l-7.5 7.5-7.5-7.5"
+                      />
+                    </svg>
+                  </div>
+                </div>
+              </section>
 
-            {/* Audio Device */}
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">
-                入力デバイス
-              </label>
-              <select
-                value={settings.device_name || ""}
-                onChange={(e) =>
-                  setSettings((prev) => ({
-                    ...prev,
-                    device_name: e.target.value || null,
-                  }))
-                }
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white focus:outline-none focus:ring-2 focus:ring-primary-500"
-              >
-                <option value="">デフォルト</option>
-                {devices.map((device) => (
-                  <option key={device.name} value={device.name}>
-                    {device.name} {device.is_default ? "(デフォルト)" : ""}
-                  </option>
-                ))}
-              </select>
-            </div>
+              {/* Input Section */}
+              <section className="flex flex-col gap-3">
+                <div className="flex items-center gap-2">
+                  <div
+                    className="w-6 h-6 rounded-md flex items-center justify-center"
+                    style={{ backgroundColor: "rgba(255, 59, 92, 0.08)" }}
+                  >
+                    <svg
+                      className="w-3.5 h-3.5"
+                      fill="var(--glow-recording)"
+                      viewBox="0 0 24 24"
+                    >
+                      <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.91-3c-.49 0-.9.36-.98.85C16.52 14.2 14.47 16 12 16s-4.52-1.8-4.93-4.15c-.08-.49-.49-.85-.98-.85-.61 0-1.09.54-1 1.14.49 3 2.89 5.35 5.91 5.78V20c0 .55.45 1 1 1s1-.45 1-1v-2.08c3.02-.43 5.42-2.78 5.91-5.78.1-.6-.39-1.14-1-1.14z" />
+                    </svg>
+                  </div>
+                  <span
+                    className="text-xs font-semibold"
+                    style={{ color: "var(--text-primary)" }}
+                  >
+                    Input
+                  </span>
+                </div>
 
-            {/* Auto Insert */}
-            <div className="flex items-center justify-between">
-              <div>
-                <label className="block text-sm font-medium text-gray-300">
-                  自動挿入
-                </label>
-                <p className="text-xs text-gray-500">
-                  文字起こし完了後に自動的にテキストを挿入
-                </p>
-              </div>
-              <button
-                onClick={() =>
-                  setSettings((prev) => ({
-                    ...prev,
-                    auto_insert: !prev.auto_insert,
-                  }))
-                }
-                className={`relative w-12 h-6 rounded-full transition-colors ${
-                  settings.auto_insert ? "bg-primary-600" : "bg-gray-600"
-                }`}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
-                    settings.auto_insert ? "translate-x-6" : ""
-                  }`}
-                />
-              </button>
-            </div>
-          </div>
-        )}
+                {/* Microphone Field */}
+                <div
+                  className="h-11 px-3.5 rounded-[10px] bg-surface border border-subtle flex items-center justify-between"
+                >
+                  <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                    Microphone
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <select
+                      value={settings.device_name || ""}
+                      onChange={(e) =>
+                        handleSettingChange("device_name", e.target.value || null)
+                      }
+                      className="bg-transparent font-display text-[11px] text-right appearance-none cursor-pointer focus:outline-none max-w-[140px] truncate"
+                      style={{ color: "var(--text-primary)" }}
+                    >
+                      <option value="" className="bg-surface">
+                        Default
+                      </option>
+                      {devices.map((device) => (
+                        <option
+                          key={device.name}
+                          value={device.name}
+                          className="bg-surface"
+                        >
+                          {device.name}
+                        </option>
+                      ))}
+                    </select>
+                    <svg
+                      className="w-3.5 h-3.5"
+                      fill="none"
+                      stroke="var(--text-tertiary)"
+                      strokeWidth={2}
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M19.5 8.25l-7.5 7.5-7.5-7.5"
+                      />
+                    </svg>
+                  </div>
+                </div>
 
-        <div className="p-4 border-t border-gray-700 flex justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded transition-colors"
-          >
-            キャンセル
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={isSaving}
-            className="px-4 py-2 bg-primary-600 hover:bg-primary-500 rounded transition-colors disabled:opacity-50"
-          >
-            {isSaving ? "保存中..." : "保存"}
-          </button>
-        </div>
+                {/* Hotkey Field */}
+                <div
+                  className="h-11 px-3.5 rounded-[10px] bg-surface border border-subtle flex items-center justify-between"
+                >
+                  <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                    Hotkey
+                  </span>
+                  <button
+                    onClick={() => setIsRecordingHotkey(true)}
+                    onKeyDown={handleHotkeyRecord}
+                    onBlur={() => setIsRecordingHotkey(false)}
+                    className={`h-[26px] px-2.5 rounded-md flex items-center bg-surface-elevated border transition-colors ${
+                      isRecordingHotkey ? "border-glow-idle" : "border-subtle"
+                    }`}
+                    style={{
+                      borderColor: isRecordingHotkey
+                        ? "var(--glow-idle)"
+                        : "var(--border-subtle)",
+                    }}
+                  >
+                    <span
+                      className="font-display text-[11px] tracking-[0.5px]"
+                      style={{ color: "var(--text-primary)" }}
+                    >
+                      {isRecordingHotkey ? "Press keys..." : formatHotkey(hotkeyInput)}
+                    </span>
+                  </button>
+                </div>
+              </section>
+
+              {/* Behavior Section */}
+              <section className="flex flex-col gap-3">
+                <div className="flex items-center gap-2">
+                  <div
+                    className="w-6 h-6 rounded-md flex items-center justify-center"
+                    style={{ backgroundColor: "rgba(0, 255, 148, 0.08)" }}
+                  >
+                    <svg
+                      className="w-3.5 h-3.5"
+                      fill="var(--glow-success)"
+                      viewBox="0 0 24 24"
+                    >
+                      <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
+                    </svg>
+                  </div>
+                  <span
+                    className="text-xs font-semibold"
+                    style={{ color: "var(--text-primary)" }}
+                  >
+                    Behavior
+                  </span>
+                </div>
+
+                {/* Auto-insert Toggle */}
+                <div
+                  className="h-11 px-3.5 rounded-[10px] bg-surface border border-subtle flex items-center justify-between"
+                >
+                  <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                    Auto-insert text
+                  </span>
+                  <button
+                    onClick={() =>
+                      handleSettingChange("auto_insert", !settings.auto_insert)
+                    }
+                    className={`w-11 h-6 rounded-xl flex items-center transition-colors ${
+                      settings.auto_insert ? "justify-end" : "justify-start"
+                    }`}
+                    style={{
+                      background: settings.auto_insert
+                        ? "linear-gradient(180deg, var(--glow-idle) 0%, #4F46E5 100%)"
+                        : "var(--surface-elevated)",
+                    }}
+                  >
+                    <div
+                      className="w-5 h-5 rounded-full bg-white mx-0.5 transition-transform"
+                      style={{
+                        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.2)",
+                      }}
+                    />
+                  </button>
+                </div>
+              </section>
+
+              {/* About Section */}
+              <section className="flex flex-col gap-3 pt-4">
+                <div className="flex items-center gap-2">
+                  <div
+                    className="w-6 h-6 rounded-md flex items-center justify-center"
+                    style={{ backgroundColor: "rgba(255, 184, 0, 0.08)" }}
+                  >
+                    <svg
+                      className="w-3.5 h-3.5"
+                      fill="var(--glow-processing)"
+                      viewBox="0 0 24 24"
+                    >
+                      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z" />
+                    </svg>
+                  </div>
+                  <span
+                    className="text-xs font-semibold"
+                    style={{ color: "var(--text-primary)" }}
+                  >
+                    About
+                  </span>
+                </div>
+
+                <div
+                  className="rounded-[10px] bg-surface border border-subtle p-3.5 flex flex-col gap-2.5"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                      Version
+                    </span>
+                    <span
+                      className="font-display text-[11px]"
+                      style={{ color: "var(--text-primary)" }}
+                    >
+                      1.0.0
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                      Build
+                    </span>
+                    <span
+                      className="font-display text-[11px]"
+                      style={{ color: "var(--text-tertiary)" }}
+                    >
+                      2024.01.31
+                    </span>
+                  </div>
+                </div>
+              </section>
+            </>
+          )}
+        </main>
       </div>
     </div>
   );

@@ -10,17 +10,36 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
+        "label": "main",
         "title": "Echo",
-        "width": 480,
-        "height": 640,
+        "width": 360,
+        "height": 480,
         "resizable": true,
         "fullscreen": false,
-        "decorations": true,
-        "transparent": false,
+        "decorations": false,
+        "transparent": true,
+        "acceptFirstMouse": true,
         "minWidth": 360,
-        "minHeight": 480
+        "minHeight": 400
+      },
+      {
+        "label": "float",
+        "title": "Echo Indicator",
+        "url": "float.html",
+        "width": 240,
+        "height": 60,
+        "resizable": false,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": false,
+        "shadow": false
       }
     ],
     "security": {

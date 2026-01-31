@@ -18,6 +18,7 @@ interface UseTranscriptionReturn {
   error: string | null;
   isRecording: boolean;
   isTranscribing: boolean;
+  recordingDuration: number;
   startRecord: () => Promise<void>;
   stopRecord: () => Promise<void>;
   clearResult: () => void;
@@ -28,7 +29,9 @@ export function useTranscription(): UseTranscriptionReturn {
   const [state, setState] = useState<RecordingState>("idle");
   const [result, setResult] = useState<TranscriptionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [recordingDuration, setRecordingDuration] = useState(0);
   const languageRef = useRef<string>("auto");
+  const durationIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Load language setting on mount and keep it updated
   useEffect(() => {
@@ -42,6 +45,30 @@ export function useTranscription(): UseTranscriptionReturn {
     };
     loadLanguage();
   }, []);
+
+  // Track recording duration
+  useEffect(() => {
+    if (state === "recording") {
+      setRecordingDuration(0);
+      durationIntervalRef.current = setInterval(() => {
+        setRecordingDuration((d) => d + 1);
+      }, 1000);
+    } else {
+      if (durationIntervalRef.current) {
+        clearInterval(durationIntervalRef.current);
+        durationIntervalRef.current = null;
+      }
+      if (state === "idle") {
+        // Keep duration visible briefly after recording stops
+      }
+    }
+
+    return () => {
+      if (durationIntervalRef.current) {
+        clearInterval(durationIntervalRef.current);
+      }
+    };
+  }, [state]);
 
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
@@ -120,6 +147,7 @@ export function useTranscription(): UseTranscriptionReturn {
     error,
     isRecording: state === "recording",
     isTranscribing: state === "transcribing",
+    recordingDuration,
     startRecord,
     stopRecord,
     clearResult,

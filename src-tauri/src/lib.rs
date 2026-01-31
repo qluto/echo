@@ -1,3 +1,7 @@
+#[cfg(target_os = "macos")]
+#[macro_use]
+extern crate objc;
+
 mod audio_capture;
 mod clipboard;
 mod hotkey;
@@ -67,6 +71,58 @@ pub struct RecordingState {
     pub is_recording: bool,
     pub current_file: Option<String>,
     pub device_name: Option<String>,
+}
+
+/// Make a window fully transparent on macOS using with_webview
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn make_window_transparent(window: &tauri::WebviewWindow) {
+    use cocoa::base::{id, NO};
+
+    // First, configure the NSWindow
+    if let Ok(ns_window) = window.ns_window() {
+        let ns_window = ns_window as id;
+        unsafe {
+            // Set background color to clear
+            let clear_color: id = msg_send![class!(NSColor), clearColor];
+            let _: () = msg_send![ns_window, setBackgroundColor: clear_color];
+
+            // Make window not opaque
+            let _: () = msg_send![ns_window, setOpaque: NO];
+        }
+    }
+
+    // Then, configure the webview using Tauri's with_webview
+    #[allow(deprecated)]
+    let _ = window.with_webview(|webview| {
+        use cocoa::base::{id, NO};
+
+        unsafe {
+            let wk_webview: id = webview.inner() as id;
+            if !wk_webview.is_null() {
+                // Set WKWebView to not be opaque
+                let _: () = msg_send![wk_webview, setOpaque: NO];
+
+                // Set background color to clear (transparent)
+                let clear_color: id = msg_send![class!(NSColor), clearColor];
+                let _: () = msg_send![wk_webview, setBackgroundColor: clear_color];
+
+                // Set underPageBackgroundColor to clear for full transparency
+                let _: () = msg_send![wk_webview, setUnderPageBackgroundColor: clear_color];
+
+                // Try private API: _setDrawsBackground:NO
+                // This is the most reliable way to make WKWebView fully transparent
+                let _: () = msg_send![wk_webview, _setDrawsBackground: NO];
+
+                log::info!("Configured WKWebView for transparency via with_webview");
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn make_window_transparent(_window: &tauri::WebviewWindow) {
+    // No-op on other platforms
 }
 
 // Tauri commands
@@ -229,6 +285,11 @@ pub fn run() {
             };
             app.manage(app_state);
             app.manage(EnigoState::new());
+
+            // Make float window transparent on macOS
+            if let Some(float_window) = app.get_webview_window("float") {
+                make_window_transparent(&float_window);
+            }
 
             // Register default hotkey
             let app_handle = app.handle().clone();
