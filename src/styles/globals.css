@@ -1,0 +1,277 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Background colors - Warm natural palette */
+  --void: #F5F3EF;
+  --surface: #FFFFFF;
+  --surface-elevated: #FAF8F5;
+  --surface-muted: #F7F6F3;
+  --border-subtle: #E8E4DF;
+
+  /* Text colors */
+  --text-primary: #2D2D2D;
+  --text-secondary: #6B6B6B;
+  --text-tertiary: #9A9A9A;
+
+  /* Glow colors - Idle/Success (sage green) */
+  --glow-idle: #7C9082;
+  --glow-idle-soft: rgba(124, 144, 130, 0.25);
+  --glow-success: #7C9070;
+  --glow-success-soft: rgba(124, 144, 112, 0.25);
+
+  /* Glow colors - Recording (terracotta) */
+  --glow-recording: #C67D63;
+  --glow-recording-soft: rgba(198, 125, 99, 0.25);
+
+  /* Glow colors - Processing (amber) */
+  --glow-processing: #D4A574;
+  --glow-processing-soft: rgba(212, 165, 116, 0.25);
+
+  /* Fonts */
+  --font-body: 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif;
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+
+  font-family: var(--font-body);
+  line-height: 1.5;
+  font-weight: 400;
+  color-scheme: light;
+  color: var(--text-primary);
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+/* Float window transparency - override :root background */
+html.float-window,
+html.float-window body,
+html.float-window #root,
+.float-window,
+.float-window #root {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* Tauri drag region for window dragging */
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+/* Interactive elements should not be draggable */
+[data-tauri-drag-region] button,
+[data-tauri-drag-region] input,
+[data-tauri-drag-region] textarea,
+[data-tauri-drag-region] select,
+[data-tauri-drag-region] a,
+[data-tauri-drag-region] .no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--surface);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+/* Glow animations */
+@keyframes glow-pulse {
+  0%, 100% {
+    opacity: 1;
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 0.8;
+    filter: brightness(1.2);
+  }
+}
+
+@keyframes recording-wave {
+  0%, 100% {
+    transform: scaleY(0.5);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes dot-fade {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+@keyframes float-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes float-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.95);
+  }
+}
+
+.animate-glow-pulse {
+  animation: glow-pulse 2s ease-in-out infinite;
+}
+
+.animate-float-in {
+  animation: float-in 0.2s ease-out forwards;
+}
+
+.animate-float-out {
+  animation: float-out 0.2s ease-in forwards;
+}
+
+/* Recording waveform bars */
+.wave-bar {
+  animation: recording-wave 0.8s ease-in-out infinite;
+}
+.wave-bar:nth-child(1) { animation-delay: 0s; }
+.wave-bar:nth-child(2) { animation-delay: 0.1s; }
+.wave-bar:nth-child(3) { animation-delay: 0.2s; }
+.wave-bar:nth-child(4) { animation-delay: 0.3s; }
+.wave-bar:nth-child(5) { animation-delay: 0.4s; }
+.wave-bar:nth-child(6) { animation-delay: 0.5s; }
+
+/* Processing dots */
+.dot-pulse {
+  animation: dot-fade 1.2s ease-in-out infinite;
+}
+.dot-pulse:nth-child(1) { animation-delay: 0s; }
+.dot-pulse:nth-child(2) { animation-delay: 0.2s; }
+.dot-pulse:nth-child(3) { animation-delay: 0.4s; }
+
+/* Utility classes for design system */
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-body {
+  font-family: var(--font-body);
+}
+
+.text-glow-idle {
+  color: var(--glow-idle);
+}
+
+.text-glow-recording {
+  color: var(--glow-recording);
+}
+
+.text-glow-processing {
+  color: var(--glow-processing);
+}
+
+.text-glow-success {
+  color: var(--glow-success);
+}
+
+.bg-void {
+  background-color: var(--void);
+}
+
+.bg-surface {
+  background-color: var(--surface);
+}
+
+.bg-surface-elevated {
+  background-color: var(--surface-elevated);
+}
+
+.border-subtle {
+  border-color: var(--border-subtle);
+}
+
+.glow-idle {
+  box-shadow: 0 0 12px 2px var(--glow-idle), 0 0 24px var(--glow-idle-soft);
+}
+
+.glow-recording {
+  box-shadow: 0 0 12px 2px var(--glow-recording), 0 0 24px var(--glow-recording-soft);
+}
+
+.glow-processing {
+  box-shadow: 0 0 12px 2px var(--glow-processing), 0 0 24px var(--glow-processing-soft);
+}
+
+.glow-success {
+  box-shadow: 0 0 12px 2px var(--glow-success), 0 0 24px var(--glow-success-soft);
+}
+
+/* Monospace font utility */
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+/* New design system utilities */
+.bg-surface-muted {
+  background-color: var(--surface-muted);
+}
+
+/* Float pill shadows */
+.float-shadow-recording {
+  box-shadow: 0 4px 20px rgba(198, 125, 99, 0.2);
+}
+
+.float-shadow-processing {
+  box-shadow: 0 4px 20px rgba(212, 165, 116, 0.2);
+}
+
+.float-shadow-success {
+  box-shadow: 0 4px 20px rgba(124, 144, 130, 0.2);
+}
+
+/* Card shadow */
+.card-shadow {
+  box-shadow: 0 2px 30px rgba(0, 0, 0, 0.04);
+}

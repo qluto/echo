@@ -1,0 +1,61 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+target/
+
+# Tauri
+src-tauri/target/
+
+# Python
+python-engine/build/
+python-engine/dist/
+**/__pycache__/
+python-engine/*.spec
+python-engine/transcript.txt
+*.pyc
+*.pyo
+**/.venv/
+**/venv/
+
+# Conductor / Claude Code
+.context/
+.claude/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test
+coverage/
+
+# Temp files
+*.tmp
+*.temp
+
+# Sidecar binaries (built separately)
+src-tauri/binaries/*.exe
+src-tauri/binaries/*-darwin
+src-tauri/binaries/*-linux*
+
+# Model files
+*.safetensors
+*.gguf

@@ -1,0 +1,275 @@
+//! Hotkey management module
+//!
+//! This module handles global hotkey registration and events
+//! using tauri-plugin-global-shortcut.
+
+use anyhow::Result;
+use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+
+/// Register a global hotkey
+pub fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<()> {
+    // Unregister all existing hotkeys first
+    if let Err(e) = app.global_shortcut().unregister_all() {
+        log::warn!("Failed to unregister existing hotkeys: {}", e);
+    }
+
+    let shortcut: Shortcut = hotkey
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Invalid hotkey '{}': {}", hotkey, e))?;
+
+    let app_handle = app.clone();
+    app.global_shortcut()
+        .on_shortcut(shortcut, move |_app, _shortcut, event| {
+            match event.state() {
+                ShortcutState::Pressed => {
+                    handle_hotkey_pressed(&app_handle);
+                }
+                ShortcutState::Released => {
+                    handle_hotkey_released(&app_handle);
+                }
+            }
+        })?;
+
+    app.global_shortcut().register(shortcut)?;
+    log::info!("Registered hotkey: {}", hotkey);
+
+    Ok(())
+}
+
+/// Trigger hotkey pressed event (can be called from handy_keys module)
+pub fn trigger_hotkey_pressed(app: &AppHandle) {
+    handle_hotkey_pressed(app);
+}
+
+/// Trigger hotkey released event (can be called from handy_keys module)
+pub fn trigger_hotkey_released(app: &AppHandle) {
+    handle_hotkey_released(app);
+}
+
+fn handle_hotkey_pressed(app: &AppHandle) {
+    log::info!("Hotkey pressed - starting recording");
+    app.emit(
+        "recording-state-change",
+        serde_json::json!({"state": "recording"}),
+    )
+    .ok();
+
+    // Get device name from settings
+    let device_name = if let Some(state) = app.try_state::<crate::AppState>() {
+        state
+            .settings
+            .lock()
+            .ok()
+            .and_then(|s| s.device_name.clone())
+    } else {
+        None
+    };
+
+    // Start recording
+    match crate::audio_capture::start_recording(device_name) {
+        Ok(file_path) => {
+            log::info!("Recording started: {}", file_path);
+
+            // Store file path in recording state
+            if let Some(state) = app.try_state::<crate::AppState>() {
+                if let Ok(mut recording) = state.recording_state.lock() {
+                    recording.is_recording = true;
+                    recording.current_file = Some(file_path);
+                }
+            }
+        }
+        Err(e) => {
+            log::error!("Failed to start recording: {}", e);
+            app.emit("error", e.to_string()).ok();
+            app.emit(
+                "recording-state-change",
+                serde_json::json!({"state": "idle"}),
+            )
+            .ok();
+        }
+    }
+}
+
+fn handle_hotkey_released(app: &AppHandle) {
+    log::info!("Hotkey released - stopping recording");
+    app.emit(
+        "recording-state-change",
+        serde_json::json!({"state": "transcribing"}),
+    )
+    .ok();
+
+    // Get the recorded file path and settings
+    let (file_path, language, auto_insert) =
+        if let Some(state) = app.try_state::<crate::AppState>() {
+            let file_path = state
+                .recording_state
+                .lock()
+                .ok()
+                .and_then(|mut r| {
+                    r.is_recording = false;
+                    r.current_file.take()
+                });
+            let (language, auto_insert) = state
+                .settings
+                .lock()
+                .ok()
+                .map(|s| (s.language.clone(), s.auto_insert))
+                .unwrap_or(("auto".to_string(), true));
+            (file_path, language, auto_insert)
+        } else {
+            (None, "auto".to_string(), true)
+        };
+
+    let app_clone = app.clone();
+    std::thread::spawn(move || {
+        // Stop recording
+        if let Err(e) = crate::audio_capture::stop_recording() {
+            log::error!("Failed to stop recording: {}", e);
+            app_clone.emit("error", e.to_string()).ok();
+            app_clone
+                .emit(
+                    "recording-state-change",
+                    serde_json::json!({"state": "idle"}),
+                )
+                .ok();
+            return;
+        }
+
+        // Get file path
+        let file_path = match file_path {
+            Some(path) => path,
+            None => {
+                log::error!("No recording file path");
+                app_clone.emit("error", "No recording file path").ok();
+                app_clone
+                    .emit(
+                        "recording-state-change",
+                        serde_json::json!({"state": "idle"}),
+                    )
+                    .ok();
+                return;
+            }
+        };
+
+        log::info!("Transcribing: {} with language setting: {}", file_path, language);
+
+        // Call ASR engine to transcribe
+        let transcription_result =
+            if let Some(state) = app_clone.try_state::<crate::AppState>() {
+                if let Ok(mut asr_engine) = state.asr_engine.lock() {
+                    let lang = if language == "auto" {
+                        log::info!("Language is auto, passing None to ASR engine");
+                        None
+                    } else {
+                        log::info!("Passing language '{}' to ASR engine", language);
+                        Some(language.as_str())
+                    };
+                    asr_engine.transcribe(&file_path, lang)
+                } else {
+                    Err(anyhow::anyhow!("Failed to lock ASR engine"))
+                }
+            } else {
+                Err(anyhow::anyhow!("AppState not available"))
+            };
+
+        match transcription_result {
+            Ok(result) => {
+                // Check if no speech was detected
+                let is_no_speech = result.no_speech.unwrap_or(false);
+                if is_no_speech {
+                    log::info!("No speech detected in recording, skipping transcription");
+                } else {
+                    log::info!("Transcription complete: {} chars", result.text.len());
+                }
+
+                // Emit transcription result
+                app_clone
+                    .emit(
+                        "transcription-complete",
+                        serde_json::json!({
+                            "result": result,
+                            "no_speech": is_no_speech,
+                            "error": null
+                        }),
+                    )
+                    .ok();
+
+                // Auto-insert if enabled (skip if no speech detected)
+                if auto_insert && !result.text.is_empty() && !is_no_speech {
+                    log::info!("Auto-inserting text");
+
+                    // Try to get or initialize EnigoState
+                    let enigo_state = match app_clone.try_state::<crate::EnigoState>() {
+                        Some(state) => Some(state),
+                        None => {
+                            // Try to initialize
+                            log::info!("EnigoState not available, trying to initialize...");
+                            match crate::EnigoState::new() {
+                                Ok(state) => {
+                                    app_clone.manage(state);
+                                    log::info!("Enigo initialized successfully");
+                                    app_clone.try_state::<crate::EnigoState>()
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to initialize Enigo: {} (accessibility permissions may not be granted)", e);
+                                    None
+                                }
+                            }
+                        }
+                    };
+
+                    if let Some(enigo_state) = enigo_state {
+                        match enigo_state.0.lock() {
+                            Ok(mut enigo) => {
+                                if let Err(e) = crate::clipboard::paste_via_clipboard(
+                                    &mut enigo,
+                                    &result.text,
+                                    &app_clone,
+                                ) {
+                                    log::error!("Failed to paste: {}", e);
+                                } else {
+                                    log::info!("Text inserted successfully");
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Failed to lock Enigo: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                log::error!("Transcription failed: {}", e);
+                app_clone
+                    .emit(
+                        "transcription-complete",
+                        serde_json::json!({
+                            "result": null,
+                            "error": e.to_string()
+                        }),
+                    )
+                    .ok();
+            }
+        }
+
+        // Clean up temp file
+        if let Err(e) = std::fs::remove_file(&file_path) {
+            log::warn!("Failed to delete temp file: {}", e);
+        }
+
+        app_clone
+            .emit(
+                "recording-state-change",
+                serde_json::json!({"state": "idle"}),
+            )
+            .ok();
+    });
+}
+
+/// Unregister all hotkeys
+pub fn unregister_all_hotkeys(app: &AppHandle) -> Result<()> {
+    app.global_shortcut().unregister_all()?;
+    log::info!("Unregistered all hotkeys");
+    Ok(())
+}
