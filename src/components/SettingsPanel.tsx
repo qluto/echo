@@ -315,16 +315,16 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex">
+    <div className="fixed inset-0 z-50 flex rounded-2xl overflow-hidden">
       {/* Backdrop */}
       <div
-        className="absolute inset-0 bg-black/30"
+        className="absolute inset-0 bg-black/30 rounded-2xl"
         onClick={onClose}
       />
 
       {/* Panel */}
       <div
-        className="relative ml-auto h-full w-[380px] bg-surface-muted flex flex-col overflow-hidden animate-float-in card-shadow"
+        className="relative ml-auto h-full w-[380px] bg-surface-muted flex flex-col overflow-hidden animate-float-in card-shadow rounded-2xl"
       >
         {/* Header */}
         <header className="h-[52px] flex items-center gap-3 px-5 flex-shrink-0">
