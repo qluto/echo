@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { getCurrentWindow, currentMonitor, LogicalPosition } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { emit, listen } from "@tauri-apps/api/event";
@@ -111,11 +111,20 @@ function App() {
   const [showSuccess, setShowSuccess] = useState(false);
   const floatWindowRef = useRef<WebviewWindow | null>(null);
 
-  // Remove native loading screen after React renders
-  useLayoutEffect(() => {
+  // Remove native loading screen after React has painted
+  // Using useEffect (not useLayoutEffect) ensures the React loading overlay
+  // is visible before we remove the native HTML loading screen
+  useEffect(() => {
     const appLoading = document.getElementById("app-loading");
     if (appLoading) {
-      appLoading.remove();
+      // Add fade-out animation before removing
+      appLoading.style.transition = "opacity 150ms ease-out";
+      appLoading.style.opacity = "0";
+      // Remove after animation completes
+      const timer = setTimeout(() => {
+        appLoading.remove();
+      }, 150);
+      return () => clearTimeout(timer);
     }
   }, []);
 
