@@ -166,7 +166,7 @@ class ASREngine:
         """Check if a model is a Qwen3-ASR model"""
         return "Qwen3-ASR" in model_name
 
-    def __init__(self, model_name: str = "mlx-community/Qwen3-ASR-1.7B-8bit"):
+    def __init__(self, model_name: str = "mlx-community/whisper-tiny"):
         self.model_name = model_name
         self._model_loaded = False
         self._loading = False
@@ -186,6 +186,29 @@ class ASREngine:
             "available_models": self.AVAILABLE_MODELS,
             "vad": self._vad.get_status(),
         }
+
+    def is_model_cached(self, model_name: Optional[str] = None) -> dict:
+        """Check if a model is already cached locally.
+
+        Returns:
+            dict with 'cached' (bool) and 'model_name' (str)
+        """
+        target_model = model_name or self.model_name
+        try:
+            from huggingface_hub import try_to_load_from_cache, scan_cache_dir
+            from huggingface_hub.constants import HF_HUB_CACHE
+
+            # Try to find the model in cache
+            # For MLX models, check if the config.json exists in cache
+            result = try_to_load_from_cache(target_model, "config.json")
+            is_cached = result is not None
+
+            logger.info(f"Model cache check: {target_model} -> cached={is_cached}")
+            return {"cached": is_cached, "model_name": target_model}
+        except Exception as e:
+            logger.warning(f"Failed to check cache for {target_model}: {e}")
+            # If we can't check, assume not cached to be safe
+            return {"cached": False, "model_name": target_model}
 
     def load_vad(self) -> dict:
         """Load the VAD model"""
@@ -607,6 +630,14 @@ def run_daemon(engine: ASREngine):
 
             elif command == "load_vad":
                 result = engine.load_vad()
+                response = {
+                    "id": request_id,
+                    "result": result
+                }
+
+            elif command == "is_model_cached":
+                model_name = request.get("model_name")
+                result = engine.is_model_cached(model_name)
                 response = {
                     "id": request_id,
                     "result": result

@@ -125,6 +125,35 @@ export async function loadAsrModel(): Promise<ModelStatus> {
   return invoke("load_asr_model");
 }
 
+/**
+ * Load ASR model asynchronously in background thread.
+ * This function returns immediately and emits events when complete.
+ * Listen for "model-load-complete" or "model-load-error" events.
+ */
+export async function loadAsrModelAsync(): Promise<void> {
+  return invoke("load_asr_model_async");
+}
+
+export interface ModelLoadErrorEvent {
+  error: string;
+}
+
+export function onModelLoadComplete(
+  callback: (status: ModelStatus) => void
+): Promise<UnlistenFn> {
+  return listen<ModelStatus>("model-load-complete", (event) => {
+    callback(event.payload);
+  });
+}
+
+export function onModelLoadError(
+  callback: (event: ModelLoadErrorEvent) => void
+): Promise<UnlistenFn> {
+  return listen<ModelLoadErrorEvent>("model-load-error", (event) => {
+    callback(event.payload);
+  });
+}
+
 // Warmup result
 export interface WarmupResult {
   success: boolean;
@@ -138,6 +167,16 @@ export async function warmupAsrModel(): Promise<WarmupResult> {
 
 export async function setAsrModel(modelName: string): Promise<ModelStatus> {
   return invoke("set_asr_model", { modelName });
+}
+
+// Model cache status
+export interface ModelCacheStatus {
+  cached: boolean;
+  model_name: string;
+}
+
+export async function isModelCached(modelName?: string): Promise<ModelCacheStatus> {
+  return invoke("is_model_cached", { modelName: modelName ?? null });
 }
 
 // Event listeners

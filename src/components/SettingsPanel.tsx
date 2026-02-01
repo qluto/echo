@@ -6,10 +6,13 @@ import {
   registerHotkey,
   getModelStatus,
   setAsrModel,
-  loadAsrModel,
+  loadAsrModelAsync,
+  isModelCached,
   startHotkeyRecording,
   stopHotkeyRecording,
   onHandyKeysEvent,
+  onModelLoadComplete,
+  onModelLoadError,
   AppSettings,
   AudioDevice,
   HandyKeysEvent,
@@ -46,8 +49,8 @@ const MODEL_SIZES: Record<string, string> = {
 
 // Model display order (for UI)
 const MODEL_ORDER = [
-  "mlx-community/Qwen3-ASR-1.7B-8bit",
   "mlx-community/Qwen3-ASR-0.6B-8bit",
+  "mlx-community/Qwen3-ASR-1.7B-8bit",
   "mlx-community/whisper-large-v3-turbo",
   "mlx-community/whisper-large-v3",
   "mlx-community/whisper-medium",
@@ -88,11 +91,11 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     model_name: null,
   });
   const [devices, setDevices] = useState<AudioDevice[]>([]);
-  const [modelName, setModelName] = useState<string>("mlx-community/Qwen3-ASR-1.7B-8bit");
+  const [modelName, setModelName] = useState<string>("mlx-community/whisper-tiny");
   const [availableModels, setAvailableModels] = useState<string[]>(MODEL_ORDER);
   const [isLoading, setIsLoading] = useState(true);
   const [isModelChanging, setIsModelChanging] = useState(false);
-  const [modelChangePhase, setModelChangePhase] = useState<"idle" | "switching" | "loading">("idle");
+  const [modelChangePhase, setModelChangePhase] = useState<"idle" | "switching" | "downloading" | "loading">("idle");
   const [hotkeyInput, setHotkeyInput] = useState("");
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
   const [currentKeys, setCurrentKeys] = useState("");
@@ -149,15 +152,24 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       await setAsrModel(newModel);
       setModelName(newModel);
 
-      // Load the new model
-      setModelChangePhase("loading");
-      await loadAsrModel();
+      // Check if model is cached to show appropriate status
+      const cacheStatus = await isModelCached(newModel);
+      if (cacheStatus.cached) {
+        setModelChangePhase("loading");
+        console.log("Model is cached, loading from local storage...");
+      } else {
+        setModelChangePhase("downloading");
+        console.log("Model not cached, downloading...");
+      }
+
+      // Start loading in background - completion handled by event listener
+      await loadAsrModelAsync();
     } catch (e) {
-      console.error("Failed to change model:", e);
-    } finally {
+      console.error("Failed to start model change:", e);
       setIsModelChanging(false);
       setModelChangePhase("idle");
     }
+    // Note: Don't reset state here - event listener will handle completion
   };
 
   const handleSettingChange = async <K extends keyof AppSettings>(
@@ -172,6 +184,39 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       console.error("Failed to save settings:", e);
     }
   };
+
+  // Listen for model load completion/error events
+  useEffect(() => {
+    let mounted = true;
+
+    const setupListeners = async () => {
+      const unlistenComplete = await onModelLoadComplete(() => {
+        if (!mounted) return;
+        console.log("Model load complete");
+        setIsModelChanging(false);
+        setModelChangePhase("idle");
+      });
+
+      const unlistenError = await onModelLoadError((event) => {
+        if (!mounted) return;
+        console.error("Model load error:", event.error);
+        setIsModelChanging(false);
+        setModelChangePhase("idle");
+      });
+
+      return () => {
+        unlistenComplete();
+        unlistenError();
+      };
+    };
+
+    const cleanupPromise = setupListeners();
+
+    return () => {
+      mounted = false;
+      cleanupPromise.then((cleanup) => cleanup?.());
+    };
+  }, []);
 
   // Cancel recording mode
   const cancelRecording = useCallback(async () => {
@@ -431,7 +476,9 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                         >
                           {modelChangePhase === "switching"
                             ? "Switching..."
-                            : "Loading model..."}
+                            : modelChangePhase === "downloading"
+                            ? "Downloading..."
+                            : "Loading..."}
                         </span>
                       </div>
                     ) : (

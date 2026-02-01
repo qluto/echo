@@ -21,8 +21,8 @@ Offline voice input desktop application optimized for Apple Silicon
 ## Supported Models
 
 ### Qwen3-ASR (Recommended)
-- `Qwen3-ASR-1.7B-8bit` - High accuracy, 52 languages supported (default)
-- `Qwen3-ASR-0.6B-8bit` - Lightweight, faster inference
+- `Qwen3-ASR-0.6B-8bit` - Lightweight, faster inference (default)
+- `Qwen3-ASR-1.7B-8bit` - High accuracy, 52 languages supported
 
 ### Whisper (OpenAI)
 - `whisper-large-v3-turbo` - Balanced performance
