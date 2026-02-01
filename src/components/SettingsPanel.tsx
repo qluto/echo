@@ -91,7 +91,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     model_name: null,
   });
   const [devices, setDevices] = useState<AudioDevice[]>([]);
-  const [modelName, setModelName] = useState<string>("mlx-community/whisper-tiny");
+  const [modelName, setModelName] = useState<string>("mlx-community/Qwen3-ASR-0.6B-8bit");
   const [availableModels, setAvailableModels] = useState<string[]>(MODEL_ORDER);
   const [isLoading, setIsLoading] = useState(true);
   const [isModelChanging, setIsModelChanging] = useState(false);
