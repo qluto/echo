@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -267,6 +268,123 @@ class ASREngine:
             logger.error(self._load_error)
             return {"success": False, "error": self._load_error}
 
+    def _generate_warmup_audio(self) -> str:
+        """Generate a short silent audio file for warmup.
+
+        Returns:
+            Path to the temporary audio file.
+        """
+        import numpy as np
+        import soundfile as sf
+
+        # Generate 0.5 seconds of silence at 16kHz (standard ASR sample rate)
+        sample_rate = 16000
+        duration = 0.5
+        samples = int(sample_rate * duration)
+        # Use very small random noise instead of pure silence
+        # This ensures audio processing paths are exercised
+        audio = np.random.randn(samples).astype(np.float32) * 0.001
+
+        # Write to temp file
+        fd, temp_path = tempfile.mkstemp(suffix='.wav', prefix='echo_warmup_')
+        os.close(fd)
+        sf.write(temp_path, audio, sample_rate)
+
+        return temp_path
+
+    def warmup_model(self) -> dict:
+        """Warm up the model by running inference on dummy audio.
+
+        This triggers JIT compilation of Metal kernels, making the first
+        real transcription much faster.
+
+        Returns:
+            dict with success status and warmup_time_ms
+        """
+        if not self._model_loaded:
+            return {"success": False, "error": "Model not loaded"}
+
+        temp_path = None
+        try:
+            logger.info("Starting model warmup...")
+            start_time = time.time()
+
+            # Generate warmup audio
+            temp_path = self._generate_warmup_audio()
+
+            # Run inference to trigger JIT compilation
+            if self._model_type == "qwen3":
+                # Qwen3-ASR warmup
+                self._model.generate(temp_path)
+            else:
+                # Whisper warmup
+                self._generate_fn(
+                    self._model,
+                    temp_path,
+                    language=None,
+                    output_path=None,
+                )
+
+            warmup_time_ms = (time.time() - start_time) * 1000
+            logger.info(f"Model warmup complete in {warmup_time_ms:.0f}ms")
+
+            return {
+                "success": True,
+                "warmup_time_ms": warmup_time_ms
+            }
+
+        except Exception as e:
+            logger.warning(f"Model warmup failed (non-critical): {e}")
+            return {"success": False, "error": str(e)}
+
+        finally:
+            # Clean up temp file
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+
+    def warmup_vad(self) -> dict:
+        """Warm up the VAD model with dummy audio.
+
+        Returns:
+            dict with success status and warmup_time_ms
+        """
+        if not self._vad._loaded:
+            return {"success": False, "error": "VAD not loaded"}
+
+        temp_path = None
+        try:
+            logger.info("Starting VAD warmup...")
+            start_time = time.time()
+
+            # Generate warmup audio
+            temp_path = self._generate_warmup_audio()
+
+            # Run VAD to trigger JIT compilation
+            self._vad.has_speech(temp_path)
+
+            warmup_time_ms = (time.time() - start_time) * 1000
+            logger.info(f"VAD warmup complete in {warmup_time_ms:.0f}ms")
+
+            return {
+                "success": True,
+                "warmup_time_ms": warmup_time_ms
+            }
+
+        except Exception as e:
+            logger.warning(f"VAD warmup failed (non-critical): {e}")
+            return {"success": False, "error": str(e)}
+
+        finally:
+            # Clean up temp file
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+
     def transcribe(self, audio_path: str, language: Optional[str] = None) -> dict:
         """Transcribe an audio file"""
         logger.info(f"Transcribe called with language={language}")
@@ -489,6 +607,20 @@ def run_daemon(engine: ASREngine):
 
             elif command == "load_vad":
                 result = engine.load_vad()
+                response = {
+                    "id": request_id,
+                    "result": result
+                }
+
+            elif command == "warmup_model":
+                result = engine.warmup_model()
+                response = {
+                    "id": request_id,
+                    "result": result
+                }
+
+            elif command == "warmup_vad":
+                result = engine.warmup_vad()
                 response = {
                     "id": request_id,
                     "result": result

@@ -125,6 +125,17 @@ export async function loadAsrModel(): Promise<ModelStatus> {
   return invoke("load_asr_model");
 }
 
+// Warmup result
+export interface WarmupResult {
+  success: boolean;
+  warmup_time_ms: number | null;
+  error: string | null;
+}
+
+export async function warmupAsrModel(): Promise<WarmupResult> {
+  return invoke("warmup_asr_model");
+}
+
 export async function setAsrModel(modelName: string): Promise<ModelStatus> {
   return invoke("set_asr_model", { modelName });
 }
