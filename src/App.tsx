@@ -11,6 +11,7 @@ import {
   getModelStatus,
   loadAsrModel,
   warmupAsrModel,
+  isModelCached,
   getSettings,
   requestAccessibilityPermission,
   openAccessibilitySettings,
@@ -22,6 +23,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 type LoadingPhase =
   | "idle"
   | "starting_engine"
+  | "downloading_model"
   | "loading_model"
   | "loading_vad"
   | "warming_up"
@@ -31,6 +33,7 @@ type LoadingPhase =
 const LOADING_MESSAGES: Record<LoadingPhase, string> = {
   idle: "Initializing...",
   starting_engine: "Starting engine...",
+  downloading_model: "Downloading model...",
   loading_model: "Loading model...",
   loading_vad: "Preparing...",
   warming_up: "Warming up...",
@@ -49,7 +52,7 @@ function App() {
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [loadingPhase, setLoadingPhase] = useState<LoadingPhase>("idle");
-  const [modelName, setModelName] = useState<string>("mlx-community/Qwen3-ASR-1.7B-8bit");
+  const [modelName, setModelName] = useState<string>("mlx-community/whisper-tiny");
   const [hotkey, setHotkey] = useState<string>("command+shift+space");
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
   const [showRestartPrompt, setShowRestartPrompt] = useState(false);
@@ -277,12 +280,11 @@ function App() {
       }
 
       const status = await getModelStatus();
-      setModelName(status.model_name || "mlx-community/Qwen3-ASR-1.7B-8bit");
+      setModelName(status.model_name || "mlx-community/whisper-tiny");
 
       if (status.loaded) {
         setLoadingPhase("ready");
       } else {
-        setLoadingPhase("loading_model");
         await loadModel();
       }
     } catch (e) {
@@ -292,10 +294,19 @@ function App() {
   };
 
   const loadModel = async () => {
-    setLoadingPhase("loading_model");
     try {
+      // Check if model is cached to show appropriate loading message
+      const cacheStatus = await isModelCached();
+      if (cacheStatus.cached) {
+        setLoadingPhase("loading_model");
+        console.log("Model is cached, loading from local storage...");
+      } else {
+        setLoadingPhase("downloading_model");
+        console.log("Model not cached, downloading...");
+      }
+
       const status = await loadAsrModel();
-      setModelName(status.model_name || "mlx-community/Qwen3-ASR-1.7B-8bit");
+      setModelName(status.model_name || "mlx-community/whisper-tiny");
 
       // Warmup the model to trigger JIT compilation
       setLoadingPhase("warming_up");
@@ -433,8 +444,10 @@ function App() {
           >
             {loadingPhase === "starting_engine"
               ? "Initializing speech recognition..."
+              : loadingPhase === "downloading_model"
+              ? "First-time setup: downloading ~600MB"
               : loadingPhase === "loading_model"
-              ? "This may take a moment on first launch"
+              ? "Loading from local cache..."
               : loadingPhase === "warming_up"
               ? "Preparing for faster transcription..."
               : "Almost ready..."}

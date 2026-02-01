@@ -19,7 +19,7 @@ use tauri::{
 use tauri_plugin_store::StoreExt;
 
 pub use input::EnigoState;
-pub use transcription::{ASREngine, ModelStatus, WarmupResult};
+pub use transcription::{ASREngine, ModelCacheStatus, ModelStatus, WarmupResult};
 
 /// Application settings
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -385,6 +385,50 @@ fn load_asr_model(state: tauri::State<'_, AppState>) -> Result<ModelStatus, Stri
     Ok(result)
 }
 
+/// Async version that runs model loading in background thread
+/// Emits "model-load-complete" or "model-load-error" events when done
+#[tauri::command]
+async fn load_asr_model_async(app: tauri::AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let mut asr_engine = match state.asr_engine.lock() {
+            Ok(e) => e,
+            Err(e) => {
+                log::error!("Failed to lock ASR engine: {}", e);
+                let _ = app_handle.emit(
+                    "model-load-error",
+                    serde_json::json!({ "error": e.to_string() }),
+                );
+                return;
+            }
+        };
+
+        log::info!("Starting background model load...");
+        match asr_engine.load_model() {
+            Ok(status) => {
+                // Also load VAD model
+                if let Err(e) = asr_engine.load_vad() {
+                    log::warn!("Failed to load VAD model (VAD will be disabled): {}", e);
+                }
+
+                log::info!("Model loaded successfully: {}", status.model_name);
+                let _ = app_handle.emit("model-load-complete", &status);
+            }
+            Err(e) => {
+                log::error!("Failed to load model: {}", e);
+                let _ = app_handle.emit(
+                    "model-load-error",
+                    serde_json::json!({ "error": e.to_string() }),
+                );
+            }
+        }
+    });
+
+    Ok(())
+}
+
 #[tauri::command]
 fn warmup_asr_model(state: tauri::State<'_, AppState>) -> Result<WarmupResult, String> {
     let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
@@ -414,6 +458,14 @@ fn set_asr_model(model_name: String, app: tauri::AppHandle, state: tauri::State<
     save_settings_to_store(&app, &settings_clone)?;
 
     Ok(result)
+}
+
+#[tauri::command]
+fn is_model_cached(model_name: Option<String>, state: tauri::State<'_, AppState>) -> Result<ModelCacheStatus, String> {
+    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
+    asr_engine
+        .is_model_cached(model_name.as_deref())
+        .map_err(|e| e.to_string())
 }
 
 /// Check if accessibility permissions are granted
@@ -654,8 +706,10 @@ pub fn run() {
             stop_asr_engine,
             get_model_status,
             load_asr_model,
+            load_asr_model_async,
             warmup_asr_model,
             set_asr_model,
+            is_model_cached,
             check_accessibility_permission,
             request_accessibility_permission,
             open_accessibility_settings,

@@ -9,6 +9,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager};
 
 use crate::{TranscriptionResult, TranscriptionSegment};
@@ -108,6 +109,27 @@ struct WarmupResponseResult {
     success: Option<bool>,
     warmup_time_ms: Option<f64>,
     error: Option<String>,
+}
+
+/// Model cache check result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelCacheStatus {
+    pub cached: bool,
+    pub model_name: String,
+}
+
+/// Cache check response from the engine
+#[derive(Debug, Deserialize)]
+struct CacheCheckResponse {
+    id: Option<u64>,
+    result: Option<CacheCheckResult>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CacheCheckResult {
+    cached: Option<bool>,
+    model_name: Option<String>,
 }
 
 /// Process handle with I/O streams
@@ -220,12 +242,31 @@ impl ASREngine {
 
         log::info!("Starting ASR engine: {} {:?}", program, args);
 
-        // Build command - no special environment needed for self-contained binary
+        // Get app cache directory for model storage
+        // This ensures models are stored in ~/Library/Caches/io.qluto.echo/huggingface
+        // so they get removed when the app is uninstalled
+        let cache_dir = app
+            .path()
+            .resolve("huggingface", BaseDirectory::AppCache)
+            .map_err(|e| anyhow!("Failed to resolve cache directory: {}", e))?;
+
+        // Create cache directory if it doesn't exist
+        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+            log::warn!("Failed to create cache directory {:?}: {}", cache_dir, e);
+        }
+
+        log::info!("Using model cache directory: {:?}", cache_dir);
+
+        // Build command with cache environment variables
+        // HF_HOME: Hugging Face Hub cache (Whisper, Qwen3-ASR models)
+        // TORCH_HOME: PyTorch Hub cache (Silero VAD model)
         let mut cmd = Command::new(&program);
         cmd.args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit()); // Let stderr pass through for logging
+            .stderr(Stdio::inherit()) // Let stderr pass through for logging
+            .env("HF_HOME", &cache_dir)
+            .env("TORCH_HOME", &cache_dir);
 
         let mut child = cmd
             .spawn()
@@ -369,6 +410,45 @@ impl ASREngine {
             loading: result.loading.unwrap_or(false),
             error: result.error,
             available_models: result.available_models.unwrap_or_default(),
+        })
+    }
+
+    /// Check if a model is cached locally
+    pub fn is_model_cached(&mut self, model_name: Option<&str>) -> Result<ModelCacheStatus> {
+        let process = match self.process.as_mut() {
+            Some(p) => p,
+            None => {
+                return Err(anyhow!("Engine not running"));
+            }
+        };
+
+        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        let request = ASRRequest {
+            command: "is_model_cached".to_string(),
+            id,
+            audio_path: None,
+            language: None,
+            model_name: model_name.map(|s| s.to_string()),
+        };
+
+        let json = serde_json::to_string(&request)?;
+        writeln!(process.stdin, "{}", json)?;
+        process.stdin.flush()?;
+
+        let mut line = String::new();
+        process.stdout.read_line(&mut line)?;
+
+        let response: CacheCheckResponse = serde_json::from_str(&line)?;
+
+        if let Some(error) = response.error {
+            return Err(anyhow!("Failed to check cache: {}", error));
+        }
+
+        let result = response.result.ok_or_else(|| anyhow!("No result in response"))?;
+
+        Ok(ModelCacheStatus {
+            cached: result.cached.unwrap_or(false),
+            model_name: result.model_name.unwrap_or_else(|| "unknown".to_string()),
         })
     }
 

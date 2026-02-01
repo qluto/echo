@@ -96,8 +96,8 @@ Two model families are supported with different MLX-Audio APIs:
 ### Available Models
 
 Qwen3-ASR (recommended for accuracy):
-- `mlx-community/Qwen3-ASR-1.7B-8bit` (default)
-- `mlx-community/Qwen3-ASR-0.6B-8bit`
+- `mlx-community/Qwen3-ASR-0.6B-8bit` (default)
+- `mlx-community/Qwen3-ASR-1.7B-8bit`
 
 Whisper:
 - `mlx-community/whisper-large-v3-turbo`
@@ -110,6 +110,15 @@ Whisper:
 ### macOS Permissions
 
 Microphone access requires `NSMicrophoneUsageDescription` in `src-tauri/Info.plist`.
+
+### Model Cache Location
+
+Models are cached in the app-managed directory:
+- **macOS**: `~/Library/Caches/io.qluto.echo/huggingface/`
+
+This ensures models are removed when the app is uninstalled. The following environment variables are set when starting the Python engine:
+- `HF_HOME`: Hugging Face Hub cache (Whisper, Qwen3-ASR models)
+- `TORCH_HOME`: PyTorch Hub cache (Silero VAD model)
 
 ## Build & Release Process
 
