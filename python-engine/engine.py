@@ -165,7 +165,7 @@ class ASREngine:
         """Check if a model is a Qwen3-ASR model"""
         return "Qwen3-ASR" in model_name
 
-    def __init__(self, model_name: str = "mlx-community/whisper-large-v3-turbo"):
+    def __init__(self, model_name: str = "mlx-community/Qwen3-ASR-1.7B-8bit"):
         self.model_name = model_name
         self._model_loaded = False
         self._loading = False

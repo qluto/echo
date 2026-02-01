@@ -88,10 +88,11 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     model_name: null,
   });
   const [devices, setDevices] = useState<AudioDevice[]>([]);
-  const [modelName, setModelName] = useState<string>("mlx-community/whisper-large-v3-turbo");
+  const [modelName, setModelName] = useState<string>("mlx-community/Qwen3-ASR-1.7B-8bit");
   const [availableModels, setAvailableModels] = useState<string[]>(MODEL_ORDER);
   const [isLoading, setIsLoading] = useState(true);
   const [isModelChanging, setIsModelChanging] = useState(false);
+  const [modelChangePhase, setModelChangePhase] = useState<"idle" | "switching" | "loading">("idle");
   const [hotkeyInput, setHotkeyInput] = useState("");
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
   const [currentKeys, setCurrentKeys] = useState("");
@@ -142,17 +143,20 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     if (newModel === modelName || isModelChanging) return;
 
     setIsModelChanging(true);
+    setModelChangePhase("switching");
     try {
       // Set the new model (this unloads the current one)
       await setAsrModel(newModel);
       setModelName(newModel);
 
       // Load the new model
+      setModelChangePhase("loading");
       await loadAsrModel();
     } catch (e) {
       console.error("Failed to change model:", e);
     } finally {
       setIsModelChanging(false);
+      setModelChangePhase("idle");
     }
   };
 
@@ -425,7 +429,9 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                           className="font-mono text-xs"
                           style={{ color: "var(--text-tertiary)" }}
                         >
-                          Loading...
+                          {modelChangePhase === "switching"
+                            ? "Switching..."
+                            : "Loading model..."}
                         </span>
                       </div>
                     ) : (

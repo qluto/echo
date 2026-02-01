@@ -88,11 +88,11 @@ Two model families are supported with different MLX-Audio APIs:
 ### Available Models
 
 Qwen3-ASR (recommended for accuracy):
-- `mlx-community/Qwen3-ASR-1.7B-8bit`
+- `mlx-community/Qwen3-ASR-1.7B-8bit` (default)
 - `mlx-community/Qwen3-ASR-0.6B-8bit`
 
 Whisper:
-- `mlx-community/whisper-large-v3-turbo` (default)
+- `mlx-community/whisper-large-v3-turbo`
 - `mlx-community/whisper-large-v3`
 - `mlx-community/whisper-medium`
 - `mlx-community/whisper-small`

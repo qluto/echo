@@ -18,7 +18,24 @@ import {
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 type EngineStatus = "starting" | "ready" | "error";
-type ModelLoadStatus = "not_loaded" | "loading" | "loaded" | "error";
+
+// Detailed loading phase for user feedback
+type LoadingPhase =
+  | "idle"
+  | "starting_engine"
+  | "loading_model"
+  | "loading_vad"
+  | "ready"
+  | "error";
+
+const LOADING_MESSAGES: Record<LoadingPhase, string> = {
+  idle: "Initializing...",
+  starting_engine: "Starting engine...",
+  loading_model: "Loading model...",
+  loading_vad: "Preparing...",
+  ready: "Ready",
+  error: "Error",
+};
 
 function App() {
   const {
@@ -31,8 +48,8 @@ function App() {
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [engineStatus, setEngineStatus] = useState<EngineStatus>("starting");
-  const [modelStatus, setModelStatus] = useState<ModelLoadStatus>("not_loaded");
-  const [modelName, setModelName] = useState<string>("mlx-community/whisper-large-v3-turbo");
+  const [loadingPhase, setLoadingPhase] = useState<LoadingPhase>("idle");
+  const [modelName, setModelName] = useState<string>("mlx-community/Qwen3-ASR-1.7B-8bit");
   const [hotkey, setHotkey] = useState<string>("command+shift+space");
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
   const [showRestartPrompt, setShowRestartPrompt] = useState(false);
@@ -233,7 +250,7 @@ function App() {
 
   const initializeEngine = async () => {
     setEngineStatus("starting");
-    setModelStatus("not_loaded");
+    setLoadingPhase("starting_engine");
 
     try {
       const isReady = await pingAsrEngine();
@@ -245,28 +262,30 @@ function App() {
       setEngineStatus("ready");
 
       const status = await getModelStatus();
-      setModelName(status.model_name || "mlx-community/whisper-large-v3-turbo");
+      setModelName(status.model_name || "mlx-community/Qwen3-ASR-1.7B-8bit");
 
       if (status.loaded) {
-        setModelStatus("loaded");
+        setLoadingPhase("ready");
       } else {
+        setLoadingPhase("loading_model");
         await loadModel();
       }
     } catch (e) {
       console.error("Failed to initialize engine:", e);
       setEngineStatus("error");
+      setLoadingPhase("error");
     }
   };
 
   const loadModel = async () => {
-    setModelStatus("loading");
+    setLoadingPhase("loading_model");
     try {
       const status = await loadAsrModel();
-      setModelName(status.model_name || "mlx-community/whisper-large-v3-turbo");
-      setModelStatus("loaded");
+      setModelName(status.model_name || "mlx-community/Qwen3-ASR-1.7B-8bit");
+      setLoadingPhase("ready");
     } catch (e) {
       console.error("Failed to load model:", e);
-      setModelStatus("error");
+      setLoadingPhase("error");
     }
   };
 
@@ -306,8 +325,96 @@ function App() {
     return lastSegment.end;
   };
 
+  // Show loading overlay during initial startup
+  const isInitializing =
+    loadingPhase !== "ready" && loadingPhase !== "error" && engineStatus !== "ready";
+
   return (
     <div className="h-screen bg-surface-muted flex flex-col rounded-2xl overflow-hidden select-none card-shadow border border-subtle">
+      {/* Loading Overlay - shown during initial startup */}
+      {isInitializing && (
+        <div className="absolute inset-0 z-50 bg-surface-muted flex flex-col items-center justify-center gap-6 rounded-2xl">
+          {/* Logo */}
+          <div className="flex flex-col items-center gap-4">
+            <div
+              className="w-16 h-16 rounded-2xl overflow-hidden animate-pulse"
+              style={{ backgroundColor: "#7C9082" }}
+            >
+              <svg viewBox="0 0 64 64" className="w-full h-full">
+                <ellipse
+                  cx="32"
+                  cy="32"
+                  rx="24"
+                  ry="24"
+                  fill="none"
+                  stroke="white"
+                  strokeOpacity="0.25"
+                  strokeWidth="2"
+                />
+                <ellipse
+                  cx="32"
+                  cy="32"
+                  rx="17"
+                  ry="17"
+                  fill="none"
+                  stroke="white"
+                  strokeOpacity="0.44"
+                  strokeWidth="2"
+                />
+                <ellipse
+                  cx="32"
+                  cy="32"
+                  rx="10"
+                  ry="10"
+                  fill="none"
+                  stroke="white"
+                  strokeOpacity="0.63"
+                  strokeWidth="2"
+                />
+                <ellipse cx="32" cy="32" rx="5" ry="5" fill="white" />
+              </svg>
+            </div>
+            <span
+              className="font-display text-2xl tracking-tight"
+              style={{ color: "var(--text-primary)" }}
+            >
+              echo
+            </span>
+          </div>
+
+          {/* Loading Status */}
+          <div className="flex flex-col items-center gap-3">
+            <div className="flex items-center gap-3">
+              <div
+                className="w-4 h-4 border-2 rounded-full animate-spin"
+                style={{
+                  borderColor: "var(--border-subtle)",
+                  borderTopColor: "var(--glow-idle)",
+                }}
+              />
+              <span
+                className="text-sm font-medium"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                {LOADING_MESSAGES[loadingPhase]}
+              </span>
+            </div>
+          </div>
+
+          {/* Hint text */}
+          <p
+            className="text-xs text-center max-w-[200px]"
+            style={{ color: "var(--text-tertiary)" }}
+          >
+            {loadingPhase === "starting_engine"
+              ? "Initializing speech recognition..."
+              : loadingPhase === "loading_model"
+              ? "This may take a moment on first launch"
+              : "Almost ready..."}
+          </p>
+        </div>
+      )}
+
       {/* Header */}
       <header
         data-tauri-drag-region
@@ -614,16 +721,18 @@ function App() {
         <div className="flex items-center gap-2">
           <div
             className={`w-2 h-2 rounded-full ${
-              modelStatus === "loading" ? "animate-glow-pulse" : ""
+              loadingPhase !== "ready" && loadingPhase !== "error" && loadingPhase !== "idle"
+                ? "animate-glow-pulse"
+                : ""
             }`}
             style={{
               backgroundColor:
-                modelStatus === "loaded"
+                loadingPhase === "ready"
                   ? "var(--glow-success)"
-                  : modelStatus === "loading"
-                  ? "var(--glow-processing)"
-                  : engineStatus === "error" || modelStatus === "error"
+                  : loadingPhase === "error"
                   ? "var(--glow-recording)"
+                  : loadingPhase !== "idle"
+                  ? "var(--glow-processing)"
                   : "var(--text-tertiary)",
             }}
           />
@@ -631,22 +740,16 @@ function App() {
             className="font-mono text-xs"
             style={{
               color:
-                modelStatus === "loaded"
+                loadingPhase === "ready"
                   ? "var(--glow-success)"
-                  : modelStatus === "loading"
-                  ? "var(--glow-processing)"
-                  : engineStatus === "error" || modelStatus === "error"
+                  : loadingPhase === "error"
                   ? "var(--glow-recording)"
+                  : loadingPhase !== "idle"
+                  ? "var(--glow-processing)"
                   : "var(--text-tertiary)",
             }}
           >
-            {modelStatus === "loaded"
-              ? "ready"
-              : modelStatus === "loading"
-              ? "loading"
-              : engineStatus === "error" || modelStatus === "error"
-              ? "error"
-              : "idle"}
+            {LOADING_MESSAGES[loadingPhase]}
           </span>
         </div>
       </footer>
@@ -662,7 +765,7 @@ function App() {
             if (status.model_name) {
               setModelName(status.model_name);
             }
-            setModelStatus(status.loaded ? "loaded" : "not_loaded");
+            setLoadingPhase(status.loaded ? "ready" : "loading_model");
           } catch (e) {
             console.error("Failed to refresh model status:", e);
           }
