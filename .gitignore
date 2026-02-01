@@ -51,10 +51,10 @@ coverage/
 *.tmp
 *.temp
 
-# Sidecar binaries (built separately)
-src-tauri/binaries/*.exe
-src-tauri/binaries/*-darwin
-src-tauri/binaries/*-linux*
+# Sidecar binaries (built via python-engine/build.sh)
+# These are 350-500MB PyInstaller bundles - not committed to git
+# Run 'cd python-engine && ./build.sh' before development
+src-tauri/binaries/mlx-asr-engine-*
 
 # Model files
 *.safetensors

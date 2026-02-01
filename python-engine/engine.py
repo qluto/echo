@@ -18,6 +18,17 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+# PyInstaller bundle support: Set METAL_PATH for MLX metallib
+# Must be done BEFORE importing mlx
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    # Running as PyInstaller bundle
+    bundle_dir = sys._MEIPASS
+    metal_path = os.path.join(bundle_dir, 'mlx', 'lib')
+    if os.path.exists(metal_path):
+        os.environ['METAL_PATH'] = metal_path
+        # Also ensure the dylib can be found
+        os.environ['DYLD_LIBRARY_PATH'] = metal_path + ':' + os.environ.get('DYLD_LIBRARY_PATH', '')
+
 # Configure logging to stderr (stdout is reserved for JSON-RPC)
 logging.basicConfig(
     level=logging.INFO,
@@ -154,7 +165,7 @@ class ASREngine:
         """Check if a model is a Qwen3-ASR model"""
         return "Qwen3-ASR" in model_name
 
-    def __init__(self, model_name: str = "mlx-community/whisper-large-v3-turbo"):
+    def __init__(self, model_name: str = "mlx-community/Qwen3-ASR-1.7B-8bit"):
         self.model_name = model_name
         self._model_loaded = False
         self._loading = False
@@ -537,11 +548,24 @@ def run_single(engine: ASREngine, audio_path: str, language: Optional[str] = Non
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(__doc__)
+    # PyInstaller multiprocessing support
+    # When torch/transformers spawn subprocesses, they may call this executable
+    # with Python flags like -B. We need to handle this gracefully.
+    import multiprocessing
+    multiprocessing.freeze_support()
+
+    # Filter out Python interpreter flags that might be passed in PyInstaller bundles
+    args = [arg for arg in sys.argv[1:] if not arg.startswith('-')]
+
+    if len(args) < 1:
+        # Check if we're being called as a subprocess (no args but has Python flags)
+        if any(arg.startswith('-') for arg in sys.argv[1:]):
+            # Silently exit - this is a multiprocessing child process
+            sys.exit(0)
+        print(__doc__, file=sys.stderr)
         sys.exit(1)
 
-    mode = sys.argv[1]
+    mode = args[0]
 
     # Initialize engine (model will be loaded lazily)
     engine = ASREngine()
@@ -550,11 +574,11 @@ def main():
         # In daemon mode, model is loaded on demand via load_model command
         run_daemon(engine)
     elif mode == "single":
-        if len(sys.argv) < 3:
-            print("Usage: python engine.py single <audio_path> [language]")
+        if len(args) < 2:
+            print("Usage: python engine.py single <audio_path> [language]", file=sys.stderr)
             sys.exit(1)
-        audio_path = sys.argv[2]
-        language = sys.argv[3] if len(sys.argv) > 3 else None
+        audio_path = args[1]
+        language = args[2] if len(args) > 2 else None
         # For single mode, load model immediately
         result = engine.load_model()
         if not result.get("success"):
@@ -562,8 +586,8 @@ def main():
             sys.exit(1)
         run_single(engine, audio_path, language)
     else:
-        print(f"Unknown mode: {mode}")
-        print(__doc__)
+        print(f"Unknown mode: {mode}", file=sys.stderr)
+        print(__doc__, file=sys.stderr)
         sys.exit(1)
 
 
