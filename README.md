@@ -1,98 +1,127 @@
-# Echo - 音声入力アプリケーション
+# Echo - Voice Input Application
 
-Apple Silicon最適化されたオフライン音声入力デスクトップアプリケーション
+Offline voice input desktop application optimized for Apple Silicon
 
-## 機能
+## Features
 
-- **高精度音声認識**: MLX-Audio + Whisper/Qwen3-ASR による高精度な音声認識
-- **モデル切り替え**: Whisper と Qwen3-ASR を設定画面から切り替え可能
-- **グローバルホットキー**: システム全体で動作するショートカットキー
-- **リアルタイム文字起こし**: 録音終了後即座に文字起こし
-- **テキスト自動挿入**: 文字起こし結果を任意のアプリケーションに挿入
-- **完全オフライン**: ネットワーク不要で動作
+- **High-Accuracy Speech Recognition**: Powered by MLX-Audio with Whisper/Qwen3-ASR models
+- **Model Switching**: Switch between Whisper and Qwen3-ASR models in Settings
+- **Global Hotkey**: System-wide keyboard shortcut for instant recording
+- **Real-time Transcription**: Immediate transcription after recording ends
+- **Auto Text Insertion**: Automatically paste transcription into active applications
+- **Fully Offline**: No internet connection required - all processing happens locally
 
-## システム要件
+## System Requirements
 
-- **OS**: macOS 14.0 (Sonoma) 以降
+- **OS**: macOS 14.0 (Sonoma) or later
 - **CPU**: Apple Silicon (M1/M2/M3/M4)
-- **メモリ**: 8GB以上推奨
-- **ストレージ**: 2GB以上の空き容量（モデルサイズによる）
+- **Memory**: 8GB+ recommended
+- **Storage**: 2GB+ free space (varies by model size)
 
-## 対応モデル
+## Supported Models
 
-### Qwen3-ASR（推奨）
-- `Qwen3-ASR-1.7B-8bit` - 高精度、52言語対応（デフォルト）
-- `Qwen3-ASR-0.6B-8bit` - 軽量、高速
+### Qwen3-ASR (Recommended)
+- `Qwen3-ASR-1.7B-8bit` - High accuracy, 52 languages supported (default)
+- `Qwen3-ASR-0.6B-8bit` - Lightweight, faster inference
 
-### Whisper（OpenAI）
-- `whisper-large-v3-turbo` - バランス型
-- `whisper-large-v3` - 最高精度
-- `whisper-medium` / `small` / `base` / `tiny` - 軽量モデル
+### Whisper (OpenAI)
+- `whisper-large-v3-turbo` - Balanced performance
+- `whisper-large-v3` - Highest accuracy
+- `whisper-medium` / `small` / `base` / `tiny` - Lightweight models
 
-## 開発環境セットアップ
+## Installation
 
-### 必要なツール
+Download the latest release from the [Releases](https://github.com/qluto/echo/releases) page:
+
+1. Download the `.dmg` file
+2. Open the DMG and drag Echo to your Applications folder
+3. Launch Echo from Applications
+4. Grant microphone permissions when prompted
+
+The app is self-contained - no additional Python installation required!
+
+## Usage
+
+1. Launch the app
+2. Press and hold `Cmd+Shift+Space` to start recording
+3. Speak your message
+4. Release the key when finished
+5. Transcription appears automatically
+6. Text is auto-inserted into the active application (if enabled in Settings)
+
+## Settings
+
+Customize Echo via the Settings panel:
+
+- **ASR Model**: Choose between Qwen3-ASR or Whisper models
+- **Hotkey**: Customize the recording keyboard shortcut
+- **Recognition Language**: Auto-detect or manually specify language
+- **Input Device**: Select your preferred microphone
+- **Auto Insert**: Enable/disable automatic paste after transcription
+
+## Development Setup
+
+### Prerequisites
 
 - Node.js 20+
 - Rust 1.83+
-- Python 3.11+ (ARM native)
+- Python 3.11 (ARM native) - **Required for building the ASR engine**
 
-### インストール
+### Installation
 
 ```bash
-# Node.js依存関係のインストール
+# Install Node.js dependencies
 npm install
 
-# Rust依存関係のインストール（Tauriが自動で行います）
+# Install Rust dependencies (handled automatically by Tauri)
 cd src-tauri && cargo build
 
-# Python依存関係のインストール（ASRエンジン用）
+# Build Python ASR engine binary (required for development)
 cd python-engine
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+./build.sh  # Creates venv automatically and builds binary
 ```
 
-### 開発サーバーの起動
+### Development Server
 
 ```bash
 npm run tauri:dev
 ```
 
-### ビルド
+### Building
 
 ```bash
-# フロントエンドのビルド
+# Build frontend only
 npm run build
 
-# Tauriアプリのビルド
+# Build full Tauri application
 npm run tauri:build
+
+# Rebuild Python engine binary (after engine.py changes)
+cd python-engine && ./build.sh
 ```
 
-## 使い方
+## Tech Stack
 
-1. アプリを起動
-2. `Cmd+Shift+Space` を押し続けて録音開始
-3. 話し終わったらキーを離す
-4. 自動的に文字起こしが開始
-5. 結果が表示され、設定によっては自動でアクティブなアプリに挿入
+- **Frontend**: React 18, TypeScript, Vite, Tailwind CSS
+- **Backend**: Tauri 2.x, Rust
+- **Speech Recognition**: MLX-Audio, Whisper, Qwen3-ASR (bundled with PyInstaller)
+- **Platform**: macOS 14.0+ on Apple Silicon
 
-## 設定
+## Architecture
 
-設定画面から以下の項目をカスタマイズできます：
+Echo uses a multi-process architecture:
 
-- **ASRモデル**: Qwen3-ASR または Whisper から選択
-- **ホットキー**: 録音開始/終了のショートカット
-- **認識言語**: 自動検出または手動指定
-- **入力デバイス**: マイク選択
-- **自動挿入**: 文字起こし後の自動貼り付けの有効/無効
+1. **Tauri App (Rust)**: Main application, hotkey handling, audio capture
+2. **React Frontend**: User interface, settings management
+3. **Python ASR Engine (Sidecar)**: Standalone PyInstaller binary running MLX-Audio for speech recognition
+4. **JSON-RPC Communication**: Rust backend communicates with Python engine via stdin/stdout
 
-## 技術スタック
+The ASR engine is lazily loaded - models download on first use and remain cached locally.
 
-- **フロントエンド**: React, TypeScript, Vite, Tailwind CSS
-- **バックエンド**: Tauri 2, Rust
-- **音声認識**: MLX-Audio, Whisper, Qwen3-ASR
+## Contributing
 
-## ライセンス
+Contributions are welcome! Please feel free to submit issues or pull requests.
 
-MIT License - 詳細は [LICENSE](LICENSE) を参照
+## License
+
+MIT License - see [LICENSE](LICENSE) for details

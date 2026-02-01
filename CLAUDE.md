@@ -26,11 +26,19 @@ npm run tauri:build       # Build full desktop app
 # Frontend only
 npm run dev               # Start Vite dev server (no Tauri)
 
-# Python engine (manual testing)
+# Python engine binary build (PyInstaller)
+cd python-engine
+./build.sh                # Creates mlx-asr-engine-aarch64-apple-darwin in src-tauri/binaries/
+
+# Python engine (manual testing - requires venv)
 cd python-engine
 source venv/bin/activate
 python engine.py single <audio_path> [language]  # Single transcription
 python engine.py daemon                           # JSON-RPC mode
+
+# Release (creates tag and triggers GitHub Actions)
+git tag -a v0.x.x -m "Release v0.x.x - description"
+git push origin v0.x.x
 ```
 
 ## Architecture
@@ -47,7 +55,7 @@ python engine.py daemon                           # JSON-RPC mode
 
 ### Key Patterns
 
-- **Python Sidecar**: The ASR engine runs as a separate Python process, communicating via JSON-RPC over stdin/stdout. Managed by `transcription.rs`.
+- **Python Sidecar (PyInstaller Bundled)**: The ASR engine runs as a standalone PyInstaller binary (`mlx-asr-engine-*`), communicating via JSON-RPC over stdin/stdout. Managed by `transcription.rs`. The binary is built by `python-engine/build.sh` and placed in `src-tauri/binaries/`. Requires Python 3.11 (not 3.13 - PyInstaller compatibility issues).
 - **Lazy Model Loading**: Models are loaded on first use, not at startup. Status tracked via `ModelStatus`.
 - **Global Hotkey**: Press-and-hold recording via tauri-plugin-global-shortcut. Logic in `hotkey.rs` handles both pressed and released states.
 - **Dual Transcription Paths**: Transcription can be triggered via hotkey (handled entirely in Rust) or manual stop (via frontend hook).
@@ -103,6 +111,38 @@ Whisper:
 
 Microphone access requires `NSMicrophoneUsageDescription` in `src-tauri/Info.plist`.
 
+## Build & Release Process
+
+### Python Engine Binary Build
+
+The Python ASR engine is bundled using PyInstaller:
+- Script: `python-engine/build.sh`
+- Requirements: Python 3.11 (ARM native) - **NOT 3.13** (PyInstaller compatibility issues)
+- Output: `src-tauri/binaries/mlx-asr-engine-aarch64-apple-darwin`
+- Local: Uses/creates venv automatically
+- CI: Uses system Python (GitHub Actions on macos-14)
+
+Key dependencies bundled:
+- MLX framework (mlx.metallib, libmlx.dylib)
+- mlx-audio for speech recognition
+- Whisper/Qwen3-ASR model loaders
+
+### GitHub Actions Release Workflow
+
+Triggered by: `git push origin v*.*.*` tags
+
+Workflow steps (`.github/workflows/release.yml`):
+1. **Build Python Binary**: Runs `python-engine/build.sh` on macos-14 (Apple Silicon)
+2. **Version Update**: Syncs version in `package.json`, `tauri.conf.json`, `Cargo.toml`
+3. **Code Signing**: Imports Apple Developer certificate, signs app
+4. **Notarization**: Submits to Apple for notarization
+5. **Release Upload**: Uploads signed DMG and app bundle to GitHub Release
+
+Required secrets:
+- `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD`
+- `APPLE_SIGNING_IDENTITY`
+- `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`
+
 ## Development Notes
 
 - When modifying transcription flow, check both `hotkey.rs` (for hotkey-triggered) and `useTranscription.ts` (for manual)
@@ -110,3 +150,4 @@ Microphone access requires `NSMicrophoneUsageDescription` in `src-tauri/Info.pli
 - Temporary audio files are created in system temp directory and cleaned up after transcription
 - When adding new ASR models, update: `engine.py` (AVAILABLE_MODELS, load/transcribe logic), `SettingsPanel.tsx` (MODEL_SIZES, MODEL_ORDER), `App.tsx` (MODEL_SIZES)
 - Qwen3-ASR returns `null` for language field - Python must provide default value for Rust JSON parsing
+- Python binary must be rebuilt after `engine.py` changes: `cd python-engine && ./build.sh`
