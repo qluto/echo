@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Echo - Offline Voice Input for Apple Silicon</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        :root {
+            --color-void: #FAF8F5;
+            --color-surface: #FFFFFF;
+            --color-surface-elevated: #F7F6F3;
+            --color-text-primary: #2D2D2D;
+            --color-text-secondary: #6B6B6B;
+            --color-text-tertiary: #9A9A9A;
+            --color-border: #E8E4DF;
+            --color-border-subtle: #F0EFEC;
+            --color-accent: #7C9070;
+            --color-recording: #C67D63;
+            --color-processing: #D4A574;
+            --font-display: 'Fraunces', Georgia, serif;
+            --font-body: 'Plus Jakarta Sans', -apple-system, sans-serif;
+            --font-mono: 'IBM Plex Mono', monospace;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: var(--font-body);
+            background: var(--color-void);
+            color: var(--color-text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+            min-height: 100vh;
+        }
+
+        /* Hero Section */
+        .hero {
+            padding: 80px 30px 60px;
+            max-width: 900px;
+            margin: 0 auto;
+            opacity: 0;
+            animation: fadeInUp 0.8s ease-out 0.1s forwards;
+        }
+
+        .hero-logo {
+            width: 80px;
+            height: 80px;
+            margin-bottom: 32px;
+            opacity: 0;
+            animation: fadeInUp 0.8s ease-out 0.1s forwards;
+        }
+
+        .hero-title {
+            font-family: var(--font-display);
+            font-size: clamp(48px, 8vw, 72px);
+            font-weight: 600;
+            line-height: 1.1;
+            letter-spacing: -0.02em;
+            margin-bottom: 16px;
+            color: var(--color-text-primary);
+        }
+
+        .hero-subtitle {
+            font-family: var(--font-display);
+            font-size: clamp(18px, 2.5vw, 24px);
+            font-weight: 400;
+            color: var(--color-text-secondary);
+            margin-bottom: 32px;
+            letter-spacing: -0.01em;
+        }
+
+        .hero-description {
+            font-size: 16px;
+            max-width: 560px;
+            color: var(--color-text-secondary);
+            line-height: 1.8;
+            margin-bottom: 40px;
+        }
+
+        /* Version Badge */
+        .version-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 16px;
+            background: var(--color-surface);
+            border: 1px solid var(--color-border);
+            border-radius: 100px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: var(--color-text-secondary);
+            margin-bottom: 60px;
+        }
+
+        .version-badge .dot {
+            width: 6px;
+            height: 6px;
+            background: var(--color-accent);
+            border-radius: 50%;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        /* Features Section */
+        .features {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 0 30px 60px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 20px;
+            opacity: 0;
+            animation: fadeInUp 0.8s ease-out 0.3s forwards;
+        }
+
+        .feature {
+            padding: 24px;
+            background: var(--color-surface);
+            border: 1px solid var(--color-border);
+            border-radius: 16px;
+            transition: all 0.3s ease;
+        }
+
+        .feature:hover {
+            border-color: var(--color-border);
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.04);
+            transform: translateY(-2px);
+        }
+
+        .feature-icon {
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--color-surface-elevated);
+            border-radius: 10px;
+            margin-bottom: 16px;
+            font-size: 18px;
+            color: var(--color-accent);
+        }
+
+        .feature-title {
+            font-family: var(--font-display);
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: var(--color-text-primary);
+        }
+
+        .feature-text {
+            font-size: 14px;
+            color: var(--color-text-secondary);
+            line-height: 1.6;
+        }
+
+        /* Download Section */
+        .download-section {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 0 30px 80px;
+            opacity: 0;
+            animation: fadeInUp 0.8s ease-out 0.4s forwards;
+        }
+
+        .download-card {
+            background: var(--color-surface);
+            border: 1px solid var(--color-border);
+            border-radius: 16px;
+            padding: 40px;
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.04);
+        }
+
+        .download-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .platform-icon {
+            font-size: 32px;
+            color: var(--color-text-primary);
+        }
+
+        .download-title {
+            font-family: var(--font-display);
+            font-size: 24px;
+            font-weight: 600;
+            color: var(--color-text-primary);
+        }
+
+        .download-note {
+            font-size: 14px;
+            color: var(--color-text-secondary);
+            margin-top: 4px;
+        }
+
+        .download-options {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .download-btn {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 20px;
+            background: var(--color-surface-elevated);
+            border: 1px solid var(--color-border);
+            border-radius: 12px;
+            color: var(--color-text-primary);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 15px;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            font-family: var(--font-body);
+        }
+
+        .download-btn:hover {
+            background: var(--color-text-primary);
+            border-color: var(--color-text-primary);
+            color: var(--color-surface);
+        }
+
+        .download-btn .arrow {
+            font-family: var(--font-mono);
+            font-size: 13px;
+            color: var(--color-text-tertiary);
+            transition: all 0.3s ease;
+        }
+
+        .download-btn:hover .arrow {
+            color: var(--color-surface);
+        }
+
+        .download-btn[href="#"] {
+            opacity: 0.4;
+            pointer-events: none;
+        }
+
+        /* Requirements Section */
+        .requirements {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 0 30px 60px;
+            opacity: 0;
+            animation: fadeInUp 0.8s ease-out 0.5s forwards;
+        }
+
+        .requirements-title {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--color-text-tertiary);
+            margin-bottom: 16px;
+        }
+
+        .requirements-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 24px;
+        }
+
+        .requirement {
+            font-family: var(--font-mono);
+            font-size: 13px;
+            color: var(--color-text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .requirement-icon {
+            color: var(--color-accent);
+        }
+
+        /* Footer */
+        .footer {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 40px 30px;
+            border-top: 1px solid var(--color-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+
+        .footer-links {
+            display: flex;
+            gap: 24px;
+            flex-wrap: wrap;
+        }
+
+        .footer-link {
+            color: var(--color-text-secondary);
+            text-decoration: none;
+            font-size: 14px;
+            transition: color 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .footer-link:hover {
+            color: var(--color-text-primary);
+        }
+
+        .footer-copyright {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: var(--color-text-tertiary);
+        }
+
+        /* Animations */
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.4;
+            }
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .hero {
+                padding: 60px 20px 40px;
+            }
+
+            .features {
+                padding: 0 20px 40px;
+                grid-template-columns: 1fr;
+            }
+
+            .download-section {
+                padding: 0 20px 60px;
+            }
+
+            .download-card {
+                padding: 24px;
+            }
+
+            .requirements {
+                padding: 0 20px 40px;
+            }
+
+            .requirements-list {
+                flex-direction: column;
+                gap: 12px;
+            }
+
+            .footer {
+                padding: 30px 20px;
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .footer-links {
+                flex-direction: column;
+                gap: 12px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="hero">
+        <svg class="hero-logo" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Sage green rounded square background -->
+            <rect x="0" y="0" width="100" height="100" rx="22" fill="#7C9082"/>
+            <!-- Wave rings -->
+            <ellipse cx="50" cy="50" rx="36" ry="36" stroke="rgba(255,255,255,0.3)" stroke-width="2" fill="none"/>
+            <ellipse cx="50" cy="50" rx="28" ry="28" stroke="rgba(255,255,255,0.5)" stroke-width="2.5" fill="none"/>
+            <ellipse cx="50" cy="50" rx="20" ry="20" stroke="rgba(255,255,255,0.7)" stroke-width="3" fill="none"/>
+            <!-- Center core with glow -->
+            <ellipse cx="50" cy="50" rx="12" ry="12" fill="#FFFFFF"/>
+        </svg>
+        <h1 class="hero-title">Echo</h1>
+        <p class="hero-subtitle">Offline Voice Input for Apple Silicon</p>
+        <p class="hero-description">
+            Transform your voice into text instantly, entirely on your Mac.
+            Echo uses MLX-optimized speech recognition models to deliver
+            fast, accurate transcription without sending a single byte to the cloud.
+            Press a hotkey, speak, and watch your words appear in any application.
+        </p>
+        <div class="version-badge">
+            <span class="dot"></span>
+            <span id="version-text">Checking latest version...</span>
+        </div>
+    </div>
+
+    <div class="features">
+        <div class="feature">
+            <div class="feature-icon"><i class="fa-solid fa-lock"></i></div>
+            <h3 class="feature-title">Fully Offline</h3>
+            <p class="feature-text">All processing happens locally on your Mac. No internet required, no data leaves your device.</p>
+        </div>
+        <div class="feature">
+            <div class="feature-icon"><i class="fa-solid fa-bolt"></i></div>
+            <h3 class="feature-title">Apple Silicon Native</h3>
+            <p class="feature-text">Optimized for Apple Silicon using MLX framework for lightning-fast inference.</p>
+        </div>
+        <div class="feature">
+            <div class="feature-icon"><i class="fa-solid fa-keyboard"></i></div>
+            <h3 class="feature-title">Global Hotkey</h3>
+            <p class="feature-text">Press and hold a system-wide shortcut to record from anywhere. Release to transcribe.</p>
+        </div>
+        <div class="feature">
+            <div class="feature-icon"><i class="fa-solid fa-paste"></i></div>
+            <h3 class="feature-title">Auto Insert</h3>
+            <p class="feature-text">Transcribed text is automatically pasted into your active application.</p>
+        </div>
+        <div class="feature">
+            <div class="feature-icon"><i class="fa-solid fa-language"></i></div>
+            <h3 class="feature-title">50+ Languages</h3>
+            <p class="feature-text">Support for major world languages with automatic language detection.</p>
+        </div>
+        <div class="feature">
+            <div class="feature-icon"><i class="fa-solid fa-sliders"></i></div>
+            <h3 class="feature-title">Model Choice</h3>
+            <p class="feature-text">Choose between Whisper and Qwen3-ASR models based on your accuracy and speed needs.</p>
+        </div>
+    </div>
+
+    <div class="download-section">
+        <div class="download-card">
+            <div class="download-header">
+                <i class="fa-brands fa-apple platform-icon"></i>
+                <div>
+                    <h2 class="download-title">Download for macOS</h2>
+                    <p class="download-note">Requires macOS 14.0+ and Apple Silicon</p>
+                </div>
+            </div>
+            <div class="download-options">
+                <a href="#" class="download-btn" id="macos-apple-silicon">
+                    <span>Download DMG</span>
+                    <span class="arrow">Apple Silicon</span>
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <div class="requirements">
+        <h3 class="requirements-title">System Requirements</h3>
+        <div class="requirements-list">
+            <div class="requirement">
+                <span class="requirement-icon"><i class="fa-solid fa-check"></i></span>
+                <span>macOS 14.0 (Sonoma) or later</span>
+            </div>
+            <div class="requirement">
+                <span class="requirement-icon"><i class="fa-solid fa-check"></i></span>
+                <span>Apple Silicon</span>
+            </div>
+            <div class="requirement">
+                <span class="requirement-icon"><i class="fa-solid fa-check"></i></span>
+                <span>8GB+ RAM recommended</span>
+            </div>
+            <div class="requirement">
+                <span class="requirement-icon"><i class="fa-solid fa-check"></i></span>
+                <span>2GB+ free storage</span>
+            </div>
+        </div>
+    </div>
+
+    <footer class="footer">
+        <div class="footer-links">
+            <a href="https://github.com/qluto/echo/releases" class="footer-link" target="_blank">
+                <i class="fa-solid fa-box"></i>
+                <span>All Releases</span>
+            </a>
+            <a href="https://github.com/qluto/echo" class="footer-link" target="_blank">
+                <i class="fa-brands fa-github"></i>
+                <span>GitHub</span>
+            </a>
+        </div>
+    </footer>
+
+    <script>
+        // GitHub Releases API Integration
+        async function loadLatestRelease() {
+            const versionText = document.getElementById('version-text');
+
+            try {
+                const response = await fetch('https://api.github.com/repos/qluto/echo/releases/latest');
+
+                if (!response.ok) {
+                    throw new Error('Failed to fetch releases');
+                }
+
+                const release = await response.json();
+
+                // Update version badge
+                versionText.textContent = `${release.tag_name} · Latest`;
+
+                // Platform detection mapping
+                const platformMap = {
+                    'macos-apple-silicon': (name) => name.includes('aarch64') && name.endsWith('.dmg')
+                };
+
+                // Populate download links
+                release.assets.forEach(asset => {
+                    const fileName = asset.name.toLowerCase();
+
+                    Object.entries(platformMap).forEach(([btnId, matcher]) => {
+                        if (matcher(fileName)) {
+                            const btn = document.getElementById(btnId);
+                            if (btn) {
+                                btn.href = asset.browser_download_url;
+                                btn.style.opacity = '1';
+                                btn.style.pointerEvents = 'auto';
+                            }
+                        }
+                    });
+                });
+
+            } catch (error) {
+                console.error('Error loading releases:', error);
+                versionText.textContent = 'Check releases for latest version';
+            }
+        }
+
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', loadLatestRelease);
+    </script>
+</body>
+</html>

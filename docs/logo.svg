@@ -1,0 +1,10 @@
+<svg viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Sage green rounded square background -->
+  <rect x="0" y="0" width="512" height="512" rx="112" fill="#7C9082"/>
+  <!-- Wave rings -->
+  <ellipse cx="256" cy="256" rx="184" ry="184" stroke="rgba(255,255,255,0.3)" stroke-width="10" fill="none"/>
+  <ellipse cx="256" cy="256" rx="143" ry="143" stroke="rgba(255,255,255,0.5)" stroke-width="13" fill="none"/>
+  <ellipse cx="256" cy="256" rx="102" ry="102" stroke="rgba(255,255,255,0.7)" stroke-width="15" fill="none"/>
+  <!-- Center core -->
+  <ellipse cx="256" cy="256" rx="61" ry="61" fill="#FFFFFF"/>
+</svg>
