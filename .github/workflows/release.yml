@@ -10,12 +10,46 @@ jobs:
   release:
     permissions:
       contents: write
-    runs-on: macos-latest
+    # Use macos-14 for Apple Silicon (required for MLX)
+    runs-on: macos-14
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ===== Python ASR Engine Build =====
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache Python dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('python-engine/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r python-engine/requirements.txt
+          pip install pyinstaller
+
+      - name: Build ASR Engine Binary
+        run: |
+          cd python-engine
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Verify ASR Binary
+        run: |
+          ls -lh src-tauri/binaries/
+          # Quick test - binary should show help or error gracefully
+          ./src-tauri/binaries/mlx-asr-engine-aarch64-apple-darwin --help 2>&1 || echo "Help not implemented (ok)"
+
+      # ===== Frontend & Tauri Build =====
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:

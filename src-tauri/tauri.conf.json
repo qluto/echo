@@ -56,6 +56,9 @@
       "icons/icon.ico"
     ],
     "targets": "all",
+    "externalBin": [
+      "binaries/mlx-asr-engine"
+    ],
     "macOS": {
       "minimumSystemVersion": "14.0",
       "entitlements": "entitlements.plist",
@@ -63,9 +66,6 @@
       "frameworks": [],
       "signingIdentity": null,
       "infoPlist": "Info.plist"
-    },
-    "resources": {
-      "../python-engine/engine.py": "engine.py"
     }
   },
   "plugins": {}

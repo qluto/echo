@@ -108,6 +108,26 @@ impl ASREngine {
         }
     }
 
+    /// Get the target triple for the current platform
+    fn get_target_triple() -> &'static str {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            "aarch64-apple-darwin"
+        }
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        {
+            "x86_64-apple-darwin"
+        }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            "x86_64-unknown-linux-gnu"
+        }
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            "x86_64-pc-windows-msvc"
+        }
+    }
+
     /// Start the ASR engine sidecar
     pub fn start(&mut self, app: &AppHandle) -> Result<()> {
         if self.process.is_some() {
@@ -115,153 +135,74 @@ impl ASREngine {
             return Ok(());
         }
 
-        // Get the resource directory for bundled Python script
-        let resource_dir = app
-            .path()
-            .resource_dir()
-            .map_err(|e| anyhow!("Failed to get resource dir: {}", e))?;
+        // Binary name with platform suffix (for development builds)
+        let binary_name_with_suffix = format!("mlx-asr-engine-{}", Self::get_target_triple());
+        // Binary name without suffix (Tauri strips the suffix when bundling externalBin)
+        let binary_name_no_suffix = "mlx-asr-engine";
 
-        // Check for bundled Python script in resources first
-        let bundled_script = resource_dir.join("engine.py");
+        // Priority 1: Check for bundled binary in app's MacOS directory (production mode)
+        // Tauri 2.x places externalBin in Contents/MacOS/ with the platform suffix stripped
+        let bundled_binary = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .map(|p| p.join(binary_name_no_suffix));
 
-        // Determine how to run the engine
-        let (program, args) = if bundled_script.exists() {
-            // Bundled app mode: use Python script from resources
-            log::info!("Using bundled Python script: {:?}", bundled_script);
+        // Priority 2: Check for development binary in src-tauri/binaries
+        let dev_binary_paths = [
+            // When running from src-tauri directory
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.join("binaries").join(&binary_name_with_suffix)),
+            // When running from project root
+            std::env::current_dir()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                .map(|p| p.join("src-tauri").join("binaries").join(&binary_name_with_suffix)),
+        ];
 
-            // Find Python executable - check common locations for macOS
-            // Bundled apps don't have access to user's PATH, so we search explicitly
-            // Priority: venv with mlx-audio installed > Homebrew > System Python
-
-            // First, check for venv in common locations (these have mlx-audio pre-installed)
-            let venv_candidates: Vec<std::path::PathBuf> = [
-                // Check in common development locations
-                dirs::home_dir()
-                    .map(|h| h.join("conductor/workspaces/echo/lisbon/python-engine/venv/bin/python3")),
-                // Check in home directory for a dedicated Echo venv
-                dirs::home_dir().map(|h| h.join(".echo/venv/bin/python3")),
-            ]
-            .into_iter()
-            .flatten()
-            .collect();
-
-            // Build the full list of candidates
-            let mut python_candidates: Vec<String> = venv_candidates
-                .iter()
-                .filter(|p| p.exists())
-                .map(|p| p.to_string_lossy().to_string())
-                .collect();
-
-            // Add system Python paths as fallbacks
-            python_candidates.extend([
-                "/opt/homebrew/bin/python3".to_string(),
-                "/usr/local/bin/python3".to_string(),
-                "/usr/bin/python3".to_string(),
-            ]);
-
-            let python_executable = python_candidates
-                .iter()
-                .find(|p| std::path::Path::new(p).exists())
-                .cloned()
-                .unwrap_or_else(|| "python3".to_string());
-
-            log::info!("Using Python executable: {}", python_executable);
-
-            (
-                python_executable,
-                vec![
-                    bundled_script.to_string_lossy().to_string(),
-                    "daemon".to_string(),
-                ],
-            )
-        } else {
-            // Development mode: run Python script directly
-            // Try multiple possible locations for the Python script
-            let possible_paths = [
-                // When running from src-tauri directory
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-                    .map(|p| p.join("python-engine")),
-                // When running from project root
-                std::env::current_dir()
-                    .ok()
-                    .map(|p| p.join("python-engine")),
-            ];
-
-            let python_engine_dir = possible_paths
+        let program = if let Some(ref bundled) = bundled_binary {
+            if bundled.exists() {
+                log::info!("Using bundled ASR binary: {:?}", bundled);
+                bundled.to_string_lossy().to_string()
+            } else if let Some(dev_binary) = dev_binary_paths
                 .into_iter()
                 .flatten()
-                .find(|p| p.join("engine.py").exists())
-                .ok_or_else(|| anyhow!("Python ASR engine directory not found"))?;
-
-            let python_script = python_engine_dir.join("engine.py");
-
-            // Check for virtual environment first, then fall back to system python
-            let venv_python = python_engine_dir.join("venv").join("bin").join("python3");
-            let python_executable = if venv_python.exists() {
-                log::info!("Using venv Python: {:?}", venv_python);
-                venv_python.to_string_lossy().to_string()
+                .find(|p| p.exists())
+            {
+                log::info!("Using development ASR binary: {:?}", dev_binary);
+                dev_binary.to_string_lossy().to_string()
             } else {
-                log::info!("Using system Python");
-                "python3".to_string()
-            };
-
-            log::info!("Using Python script: {:?}", python_script);
-            (
-                python_executable,
-                vec![
-                    python_script.to_string_lossy().to_string(),
-                    "daemon".to_string(),
-                ],
-            )
+                return Err(anyhow!(
+                    "ASR engine binary not found. Expected '{}' in {:?} or '{}' in src-tauri/binaries/. \
+                    Run 'cd python-engine && ./build.sh' to build the binary.",
+                    binary_name_no_suffix,
+                    bundled,
+                    binary_name_with_suffix
+                ));
+            }
+        } else if let Some(dev_binary) = dev_binary_paths
+            .into_iter()
+            .flatten()
+            .find(|p| p.exists())
+        {
+            log::info!("Using development ASR binary: {:?}", dev_binary);
+            dev_binary.to_string_lossy().to_string()
+        } else {
+            return Err(anyhow!(
+                "ASR engine binary not found. Run 'cd python-engine && ./build.sh' to build the binary."
+            ));
         };
+
+        let args = vec!["daemon".to_string()];
 
         log::info!("Starting ASR engine: {} {:?}", program, args);
 
-        // Build command with proper environment
+        // Build command - no special environment needed for self-contained binary
         let mut cmd = Command::new(&program);
         cmd.args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit()); // Let stderr pass through for logging
-
-        // For bundled apps using system Python (not venv), we need to set PYTHONPATH
-        // because macOS app bundles don't inherit the user's shell environment
-        // Skip this if using a venv (which has packages pre-installed)
-        let is_venv = program.contains("/venv/");
-        if bundled_script.exists() && !is_venv {
-            // Get user's home directory
-            if let Some(home) = dirs::home_dir() {
-                let mut paths: Vec<String> = Vec::new();
-
-                // Check common Python versions for user site-packages
-                for version in ["3.9", "3.10", "3.11", "3.12", "3.13"] {
-                    let user_site = home
-                        .join("Library/Python")
-                        .join(version)
-                        .join("lib/python/site-packages");
-                    if user_site.exists() {
-                        paths.push(user_site.to_string_lossy().to_string());
-                    }
-
-                    // Also check Homebrew site-packages
-                    let homebrew_site = std::path::PathBuf::from(format!(
-                        "/opt/homebrew/lib/python{}/site-packages",
-                        version
-                    ));
-                    if homebrew_site.exists() {
-                        paths.push(homebrew_site.to_string_lossy().to_string());
-                    }
-                }
-
-                if !paths.is_empty() {
-                    let python_path = paths.join(":");
-                    log::info!("Setting PYTHONPATH: {}", python_path);
-                    cmd.env("PYTHONPATH", &python_path);
-                }
-            }
-        }
 
         let mut child = cmd
             .spawn()
