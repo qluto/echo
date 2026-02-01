@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import { getCurrentWindow, currentMonitor, LogicalPosition } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { emit, listen } from "@tauri-apps/api/event";
@@ -10,6 +10,7 @@ import {
   insertText,
   getModelStatus,
   loadAsrModel,
+  warmupAsrModel,
   getSettings,
   requestAccessibilityPermission,
   openAccessibilitySettings,
@@ -17,14 +18,13 @@ import {
 } from "./lib/tauri";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 
-type EngineStatus = "starting" | "ready" | "error";
-
 // Detailed loading phase for user feedback
 type LoadingPhase =
   | "idle"
   | "starting_engine"
   | "loading_model"
   | "loading_vad"
+  | "warming_up"
   | "ready"
   | "error";
 
@@ -33,6 +33,7 @@ const LOADING_MESSAGES: Record<LoadingPhase, string> = {
   starting_engine: "Starting engine...",
   loading_model: "Loading model...",
   loading_vad: "Preparing...",
+  warming_up: "Warming up...",
   ready: "Ready",
   error: "Error",
 };
@@ -47,7 +48,6 @@ function App() {
   } = useTranscription();
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [engineStatus, setEngineStatus] = useState<EngineStatus>("starting");
   const [loadingPhase, setLoadingPhase] = useState<LoadingPhase>("idle");
   const [modelName, setModelName] = useState<string>("mlx-community/Qwen3-ASR-1.7B-8bit");
   const [hotkey, setHotkey] = useState<string>("command+shift+space");
@@ -110,6 +110,14 @@ function App() {
 
   const [showSuccess, setShowSuccess] = useState(false);
   const floatWindowRef = useRef<WebviewWindow | null>(null);
+
+  // Remove native loading screen after React renders
+  useLayoutEffect(() => {
+    const appLoading = document.getElementById("app-loading");
+    if (appLoading) {
+      appLoading.remove();
+    }
+  }, []);
 
   // Get float window reference
   useEffect(() => {
@@ -249,7 +257,6 @@ function App() {
   }, [isSettingsOpen]);
 
   const initializeEngine = async () => {
-    setEngineStatus("starting");
     setLoadingPhase("starting_engine");
 
     try {
@@ -259,7 +266,6 @@ function App() {
         await startAsrEngine();
         console.log("ASR engine started successfully");
       }
-      setEngineStatus("ready");
 
       const status = await getModelStatus();
       setModelName(status.model_name || "mlx-community/Qwen3-ASR-1.7B-8bit");
@@ -272,7 +278,6 @@ function App() {
       }
     } catch (e) {
       console.error("Failed to initialize engine:", e);
-      setEngineStatus("error");
       setLoadingPhase("error");
     }
   };
@@ -282,6 +287,17 @@ function App() {
     try {
       const status = await loadAsrModel();
       setModelName(status.model_name || "mlx-community/Qwen3-ASR-1.7B-8bit");
+
+      // Warmup the model to trigger JIT compilation
+      setLoadingPhase("warming_up");
+      try {
+        await warmupAsrModel();
+        console.log("Model warmup complete");
+      } catch (e) {
+        // Warmup failure is non-critical, just log it
+        console.warn("Model warmup failed (non-critical):", e);
+      }
+
       setLoadingPhase("ready");
     } catch (e) {
       console.error("Failed to load model:", e);
@@ -326,8 +342,8 @@ function App() {
   };
 
   // Show loading overlay during initial startup
-  const isInitializing =
-    loadingPhase !== "ready" && loadingPhase !== "error" && engineStatus !== "ready";
+  // Only check loadingPhase - engineStatus check was causing early dismissal
+  const isInitializing = loadingPhase !== "ready" && loadingPhase !== "error";
 
   return (
     <div className="h-screen bg-surface-muted flex flex-col rounded-2xl overflow-hidden select-none card-shadow border border-subtle">
@@ -410,6 +426,8 @@ function App() {
               ? "Initializing speech recognition..."
               : loadingPhase === "loading_model"
               ? "This may take a moment on first launch"
+              : loadingPhase === "warming_up"
+              ? "Preparing for faster transcription..."
               : "Almost ready..."}
           </p>
         </div>

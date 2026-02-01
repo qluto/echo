@@ -19,7 +19,7 @@ use tauri::{
 use tauri_plugin_store::StoreExt;
 
 pub use input::EnigoState;
-pub use transcription::{ASREngine, ModelStatus};
+pub use transcription::{ASREngine, ModelStatus, WarmupResult};
 
 /// Application settings
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -386,6 +386,21 @@ fn load_asr_model(state: tauri::State<'_, AppState>) -> Result<ModelStatus, Stri
 }
 
 #[tauri::command]
+fn warmup_asr_model(state: tauri::State<'_, AppState>) -> Result<WarmupResult, String> {
+    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
+
+    // Warmup ASR model
+    let result = asr_engine.warmup_model().map_err(|e| e.to_string())?;
+
+    // Also warmup VAD if loaded
+    if let Err(e) = asr_engine.warmup_vad() {
+        log::warn!("Failed to warmup VAD (non-critical): {}", e);
+    }
+
+    Ok(result)
+}
+
+#[tauri::command]
 fn set_asr_model(model_name: String, app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<ModelStatus, String> {
     let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
     let result = asr_engine.set_model(&model_name).map_err(|e| e.to_string())?;
@@ -639,6 +654,7 @@ pub fn run() {
             stop_asr_engine,
             get_model_status,
             load_asr_model,
+            warmup_asr_model,
             set_asr_model,
             check_accessibility_permission,
             request_accessibility_permission,

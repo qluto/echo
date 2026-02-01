@@ -87,6 +87,29 @@ struct ModelOperationResult {
     already_loaded: Option<bool>,
 }
 
+/// Warmup result response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WarmupResult {
+    pub success: bool,
+    pub warmup_time_ms: Option<f64>,
+    pub error: Option<String>,
+}
+
+/// Generic warmup response from the engine
+#[derive(Debug, Deserialize)]
+struct WarmupResponse {
+    id: Option<u64>,
+    result: Option<WarmupResponseResult>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WarmupResponseResult {
+    success: Option<bool>,
+    warmup_time_ms: Option<f64>,
+    error: Option<String>,
+}
+
 /// Process handle with I/O streams
 struct ASRProcess {
     child: Child,
@@ -447,6 +470,105 @@ impl ASREngine {
 
         log::info!("VAD model loaded successfully");
         Ok(())
+    }
+
+    /// Warm up the ASR model by running inference on dummy audio
+    pub fn warmup_model(&mut self) -> Result<WarmupResult> {
+        let process = match self.process.as_mut() {
+            Some(p) => p,
+            None => {
+                return Err(anyhow!("Engine not running"));
+            }
+        };
+
+        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        let request = ASRRequest {
+            command: "warmup_model".to_string(),
+            id,
+            audio_path: None,
+            language: None,
+            model_name: None,
+        };
+
+        let json = serde_json::to_string(&request)?;
+        writeln!(process.stdin, "{}", json)?;
+        process.stdin.flush()?;
+
+        // Warmup can take some time (JIT compilation)
+        let mut line = String::new();
+        process
+            .stdout
+            .read_line(&mut line)
+            .map_err(|e| anyhow!("Failed to read response: {}", e))?;
+
+        let response: WarmupResponse = serde_json::from_str(&line)?;
+
+        if let Some(error) = response.error {
+            return Err(anyhow!("Failed to warmup model: {}", error));
+        }
+
+        let result = response.result.ok_or_else(|| anyhow!("No result in response"))?;
+
+        if result.success == Some(false) {
+            log::warn!("Model warmup failed: {:?}", result.error);
+        } else {
+            log::info!("Model warmup complete in {:?}ms", result.warmup_time_ms);
+        }
+
+        Ok(WarmupResult {
+            success: result.success.unwrap_or(false),
+            warmup_time_ms: result.warmup_time_ms,
+            error: result.error,
+        })
+    }
+
+    /// Warm up the VAD model
+    pub fn warmup_vad(&mut self) -> Result<WarmupResult> {
+        let process = match self.process.as_mut() {
+            Some(p) => p,
+            None => {
+                return Err(anyhow!("Engine not running"));
+            }
+        };
+
+        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        let request = ASRRequest {
+            command: "warmup_vad".to_string(),
+            id,
+            audio_path: None,
+            language: None,
+            model_name: None,
+        };
+
+        let json = serde_json::to_string(&request)?;
+        writeln!(process.stdin, "{}", json)?;
+        process.stdin.flush()?;
+
+        let mut line = String::new();
+        process
+            .stdout
+            .read_line(&mut line)
+            .map_err(|e| anyhow!("Failed to read response: {}", e))?;
+
+        let response: WarmupResponse = serde_json::from_str(&line)?;
+
+        if let Some(error) = response.error {
+            return Err(anyhow!("Failed to warmup VAD: {}", error));
+        }
+
+        let result = response.result.ok_or_else(|| anyhow!("No result in response"))?;
+
+        if result.success == Some(false) {
+            log::warn!("VAD warmup failed: {:?}", result.error);
+        } else {
+            log::info!("VAD warmup complete in {:?}ms", result.warmup_time_ms);
+        }
+
+        Ok(WarmupResult {
+            success: result.success.unwrap_or(false),
+            warmup_time_ms: result.warmup_time_ms,
+            error: result.error,
+        })
     }
 
     /// Set the model (requires reload)
