@@ -13,15 +13,46 @@ import {
   onHandyKeysEvent,
   onModelLoadComplete,
   onModelLoadError,
+  updatePostprocessSettings,
+  loadPostprocessModel,
+  isPostprocessModelCached,
   AppSettings,
   AudioDevice,
   HandyKeysEvent,
+  PostProcessSettings,
 } from "../lib/tauri";
 
 interface SettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
 }
+
+// Default system prompt for post-processing LLM
+const DEFAULT_POSTPROCESS_PROMPT = `/no_think
+You are an assistant that cleans up speech recognition results while preserving the speaker's intended meaning.
+
+## Your Task
+Remove verbal noise while keeping the speaker's message intact:
+
+1. **Remove filler words** - These add no meaning:
+   - English: um, uh, like, you know, well, so, I mean, kind of, sort of, basically, actually, literally, right?, anyway
+   - Japanese: ええと, えーと, あの, まあ, なんか, その, うーん, ちょっと, やっぱ
+
+2. **Handle self-corrections** - When someone corrects themselves mid-sentence, keep only their final intent:
+   - "I'll be there at 3, no 4 o'clock" → "I'll be there at 4 o'clock"
+   - "Send it to Tom, I mean Jerry" → "Send it to Jerry"
+   - "The meeting is on Monday, wait, Tuesday" → "The meeting is on Tuesday"
+   - "AですあやっぱりBです" → "Bです"
+   - "3時に、いや4時に行きます" → "4時に行きます"
+
+3. **Apply user dictionary** - Replace terms as specified
+
+4. **Format for target app** (if specified):
+   - Email: Use polite business language
+   - Notion/Markdown: Format lists as Markdown
+
+## Output
+Output ONLY the cleaned text. No explanations.`;
 
 const SUPPORTED_LANGUAGES = [
   { code: "auto", name: "Auto-detect" },
@@ -89,6 +120,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     auto_insert: true,
     device_name: null,
     model_name: null,
+    postprocess: { enabled: false, dictionary: {} },
   });
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [modelName, setModelName] = useState<string>("mlx-community/Qwen3-ASR-0.6B-8bit");
@@ -100,6 +132,10 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
   const [currentKeys, setCurrentKeys] = useState("");
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
+  const [isPostprocessLoading, setIsPostprocessLoading] = useState(false);
+  const [postprocessLoadPhase, setPostprocessLoadPhase] = useState<"idle" | "checking" | "downloading" | "loading">("idle");
+  const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
+  const [customPrompt, setCustomPrompt] = useState<string | null>(null);
   const currentKeysRef = useRef("");
   const unlistenRef = useRef<(() => void) | null>(null);
 
@@ -120,6 +156,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       setSettings(loadedSettings);
       setDevices(loadedDevices);
       setHotkeyInput(loadedSettings.hotkey);
+      setCustomPrompt(loadedSettings.postprocess?.custom_prompt ?? null);
       if (modelStatus.model_name) {
         setModelName(modelStatus.model_name);
       }
@@ -182,6 +219,70 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       await updateSettings(newSettings);
     } catch (e) {
       console.error("Failed to save settings:", e);
+    }
+  };
+
+  const handlePostprocessToggle = async () => {
+    if (isPostprocessLoading) return;
+
+    const newEnabled = !settings.postprocess.enabled;
+
+    if (newEnabled) {
+      // Turning ON - need to check/download model
+      setIsPostprocessLoading(true);
+      setPostprocessLoadPhase("checking");
+
+      try {
+        // Check if model is cached
+        const cacheStatus = await isPostprocessModelCached();
+
+        if (cacheStatus.loaded) {
+          // Model is already loaded/cached
+          setPostprocessLoadPhase("idle");
+          setIsPostprocessLoading(false);
+        } else {
+          // Need to download/load model
+          setPostprocessLoadPhase("downloading");
+
+          // Start loading the model
+          const result = await loadPostprocessModel();
+
+          if (!result.loaded) {
+            console.error("Failed to load postprocess model:", result.error);
+            setIsPostprocessLoading(false);
+            setPostprocessLoadPhase("idle");
+            return;
+          }
+        }
+
+        // Enable postprocessing
+        const newPostprocess: PostProcessSettings = {
+          ...settings.postprocess,
+          enabled: true,
+        };
+        const newSettings = { ...settings, postprocess: newPostprocess };
+        setSettings(newSettings);
+        await updatePostprocessSettings(newPostprocess);
+        setIsPostprocessLoading(false);
+        setPostprocessLoadPhase("idle");
+      } catch (e) {
+        console.error("Failed to enable postprocessing:", e);
+        setIsPostprocessLoading(false);
+        setPostprocessLoadPhase("idle");
+      }
+    } else {
+      // Turning OFF - just disable
+      const newPostprocess: PostProcessSettings = {
+        ...settings.postprocess,
+        enabled: false,
+      };
+      const newSettings = { ...settings, postprocess: newPostprocess };
+      setSettings(newSettings);
+      try {
+        await updatePostprocessSettings(newPostprocess);
+      } catch (e) {
+        console.error("Failed to disable postprocessing:", e);
+      }
     }
   };
 
@@ -728,6 +829,205 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                     />
                   </button>
                 </div>
+              </section>
+
+              {/* Post-processing Section */}
+              <section className="flex flex-col gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div
+                    className="w-6 h-6 rounded-md flex items-center justify-center"
+                    style={{ backgroundColor: "rgba(147, 112, 219, 0.12)" }}
+                  >
+                    <svg
+                      className="w-3.5 h-3.5"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="#9370DB"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M12 3v3m6.366-.366-2.12 2.12M21 12h-3m.366 6.366-2.12-2.12M12 21v-3m-6.366.366 2.12-2.12M3 12h3m-.366-6.366 2.12 2.12" />
+                    </svg>
+                  </div>
+                  <span
+                    className="text-sm font-medium"
+                    style={{ color: "var(--text-primary)" }}
+                  >
+                    Post-processing
+                  </span>
+                </div>
+
+                {/* Post-process Toggle */}
+                <div className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between">
+                  <div className="flex flex-col">
+                    <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                      AI Enhancement
+                    </span>
+                    <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+                      Filler removal, formatting
+                    </span>
+                  </div>
+                  {isPostprocessLoading ? (
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="w-3 h-3 border-2 rounded-full animate-spin"
+                        style={{
+                          borderColor: "var(--border-subtle)",
+                          borderTopColor: "#9370DB",
+                        }}
+                      />
+                      <span
+                        className="text-xs"
+                        style={{ color: "var(--text-tertiary)" }}
+                      >
+                        {postprocessLoadPhase === "checking"
+                          ? "Checking..."
+                          : postprocessLoadPhase === "downloading"
+                          ? "Downloading..."
+                          : "Loading..."}
+                      </span>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={handlePostprocessToggle}
+                      className="w-12 h-7 rounded-full flex items-center transition-all duration-200"
+                      style={{
+                        backgroundColor: settings.postprocess.enabled
+                          ? "#9370DB"
+                          : "var(--border-subtle)",
+                        padding: "2px",
+                      }}
+                    >
+                      <div
+                        className="w-6 h-6 rounded-full bg-white transition-transform duration-200"
+                        style={{
+                          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.15)",
+                          transform: settings.postprocess.enabled ? "translateX(20px)" : "translateX(0)",
+                        }}
+                      />
+                    </button>
+                  )}
+                </div>
+
+                {/* Info text when enabled */}
+                {settings.postprocess.enabled && (
+                  <div
+                    className="px-4 py-2 rounded-lg text-xs"
+                    style={{
+                      backgroundColor: "rgba(147, 112, 219, 0.1)",
+                      color: "var(--text-tertiary)",
+                    }}
+                  >
+                    Removes fillers, applies corrections, and formats text based on the target app.
+                  </div>
+                )}
+
+                {/* Advanced Section - Collapsible */}
+                {settings.postprocess.enabled && (
+                  <div className="flex flex-col gap-2">
+                    <button
+                      onClick={() => setIsAdvancedOpen(!isAdvancedOpen)}
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs transition-colors hover:bg-surface-elevated"
+                      style={{ color: "var(--text-tertiary)" }}
+                    >
+                      <svg
+                        className={`w-3 h-3 transition-transform ${isAdvancedOpen ? "rotate-90" : ""}`}
+                        fill="currentColor"
+                        viewBox="0 0 20 20"
+                      >
+                        <path
+                          fillRule="evenodd"
+                          d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
+                          clipRule="evenodd"
+                        />
+                      </svg>
+                      Advanced Settings
+                    </button>
+
+                    {isAdvancedOpen && (
+                      <div className="flex flex-col gap-3 px-2">
+                        <div
+                          className="px-3 py-2 rounded-lg text-xs flex items-center gap-2"
+                          style={{
+                            backgroundColor: "rgba(212, 165, 116, 0.15)",
+                            color: "var(--glow-processing)",
+                          }}
+                        >
+                          <svg
+                            className="w-4 h-4 flex-shrink-0"
+                            fill="currentColor"
+                            viewBox="0 0 20 20"
+                          >
+                            <path
+                              fillRule="evenodd"
+                              d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                          <span>
+                            Modifying the prompt may cause unexpected behavior.
+                          </span>
+                        </div>
+
+                        <div className="flex flex-col gap-2">
+                          <div className="flex items-center justify-between">
+                            <span
+                              className="text-xs font-medium"
+                              style={{ color: "var(--text-secondary)" }}
+                            >
+                              Custom System Prompt
+                            </span>
+                            <button
+                              onClick={() => {
+                                setCustomPrompt(null);
+                                const newPostprocess: PostProcessSettings = {
+                                  ...settings.postprocess,
+                                  custom_prompt: null,
+                                };
+                                const newSettings = { ...settings, postprocess: newPostprocess };
+                                setSettings(newSettings);
+                                updatePostprocessSettings(newPostprocess).catch(console.error);
+                              }}
+                              className="text-xs px-2 py-1 rounded transition-colors hover:bg-surface-elevated"
+                              style={{ color: "var(--text-tertiary)" }}
+                            >
+                              Reset to Default
+                            </button>
+                          </div>
+                          <textarea
+                            value={customPrompt === null ? DEFAULT_POSTPROCESS_PROMPT : customPrompt}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              // Always set to the actual value (including empty string)
+                              setCustomPrompt(value);
+                              // Save: use null only if it exactly matches default
+                              const customValue = value === DEFAULT_POSTPROCESS_PROMPT ? null : value;
+                              const newPostprocess: PostProcessSettings = {
+                                ...settings.postprocess,
+                                custom_prompt: customValue,
+                              };
+                              const newSettings = { ...settings, postprocess: newPostprocess };
+                              setSettings(newSettings);
+                              updatePostprocessSettings(newPostprocess).catch(console.error);
+                            }}
+                            className="w-full h-48 px-3 py-2 rounded-lg bg-surface border border-subtle text-xs font-mono resize-none focus:outline-none focus:border-glow-idle"
+                            style={{ color: "var(--text-primary)" }}
+                            placeholder={DEFAULT_POSTPROCESS_PROMPT}
+                          />
+                          <span
+                            className="text-xs"
+                            style={{ color: "var(--text-tertiary)" }}
+                          >
+                            {customPrompt !== null
+                              ? "Using custom prompt"
+                              : "Using default prompt"}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </section>
 
               {/* About Section */}

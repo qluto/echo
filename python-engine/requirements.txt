@@ -7,6 +7,9 @@ mlx>=0.20.0
 # MLX-Audio for ASR
 mlx-audio>=0.1.0
 
+# MLX-LM for text post-processing (Qwen3 with /no_think mode)
+mlx-lm>=0.24.0
+
 # Audio processing
 soundfile>=0.12.1
 librosa>=0.10.1

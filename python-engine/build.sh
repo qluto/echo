@@ -133,6 +133,7 @@ echo "Building with PyInstaller..."
     --hidden-import mlx_audio.transcribe \
     --hidden-import mlx_audio.stt \
     --hidden-import mlx_audio.stt.utils \
+    --hidden-import mlx_lm \
     --hidden-import numpy \
     --hidden-import soundfile \
     --hidden-import librosa \
@@ -141,6 +142,7 @@ echo "Building with PyInstaller..."
     --hidden-import transformers \
     --collect-all mlx \
     --collect-all mlx_audio \
+    --collect-all mlx_lm \
     --collect-all silero_vad \
     --add-data "${MLX_PATH}/lib/mlx.metallib:mlx/lib" \
     --add-data "${MLX_PATH}/lib/libmlx.dylib:mlx/lib" \

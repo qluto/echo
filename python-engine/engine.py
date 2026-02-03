@@ -39,6 +39,224 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class PostProcessor:
+    """LLM-based post-processor for ASR text using Qwen3 with /no_think mode"""
+
+    DEFAULT_MODEL = "mlx-community/Qwen3-1.7B-4bit"
+
+    # System prompt template for post-processing
+    SYSTEM_PROMPT = """/no_think
+You are an assistant that cleans up speech recognition results while preserving the speaker's intended meaning.
+
+## Your Task
+Remove verbal noise while keeping the speaker's message intact:
+
+1. **Remove filler words** - These add no meaning:
+   - English: um, uh, like, you know, well, so, I mean, kind of, sort of, basically, actually, literally, right?, anyway
+   - Japanese: ええと, えーと, あの, まあ, なんか, その, うーん, ちょっと, やっぱ
+
+2. **Handle self-corrections** - When someone corrects themselves mid-sentence, keep only their final intent:
+   - "I'll be there at 3, no 4 o'clock" → "I'll be there at 4 o'clock"
+   - "Send it to Tom, I mean Jerry" → "Send it to Jerry"
+   - "The meeting is on Monday, wait, Tuesday" → "The meeting is on Tuesday"
+   - "AですあやっぱりBです" → "Bです"
+   - "3時に、いや4時に行きます" → "4時に行きます"
+
+3. **Apply user dictionary** - Replace terms as specified
+
+4. **Format for target app** (if specified):
+   - Email: Use polite business language
+   - Notion/Markdown: Format lists as Markdown
+
+## Output
+Output ONLY the cleaned text. No explanations."""
+
+    def __init__(self, model_name: str = None):
+        self.model_name = model_name or self.DEFAULT_MODEL
+        self._model = None
+        self._tokenizer = None
+        self._loaded = False
+        self._loading = False
+        self._load_error: Optional[str] = None
+
+    def get_status(self) -> dict:
+        """Get current post-processor status"""
+        return {
+            "model_name": self.model_name,
+            "loaded": self._loaded,
+            "loading": self._loading,
+            "error": self._load_error,
+        }
+
+    def is_model_cached(self, model_name: Optional[str] = None) -> dict:
+        """Check if the post-processor model is already cached locally."""
+        target_model = model_name or self.model_name
+        try:
+            from huggingface_hub import try_to_load_from_cache
+
+            result = try_to_load_from_cache(target_model, "config.json")
+            is_cached = result is not None
+
+            logger.info(f"PostProcessor model cache check: {target_model} -> cached={is_cached}")
+            return {"cached": is_cached, "model_name": target_model}
+        except Exception as e:
+            logger.warning(f"Failed to check cache for {target_model}: {e}")
+            return {"cached": False, "model_name": target_model}
+
+    def load_model(self) -> dict:
+        """Load the post-processor LLM model (Qwen3)"""
+        if self._loaded:
+            return {"success": True, "model_name": self.model_name, "already_loaded": True}
+
+        if self._loading:
+            return {"success": False, "error": "Model is already loading"}
+
+        self._loading = True
+        self._load_error = None
+
+        try:
+            logger.info(f"Loading post-processor model: {self.model_name}")
+
+            from mlx_lm import load
+
+            self._model, self._tokenizer = load(self.model_name)
+            self._loaded = True
+            self._loading = False
+
+            logger.info(f"Post-processor model loaded: {self.model_name}")
+            return {"success": True, "model_name": self.model_name}
+
+        except ImportError as e:
+            self._loading = False
+            self._load_error = f"mlx-lm is not installed: {e}"
+            logger.error(self._load_error)
+            return {"success": False, "error": self._load_error}
+
+        except Exception as e:
+            self._loading = False
+            self._load_error = f"Failed to load post-processor model: {e}"
+            logger.error(self._load_error)
+            return {"success": False, "error": self._load_error}
+
+    def unload_model(self) -> dict:
+        """Unload the post-processor model to free memory"""
+        if not self._loaded:
+            return {"success": True, "already_unloaded": True}
+
+        self._model = None
+        self._tokenizer = None
+        self._loaded = False
+        logger.info("Post-processor model unloaded")
+        return {"success": True}
+
+    def process(
+        self,
+        text: str,
+        app_name: Optional[str] = None,
+        app_bundle_id: Optional[str] = None,
+        dictionary: Optional[dict] = None,
+        custom_prompt: Optional[str] = None,
+    ) -> dict:
+        """
+        Post-process ASR text using the LLM.
+
+        Args:
+            text: Raw ASR transcription text
+            app_name: Name of the target application (e.g., "Mail", "Notion")
+            app_bundle_id: Bundle ID of the target application
+            dictionary: User dictionary for word replacements {from: to}
+            custom_prompt: Custom system prompt (uses default if None)
+
+        Returns:
+            dict with success, processed_text, and processing_time_ms
+        """
+        if not self._loaded:
+            return {"success": False, "error": "Post-processor model not loaded"}
+
+        if not text or not text.strip():
+            return {"success": True, "processed_text": "", "processing_time_ms": 0}
+
+        try:
+            import time
+            from mlx_lm import generate
+
+            start_time = time.time()
+
+            # Build user message with context
+            user_content = self._build_user_message(text, app_name, app_bundle_id, dictionary)
+
+            # Use custom prompt if provided, otherwise use default
+            system_prompt = custom_prompt if custom_prompt else self.SYSTEM_PROMPT
+
+            # Build conversation for chat template
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ]
+
+            # Apply chat template with enable_thinking=False for faster response
+            prompt = self._tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+
+            # Generate response
+            response = generate(
+                self._model,
+                self._tokenizer,
+                prompt=prompt,
+                max_tokens=len(text) + 100,  # Allow some expansion for keigo
+                verbose=False,
+            )
+
+            # Clean up response
+            processed_text = response.strip()
+
+            processing_time_ms = (time.time() - start_time) * 1000
+            logger.info(f"Post-processing complete in {processing_time_ms:.0f}ms: '{text[:50]}...' -> '{processed_text[:50]}...'")
+
+            return {
+                "success": True,
+                "processed_text": processed_text,
+                "processing_time_ms": processing_time_ms,
+            }
+
+        except Exception as e:
+            logger.error(f"Post-processing failed: {e}")
+            import traceback
+            traceback.print_exc()
+            # Return original text on error (fallback)
+            return {
+                "success": False,
+                "processed_text": text,
+                "error": str(e),
+            }
+
+    def _build_user_message(
+        self,
+        text: str,
+        app_name: Optional[str],
+        app_bundle_id: Optional[str],
+        dictionary: Optional[dict],
+    ) -> str:
+        """Build the user message with context for the LLM"""
+        parts = [f"Speech recognition text: {text}"]
+
+        if app_name or app_bundle_id:
+            app_info = app_name or ""
+            if app_bundle_id:
+                app_info += f" ({app_bundle_id})" if app_info else app_bundle_id
+            parts.append(f"Target app: {app_info}")
+
+        if dictionary:
+            dict_str = ", ".join([f'"{k}"→"{v}"' for k, v in dictionary.items()])
+            parts.append(f"User dictionary: {dict_str}")
+
+        return "\n".join(parts)
+
+
 class VoiceActivityDetector:
     """Silero VAD wrapper for pre-transcription speech detection"""
 
@@ -175,6 +393,7 @@ class ASREngine:
         self._generate_fn = None
         self._model_type: Optional[str] = None  # "whisper" or "qwen3"
         self._vad = VoiceActivityDetector()  # VAD for speech detection
+        self._postprocessor = PostProcessor()  # LLM post-processor
 
     def get_status(self) -> dict:
         """Get current engine status"""
@@ -185,6 +404,7 @@ class ASREngine:
             "error": self._load_error,
             "available_models": self.AVAILABLE_MODELS,
             "vad": self._vad.get_status(),
+            "postprocessor": self._postprocessor.get_status(),
         }
 
     def is_model_cached(self, model_name: Optional[str] = None) -> dict:
@@ -656,6 +876,58 @@ def run_daemon(engine: ASREngine):
                     "id": request_id,
                     "result": result
                 }
+
+            elif command == "load_postprocess_model":
+                result = engine._postprocessor.load_model()
+                response = {
+                    "id": request_id,
+                    "result": result
+                }
+
+            elif command == "unload_postprocess_model":
+                result = engine._postprocessor.unload_model()
+                response = {
+                    "id": request_id,
+                    "result": result
+                }
+
+            elif command == "is_postprocess_model_cached":
+                model_name = request.get("model_name")
+                result = engine._postprocessor.is_model_cached(model_name)
+                response = {
+                    "id": request_id,
+                    "result": result
+                }
+
+            elif command == "postprocess_text":
+                text = request.get("text", "")
+                app_name = request.get("app_name")
+                app_bundle_id = request.get("app_bundle_id")
+                dictionary = request.get("dictionary")
+                custom_prompt = request.get("custom_prompt")
+
+                if not text:
+                    response = {
+                        "id": request_id,
+                        "result": {"success": True, "processed_text": "", "processing_time_ms": 0}
+                    }
+                elif not engine._postprocessor._loaded:
+                    response = {
+                        "id": request_id,
+                        "error": "Post-processor model not loaded. Call load_postprocess_model first."
+                    }
+                else:
+                    result = engine._postprocessor.process(
+                        text=text,
+                        app_name=app_name,
+                        app_bundle_id=app_bundle_id,
+                        dictionary=dictionary,
+                        custom_prompt=custom_prompt,
+                    )
+                    response = {
+                        "id": request_id,
+                        "result": result
+                    }
 
             elif command == "transcribe":
                 audio_path = request.get("audio_path", "")

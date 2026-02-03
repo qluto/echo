@@ -849,6 +849,177 @@ impl ASREngine {
             no_speech: result.no_speech,
         })
     }
+
+    // ===== Post-processing methods =====
+
+    /// Load the post-processing model
+    pub fn load_postprocess_model(&mut self) -> Result<crate::PostProcessModelStatus> {
+        let process = match self.process.as_mut() {
+            Some(p) => p,
+            None => {
+                return Err(anyhow!("ASR engine not running"));
+            }
+        };
+
+        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        let request = serde_json::json!({
+            "command": "load_postprocess_model",
+            "id": id,
+        });
+
+        let json = serde_json::to_string(&request)?;
+        writeln!(process.stdin, "{}", json)?;
+        process.stdin.flush()?;
+
+        let mut line = String::new();
+        process.stdout.read_line(&mut line)?;
+
+        let response: serde_json::Value = serde_json::from_str(&line)?;
+
+        if let Some(error) = response.get("error").and_then(|e| e.as_str()) {
+            return Err(anyhow!("Failed to load post-process model: {}", error));
+        }
+
+        let result = response.get("result").ok_or_else(|| anyhow!("No result"))?;
+
+        Ok(crate::PostProcessModelStatus {
+            model_name: result
+                .get("model_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            loaded: result.get("success").and_then(|v| v.as_bool()).unwrap_or(false),
+            loading: false,
+            error: result.get("error").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        })
+    }
+
+    /// Unload the post-processing model
+    pub fn unload_postprocess_model(&mut self) -> Result<()> {
+        let process = match self.process.as_mut() {
+            Some(p) => p,
+            None => {
+                return Err(anyhow!("ASR engine not running"));
+            }
+        };
+
+        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        let request = serde_json::json!({
+            "command": "unload_postprocess_model",
+            "id": id,
+        });
+
+        let json = serde_json::to_string(&request)?;
+        writeln!(process.stdin, "{}", json)?;
+        process.stdin.flush()?;
+
+        let mut line = String::new();
+        process.stdout.read_line(&mut line)?;
+
+        let response: serde_json::Value = serde_json::from_str(&line)?;
+
+        if let Some(error) = response.get("error").and_then(|e| e.as_str()) {
+            return Err(anyhow!("Failed to unload post-process model: {}", error));
+        }
+
+        Ok(())
+    }
+
+    /// Check if the post-processing model is cached
+    pub fn is_postprocess_model_cached(&mut self) -> Result<crate::PostProcessModelStatus> {
+        let process = match self.process.as_mut() {
+            Some(p) => p,
+            None => {
+                return Err(anyhow!("ASR engine not running"));
+            }
+        };
+
+        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        let request = serde_json::json!({
+            "command": "is_postprocess_model_cached",
+            "id": id,
+        });
+
+        let json = serde_json::to_string(&request)?;
+        writeln!(process.stdin, "{}", json)?;
+        process.stdin.flush()?;
+
+        let mut line = String::new();
+        process.stdout.read_line(&mut line)?;
+
+        let response: serde_json::Value = serde_json::from_str(&line)?;
+
+        if let Some(error) = response.get("error").and_then(|e| e.as_str()) {
+            return Err(anyhow!("Failed to check post-process model cache: {}", error));
+        }
+
+        let result = response.get("result").ok_or_else(|| anyhow!("No result"))?;
+
+        Ok(crate::PostProcessModelStatus {
+            model_name: result
+                .get("model_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            loaded: result.get("cached").and_then(|v| v.as_bool()).unwrap_or(false),
+            loading: false,
+            error: None,
+        })
+    }
+
+    /// Post-process transcribed text
+    pub fn postprocess_text(
+        &mut self,
+        text: &str,
+        app_name: Option<&str>,
+        app_bundle_id: Option<&str>,
+        dictionary: Option<&std::collections::HashMap<String, String>>,
+        custom_prompt: Option<&str>,
+    ) -> Result<crate::PostProcessResult> {
+        let process = match self.process.as_mut() {
+            Some(p) => p,
+            None => {
+                return Err(anyhow!("ASR engine not running"));
+            }
+        };
+
+        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        let request = serde_json::json!({
+            "command": "postprocess_text",
+            "id": id,
+            "text": text,
+            "app_name": app_name,
+            "app_bundle_id": app_bundle_id,
+            "dictionary": dictionary,
+            "custom_prompt": custom_prompt,
+        });
+
+        let json = serde_json::to_string(&request)?;
+        writeln!(process.stdin, "{}", json)?;
+        process.stdin.flush()?;
+
+        let mut line = String::new();
+        process.stdout.read_line(&mut line)?;
+
+        let response: serde_json::Value = serde_json::from_str(&line)?;
+
+        if let Some(error) = response.get("error").and_then(|e| e.as_str()) {
+            return Err(anyhow!("Post-processing failed: {}", error));
+        }
+
+        let result = response.get("result").ok_or_else(|| anyhow!("No result"))?;
+
+        Ok(crate::PostProcessResult {
+            success: result.get("success").and_then(|v| v.as_bool()).unwrap_or(false),
+            processed_text: result
+                .get("processed_text")
+                .and_then(|v| v.as_str())
+                .unwrap_or(text)
+                .to_string(),
+            processing_time_ms: result.get("processing_time_ms").and_then(|v| v.as_f64()),
+            error: result.get("error").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        })
+    }
 }
 
 impl Default for ASREngine {

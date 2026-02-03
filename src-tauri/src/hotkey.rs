@@ -100,7 +100,7 @@ fn handle_hotkey_released(app: &AppHandle) {
     .ok();
 
     // Get the recorded file path and settings
-    let (file_path, language, auto_insert) =
+    let (file_path, language, auto_insert, postprocess_settings) =
         if let Some(state) = app.try_state::<crate::AppState>() {
             let file_path = state
                 .recording_state
@@ -110,16 +110,32 @@ fn handle_hotkey_released(app: &AppHandle) {
                     r.is_recording = false;
                     r.current_file.take()
                 });
-            let (language, auto_insert) = state
+            let (language, auto_insert, postprocess) = state
                 .settings
                 .lock()
                 .ok()
-                .map(|s| (s.language.clone(), s.auto_insert))
-                .unwrap_or(("auto".to_string(), true));
-            (file_path, language, auto_insert)
+                .map(|s| (s.language.clone(), s.auto_insert, s.postprocess.clone()))
+                .unwrap_or((
+                    "auto".to_string(),
+                    true,
+                    crate::PostProcessSettings::default(),
+                ));
+            (file_path, language, auto_insert, postprocess)
         } else {
-            (None, "auto".to_string(), true)
+            (
+                None,
+                "auto".to_string(),
+                true,
+                crate::PostProcessSettings::default(),
+            )
         };
+
+    // Get frontmost app info for post-processing (before spawning thread to capture while app is still focused)
+    let active_app = if postprocess_settings.enabled {
+        Some(crate::active_app::get_frontmost_app())
+    } else {
+        None
+    };
 
     let app_clone = app.clone();
     std::thread::spawn(move || {
@@ -183,12 +199,79 @@ fn handle_hotkey_released(app: &AppHandle) {
                     log::info!("Transcription complete: {} chars", result.text.len());
                 }
 
+                // Apply post-processing if enabled
+                let final_text = if postprocess_settings.enabled
+                    && !result.text.is_empty()
+                    && !is_no_speech
+                {
+                    log::info!("Post-processing enabled, applying...");
+                    if let Some(state) = app_clone.try_state::<crate::AppState>() {
+                        if let Ok(mut asr_engine) = state.asr_engine.lock() {
+                            let app_info = active_app.as_ref();
+                            let dictionary = if postprocess_settings.dictionary.is_empty() {
+                                None
+                            } else {
+                                Some(&postprocess_settings.dictionary)
+                            };
+
+                            match asr_engine.postprocess_text(
+                                &result.text,
+                                app_info.and_then(|a| a.app_name.as_deref()),
+                                app_info.and_then(|a| a.bundle_id.as_deref()),
+                                dictionary,
+                                postprocess_settings.custom_prompt.as_deref(),
+                            ) {
+                                Ok(pp_result) => {
+                                    if pp_result.success {
+                                        log::info!(
+                                            "Post-processing complete in {:?}ms: '{}' -> '{}'",
+                                            pp_result.processing_time_ms,
+                                            &result.text[..result.text.len().min(30)],
+                                            &pp_result.processed_text[..pp_result.processed_text.len().min(30)]
+                                        );
+                                        pp_result.processed_text
+                                    } else {
+                                        log::warn!(
+                                            "Post-processing failed: {:?}, using original text",
+                                            pp_result.error
+                                        );
+                                        result.text.clone()
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!(
+                                        "Post-processing error: {}, using original text",
+                                        e
+                                    );
+                                    result.text.clone()
+                                }
+                            }
+                        } else {
+                            log::error!("Failed to lock ASR engine for post-processing");
+                            result.text.clone()
+                        }
+                    } else {
+                        result.text.clone()
+                    }
+                } else {
+                    result.text.clone()
+                };
+
+                // Create result with possibly processed text for emission
+                let emit_result = crate::TranscriptionResult {
+                    success: result.success,
+                    text: final_text.clone(),
+                    segments: result.segments.clone(),
+                    language: result.language.clone(),
+                    no_speech: result.no_speech,
+                };
+
                 // Emit transcription result
                 app_clone
                     .emit(
                         "transcription-complete",
                         serde_json::json!({
-                            "result": result,
+                            "result": emit_result,
                             "no_speech": is_no_speech,
                             "error": null
                         }),
@@ -196,7 +279,7 @@ fn handle_hotkey_released(app: &AppHandle) {
                     .ok();
 
                 // Auto-insert if enabled (skip if no speech detected)
-                if auto_insert && !result.text.is_empty() && !is_no_speech {
+                if auto_insert && !final_text.is_empty() && !is_no_speech {
                     log::info!("Auto-inserting text");
 
                     // Try to get or initialize EnigoState
@@ -224,7 +307,7 @@ fn handle_hotkey_released(app: &AppHandle) {
                             Ok(mut enigo) => {
                                 if let Err(e) = crate::clipboard::paste_via_clipboard(
                                     &mut enigo,
-                                    &result.text,
+                                    &final_text,
                                     &app_clone,
                                 ) {
                                     log::error!("Failed to paste: {}", e);
