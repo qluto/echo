@@ -20,12 +20,19 @@ export interface AudioDevice {
   is_default: boolean;
 }
 
+export interface PostProcessSettings {
+  enabled: boolean;
+  dictionary: Record<string, string>;
+  custom_prompt?: string | null;
+}
+
 export interface AppSettings {
   hotkey: string;
   language: string;
   auto_insert: boolean;
   device_name: string | null;
   model_name: string | null;
+  postprocess: PostProcessSettings;
 }
 
 // Tauri commands
@@ -230,4 +237,60 @@ export async function openAccessibilitySettings(): Promise<void> {
 
 export async function restartApp(): Promise<void> {
   return invoke("restart_app");
+}
+
+// Post-processing types and functions
+export interface PostProcessModelStatus {
+  model_name: string;
+  loaded: boolean;
+  loading: boolean;
+  error: string | null;
+}
+
+export interface PostProcessResult {
+  success: boolean;
+  processed_text: string;
+  processing_time_ms: number | null;
+  error: string | null;
+}
+
+export interface ActiveAppInfo {
+  bundle_id: string | null;
+  app_name: string | null;
+}
+
+export async function getPostprocessSettings(): Promise<PostProcessSettings> {
+  return invoke("get_postprocess_settings");
+}
+
+export async function updatePostprocessSettings(postprocess: PostProcessSettings): Promise<void> {
+  return invoke("update_postprocess_settings", { postprocess });
+}
+
+export async function loadPostprocessModel(): Promise<PostProcessModelStatus> {
+  return invoke("load_postprocess_model");
+}
+
+export async function unloadPostprocessModel(): Promise<void> {
+  return invoke("unload_postprocess_model");
+}
+
+export async function isPostprocessModelCached(): Promise<PostProcessModelStatus> {
+  return invoke("is_postprocess_model_cached");
+}
+
+export async function postprocessText(
+  text: string,
+  appName?: string,
+  appBundleId?: string
+): Promise<PostProcessResult> {
+  return invoke("postprocess_text", {
+    text,
+    appName: appName ?? null,
+    appBundleId: appBundleId ?? null,
+  });
+}
+
+export async function getFrontmostApp(): Promise<ActiveAppInfo> {
+  return invoke("get_frontmost_app");
 }

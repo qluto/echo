@@ -2,6 +2,7 @@
 #[macro_use]
 extern crate objc;
 
+mod active_app;
 mod audio_capture;
 mod clipboard;
 mod handy_keys;
@@ -29,6 +30,8 @@ pub struct Settings {
     pub auto_insert: bool,
     pub device_name: Option<String>,
     pub model_name: Option<String>,
+    #[serde(default)]
+    pub postprocess: PostProcessSettings,
 }
 
 impl Default for Settings {
@@ -39,6 +42,7 @@ impl Default for Settings {
             auto_insert: true,
             device_name: None,
             model_name: None,
+            postprocess: PostProcessSettings::default(),
         }
     }
 }
@@ -111,6 +115,44 @@ pub struct TranscriptionSegment {
 pub struct AudioDevice {
     pub name: String,
     pub is_default: bool,
+}
+
+/// Post-processing settings
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PostProcessSettings {
+    pub enabled: bool,
+    pub dictionary: std::collections::HashMap<String, String>,
+    /// Custom system prompt for the LLM post-processor. If None, uses default.
+    #[serde(default)]
+    pub custom_prompt: Option<String>,
+}
+
+impl Default for PostProcessSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dictionary: std::collections::HashMap::new(),
+            custom_prompt: None,
+        }
+    }
+}
+
+/// Post-processing model status
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PostProcessModelStatus {
+    pub model_name: String,
+    pub loaded: bool,
+    pub loading: bool,
+    pub error: Option<String>,
+}
+
+/// Post-processing result
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PostProcessResult {
+    pub success: bool,
+    pub processed_text: String,
+    pub processing_time_ms: Option<f64>,
+    pub error: Option<String>,
 }
 
 /// Application state
@@ -468,6 +510,79 @@ fn is_model_cached(model_name: Option<String>, state: tauri::State<'_, AppState>
         .map_err(|e| e.to_string())
 }
 
+// ===== Post-processing commands =====
+
+#[tauri::command]
+fn get_frontmost_app() -> active_app::ActiveAppInfo {
+    active_app::get_frontmost_app()
+}
+
+#[tauri::command]
+fn get_postprocess_settings(state: tauri::State<'_, AppState>) -> Result<PostProcessSettings, String> {
+    let settings = state.settings.lock().map_err(|e| e.to_string())?;
+    Ok(settings.postprocess.clone())
+}
+
+#[tauri::command]
+fn update_postprocess_settings(
+    postprocess: PostProcessSettings,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+    settings.postprocess = postprocess;
+    let settings_clone = settings.clone();
+    drop(settings);
+    save_settings_to_store(&app, &settings_clone)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn load_postprocess_model(state: tauri::State<'_, AppState>) -> Result<PostProcessModelStatus, String> {
+    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
+    asr_engine.load_postprocess_model().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn unload_postprocess_model(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
+    asr_engine.unload_postprocess_model().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn is_postprocess_model_cached(state: tauri::State<'_, AppState>) -> Result<PostProcessModelStatus, String> {
+    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
+    asr_engine.is_postprocess_model_cached().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn postprocess_text(
+    text: String,
+    app_name: Option<String>,
+    app_bundle_id: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<PostProcessResult, String> {
+    let settings = state.settings.lock().map_err(|e| e.to_string())?;
+    let dictionary = if settings.postprocess.dictionary.is_empty() {
+        None
+    } else {
+        Some(settings.postprocess.dictionary.clone())
+    };
+    let custom_prompt = settings.postprocess.custom_prompt.clone();
+    drop(settings);
+
+    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
+    asr_engine
+        .postprocess_text(
+            &text,
+            app_name.as_deref(),
+            app_bundle_id.as_deref(),
+            dictionary.as_ref(),
+            custom_prompt.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+}
+
 /// Check if accessibility permissions are granted
 #[tauri::command]
 fn check_accessibility_permission() -> bool {
@@ -714,6 +829,14 @@ pub fn run() {
             request_accessibility_permission,
             open_accessibility_settings,
             restart_app,
+            // Post-processing commands
+            get_frontmost_app,
+            get_postprocess_settings,
+            update_postprocess_settings,
+            load_postprocess_model,
+            unload_postprocess_model,
+            is_postprocess_model_cached,
+            postprocess_text,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

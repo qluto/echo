@@ -16,6 +16,7 @@ import {
   requestAccessibilityPermission,
   openAccessibilitySettings,
   restartApp,
+  loadPostprocessModel,
 } from "./lib/tauri";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 
@@ -286,6 +287,19 @@ function App() {
         setLoadingPhase("ready");
       } else {
         await loadModel();
+      }
+
+      // Load post-processor model if enabled in settings
+      const settings = await getSettings();
+      if (settings.postprocess?.enabled) {
+        console.log("Post-processing enabled, loading LLM model...");
+        try {
+          await loadPostprocessModel();
+          console.log("Post-processor model loaded successfully");
+        } catch (e) {
+          // Non-critical - log but don't fail app initialization
+          console.warn("Failed to load post-processor model:", e);
+        }
       }
     } catch (e) {
       console.error("Failed to initialize engine:", e);
