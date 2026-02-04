@@ -6,6 +6,9 @@ Offline voice input desktop application optimized for Apple Silicon
 
 - **High-Accuracy Speech Recognition**: Powered by MLX-Audio with Whisper/Qwen3-ASR models
 - **Model Switching**: Switch between Whisper and Qwen3-ASR models in Settings
+- **LLM-Based Post-Processing**: Optional cleanup of filler words and self-corrections using on-device LLM
+- **Context-Aware Formatting**: Detects active application for context-appropriate output
+- **Customizable Prompts**: Edit post-processing behavior via Advanced Settings
 - **Global Hotkey**: System-wide keyboard shortcut for instant recording
 - **Real-time Transcription**: Immediate transcription after recording ends
 - **Auto Text Insertion**: Automatically paste transcription into active applications
@@ -58,6 +61,8 @@ Customize Echo via the Settings panel:
 - **Recognition Language**: Auto-detect or manually specify language
 - **Input Device**: Select your preferred microphone
 - **Auto Insert**: Enable/disable automatic paste after transcription
+- **Post-Processing**: Enable LLM-based cleanup to remove filler words and self-corrections
+- **Advanced Settings**: Customize the post-processing prompt for specialized use cases
 
 ## Development Setup
 
@@ -105,18 +110,20 @@ cd python-engine && ./build.sh
 - **Frontend**: React 18, TypeScript, Vite, Tailwind CSS
 - **Backend**: Tauri 2.x, Rust
 - **Speech Recognition**: MLX-Audio, Whisper, Qwen3-ASR (bundled with PyInstaller)
+- **Post-Processing**: MLX LLM (Qwen3-1.7B-4bit) for transcription cleanup
 - **Platform**: macOS 14.0+ on Apple Silicon
 
 ## Architecture
 
 Echo uses a multi-process architecture:
 
-1. **Tauri App (Rust)**: Main application, hotkey handling, audio capture
+1. **Tauri App (Rust)**: Main application, hotkey handling, audio capture, active app detection
 2. **React Frontend**: User interface, settings management
 3. **Python ASR Engine (Sidecar)**: Standalone PyInstaller binary running MLX-Audio for speech recognition
 4. **JSON-RPC Communication**: Rust backend communicates with Python engine via stdin/stdout
+5. **LLM Post-Processor**: Optional on-device cleanup using Qwen3-1.7B-4bit with context awareness
 
-The ASR engine is lazily loaded - models download on first use and remain cached locally.
+The ASR engine is lazily loaded - models download on first use and remain cached locally. The post-processor LLM auto-loads on startup if enabled.
 
 ## Contributing
 
