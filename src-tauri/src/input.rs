@@ -104,3 +104,13 @@ pub fn send_paste_shift_insert(enigo: &mut Enigo) -> Result<(), String> {
     log::info!("Paste command sent (Shift+Insert)");
     Ok(())
 }
+
+/// Sends a Return/Enter key press to submit text (e.g., in messaging apps).
+pub fn send_return_key(enigo: &mut Enigo) -> Result<(), String> {
+    enigo
+        .key(Key::Return, enigo::Direction::Click)
+        .map_err(|e| format!("Failed to click Return key: {}", e))?;
+
+    log::info!("Return key sent");
+    Ok(())
+}

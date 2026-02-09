@@ -87,6 +87,103 @@ pub fn get_frontmost_app() -> ActiveAppInfo {
     ActiveAppInfo::default()
 }
 
+/// Activate (bring to front) an application by its bundle identifier.
+/// Returns true if the app was found and activated.
+#[cfg(target_os = "macos")]
+pub fn activate_app_by_bundle_id(bundle_id: &str) -> bool {
+    use cocoa::base::{id, nil};
+
+    unsafe {
+        let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+        if workspace == nil {
+            log::warn!("Failed to get NSWorkspace for app activation");
+            return false;
+        }
+
+        let running_apps: id = msg_send![workspace, runningApplications];
+        if running_apps == nil {
+            return false;
+        }
+
+        let count: usize = msg_send![running_apps, count];
+        for i in 0..count {
+            let app: id = msg_send![running_apps, objectAtIndex: i];
+            let bid: id = msg_send![app, bundleIdentifier];
+            if let Some(bid_str) = nsstring_to_string(bid) {
+                if bid_str == bundle_id {
+                    // NSApplicationActivateIgnoringOtherApps = 1 << 1 = 2
+                    let activated: bool = msg_send![app, activateWithOptions: 2u64];
+                    log::info!(
+                        "Activated app: {} (bundle: {}), success={}",
+                        nsstring_to_string(msg_send![app, localizedName])
+                            .unwrap_or_default(),
+                        bundle_id,
+                        activated
+                    );
+                    return activated;
+                }
+            }
+        }
+
+        log::warn!("App not found for activation: {}", bundle_id);
+        false
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn activate_app_by_bundle_id(_bundle_id: &str) -> bool {
+    false
+}
+
+/// Try to determine the source app of the most recent desktop notification.
+/// Uses the macOS notification center database (best-effort).
+/// Returns the bundle_id of the notification source, or None if unavailable.
+#[cfg(target_os = "macos")]
+pub fn get_last_notification_source_app() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+
+    // macOS 13+ (Ventura): notification database location
+    let db_path = format!(
+        "{}/Library/Group Containers/group.com.apple.usernoted/db2/db",
+        home
+    );
+
+    if !std::path::Path::new(&db_path).exists() {
+        log::debug!("Notification database not found at: {}", db_path);
+        return None;
+    }
+
+    // Use sqlite3 CLI to query the most recent notification source
+    let output = std::process::Command::new("sqlite3")
+        .arg(&db_path)
+        .arg("-separator")
+        .arg("|")
+        .arg("SELECT app_id FROM record ORDER BY delivered_date DESC LIMIT 1;")
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let app_id = String::from_utf8(output.stdout)
+            .ok()?
+            .trim()
+            .to_string();
+        if !app_id.is_empty() {
+            log::info!("Last notification source app: {}", app_id);
+            return Some(app_id);
+        }
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::debug!("Failed to query notification database: {}", stderr);
+    }
+
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn get_last_notification_source_app() -> Option<String> {
+    None
+}
+
 /// Known app profiles for post-processing
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AppCategory {

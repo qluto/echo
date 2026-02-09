@@ -16,10 +16,12 @@ import {
   updatePostprocessSettings,
   loadPostprocessModel,
   isPostprocessModelCached,
+  updateWakeWordSettings,
   AppSettings,
   AudioDevice,
   HandyKeysEvent,
   PostProcessSettings,
+  WakeWordSettings,
 } from "../lib/tauri";
 
 interface SettingsPanelProps {
@@ -121,6 +123,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     device_name: null,
     model_name: null,
     postprocess: { enabled: false, dictionary: {} },
+    wake_word: { enabled: false, keyword: "echo", auto_send: false, target_mode: "last_app" },
   });
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [modelName, setModelName] = useState<string>("mlx-community/Qwen3-ASR-0.6B-8bit");
@@ -829,6 +832,214 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                     />
                   </button>
                 </div>
+              </section>
+
+              {/* Wake Word Section */}
+              <section className="flex flex-col gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div
+                    className="w-6 h-6 rounded-md flex items-center justify-center"
+                    style={{ backgroundColor: "rgba(59, 130, 246, 0.12)" }}
+                  >
+                    <svg
+                      className="w-3.5 h-3.5"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="#3B82F6"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M2 10v3" />
+                      <path d="M6 6v11" />
+                      <path d="M10 3v18" />
+                      <path d="M14 8v7" />
+                      <path d="M18 5v13" />
+                      <path d="M22 10v3" />
+                    </svg>
+                  </div>
+                  <span
+                    className="text-sm font-medium"
+                    style={{ color: "var(--text-primary)" }}
+                  >
+                    Wake Word
+                  </span>
+                </div>
+
+                {/* Wake Word Enable Toggle */}
+                <div className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between">
+                  <div className="flex flex-col">
+                    <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                      Voice Activation
+                    </span>
+                    <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+                      Always-on keyword listening
+                    </span>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      const newWakeWord: WakeWordSettings = {
+                        ...settings.wake_word,
+                        enabled: !settings.wake_word.enabled,
+                      };
+                      const newSettings = { ...settings, wake_word: newWakeWord };
+                      setSettings(newSettings);
+                      try {
+                        await updateWakeWordSettings(newWakeWord);
+                      } catch (e) {
+                        console.error("Failed to update wake word settings:", e);
+                      }
+                    }}
+                    className="w-12 h-7 rounded-full flex items-center transition-all duration-200"
+                    style={{
+                      backgroundColor: settings.wake_word.enabled
+                        ? "#3B82F6"
+                        : "var(--border-subtle)",
+                      padding: "2px",
+                    }}
+                  >
+                    <div
+                      className="w-6 h-6 rounded-full bg-white transition-transform duration-200"
+                      style={{
+                        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.15)",
+                        transform: settings.wake_word.enabled ? "translateX(20px)" : "translateX(0)",
+                      }}
+                    />
+                  </button>
+                </div>
+
+                {settings.wake_word.enabled && (
+                  <>
+                    {/* Keyword Input */}
+                    <div className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between">
+                      <span className="text-sm flex-shrink-0" style={{ color: "var(--text-secondary)" }}>
+                        Keyword
+                      </span>
+                      <input
+                        type="text"
+                        value={settings.wake_word.keyword}
+                        onChange={async (e) => {
+                          const newWakeWord: WakeWordSettings = {
+                            ...settings.wake_word,
+                            keyword: e.target.value,
+                          };
+                          const newSettings = { ...settings, wake_word: newWakeWord };
+                          setSettings(newSettings);
+                        }}
+                        onBlur={async () => {
+                          try {
+                            await updateWakeWordSettings(settings.wake_word);
+                          } catch (e) {
+                            console.error("Failed to save wake word keyword:", e);
+                          }
+                        }}
+                        className="bg-transparent font-mono text-xs text-right focus:outline-none w-[120px]"
+                        style={{ color: "var(--text-primary)" }}
+                        placeholder="echo"
+                      />
+                    </div>
+
+                    {/* Auto-send Toggle */}
+                    <div className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between">
+                      <div className="flex flex-col">
+                        <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                          Auto-send
+                        </span>
+                        <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+                          Press Enter after paste
+                        </span>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          const newWakeWord: WakeWordSettings = {
+                            ...settings.wake_word,
+                            auto_send: !settings.wake_word.auto_send,
+                          };
+                          const newSettings = { ...settings, wake_word: newWakeWord };
+                          setSettings(newSettings);
+                          try {
+                            await updateWakeWordSettings(newWakeWord);
+                          } catch (e) {
+                            console.error("Failed to update auto-send:", e);
+                          }
+                        }}
+                        className="w-12 h-7 rounded-full flex items-center transition-all duration-200"
+                        style={{
+                          backgroundColor: settings.wake_word.auto_send
+                            ? "#3B82F6"
+                            : "var(--border-subtle)",
+                          padding: "2px",
+                        }}
+                      >
+                        <div
+                          className="w-6 h-6 rounded-full bg-white transition-transform duration-200"
+                          style={{
+                            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.15)",
+                            transform: settings.wake_word.auto_send ? "translateX(20px)" : "translateX(0)",
+                          }}
+                        />
+                      </button>
+                    </div>
+
+                    {/* Target Mode */}
+                    <div className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between">
+                      <span className="text-sm flex-shrink-0" style={{ color: "var(--text-secondary)" }}>
+                        Target App
+                      </span>
+                      <div className="flex items-center gap-2 w-[160px] justify-end">
+                        <select
+                          value={settings.wake_word.target_mode}
+                          onChange={async (e) => {
+                            const newWakeWord: WakeWordSettings = {
+                              ...settings.wake_word,
+                              target_mode: e.target.value,
+                            };
+                            const newSettings = { ...settings, wake_word: newWakeWord };
+                            setSettings(newSettings);
+                            try {
+                              await updateWakeWordSettings(newWakeWord);
+                            } catch (e2) {
+                              console.error("Failed to update target mode:", e2);
+                            }
+                          }}
+                          className="bg-transparent font-mono text-xs appearance-none cursor-pointer focus:outline-none w-full"
+                          style={{ color: "var(--text-primary)" }}
+                        >
+                          <option value="last_app" className="bg-surface">
+                            Active App
+                          </option>
+                          <option value="notification" className="bg-surface">
+                            Last Notification
+                          </option>
+                        </select>
+                        <svg
+                          className="w-4 h-4 flex-shrink-0"
+                          fill="none"
+                          stroke="var(--text-tertiary)"
+                          strokeWidth={2}
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M19.5 8.25l-7.5 7.5-7.5-7.5"
+                          />
+                        </svg>
+                      </div>
+                    </div>
+
+                    {/* Info text */}
+                    <div
+                      className="px-4 py-2 rounded-lg text-xs"
+                      style={{
+                        backgroundColor: "rgba(59, 130, 246, 0.1)",
+                        color: "var(--text-tertiary)",
+                      }}
+                    >
+                      Say "{settings.wake_word.keyword}" followed by your message. The text will be inserted into the {settings.wake_word.target_mode === "notification" ? "last notification's source app" : "currently active app"}{settings.wake_word.auto_send ? " and sent automatically" : ""}.
+                    </div>
+                  </>
+                )}
               </section>
 
               {/* Post-processing Section */}

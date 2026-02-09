@@ -33,6 +33,7 @@ export interface AppSettings {
   device_name: string | null;
   model_name: string | null;
   postprocess: PostProcessSettings;
+  wake_word: WakeWordSettings;
 }
 
 // Tauri commands
@@ -293,4 +294,59 @@ export async function postprocessText(
 
 export async function getFrontmostApp(): Promise<ActiveAppInfo> {
   return invoke("get_frontmost_app");
+}
+
+// Wake word types and functions
+export interface WakeWordSettings {
+  enabled: boolean;
+  keyword: string;
+  auto_send: boolean;
+  target_mode: string; // "last_app" | "notification" | specific bundle_id
+}
+
+export async function getWakeWordSettings(): Promise<WakeWordSettings> {
+  return invoke("get_wake_word_settings");
+}
+
+export async function updateWakeWordSettings(wakeWord: WakeWordSettings): Promise<void> {
+  return invoke("update_wake_word_settings", { wakeWord });
+}
+
+export async function startWakeWordListener(): Promise<void> {
+  return invoke("start_wake_word_listener");
+}
+
+export async function stopWakeWordListener(): Promise<void> {
+  return invoke("stop_wake_word_listener");
+}
+
+export async function getWakeWordStatus(): Promise<boolean> {
+  return invoke("get_wake_word_status");
+}
+
+export interface WakeWordStateEvent {
+  state: "listening" | "processing" | "stopped" | "error";
+  error?: string;
+}
+
+export interface WakeWordTranscriptionEvent {
+  text: string;
+  full_text: string;
+  command: string;
+}
+
+export function onWakeWordStateChange(
+  callback: (event: WakeWordStateEvent) => void
+): Promise<UnlistenFn> {
+  return listen<WakeWordStateEvent>("wake-word-state", (event) => {
+    callback(event.payload);
+  });
+}
+
+export function onWakeWordTranscription(
+  callback: (event: WakeWordTranscriptionEvent) => void
+): Promise<UnlistenFn> {
+  return listen<WakeWordTranscriptionEvent>("wake-word-transcription", (event) => {
+    callback(event.payload);
+  });
 }

@@ -9,6 +9,7 @@ mod handy_keys;
 mod hotkey;
 mod input;
 mod transcription;
+mod wake_word;
 
 use std::sync::Mutex;
 use tauri::{
@@ -32,6 +33,8 @@ pub struct Settings {
     pub model_name: Option<String>,
     #[serde(default)]
     pub postprocess: PostProcessSettings,
+    #[serde(default)]
+    pub wake_word: WakeWordSettings,
 }
 
 impl Default for Settings {
@@ -43,6 +46,7 @@ impl Default for Settings {
             device_name: None,
             model_name: None,
             postprocess: PostProcessSettings::default(),
+            wake_word: WakeWordSettings::default(),
         }
     }
 }
@@ -137,6 +141,30 @@ impl Default for PostProcessSettings {
     }
 }
 
+/// Wake word settings
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WakeWordSettings {
+    /// Whether wake word listening is enabled
+    pub enabled: bool,
+    /// The wake word keyword (e.g., "echo" or "エコー")
+    pub keyword: String,
+    /// Automatically press Enter to send after pasting
+    pub auto_send: bool,
+    /// Target app mode: "last_app", "notification", or a specific bundle_id
+    pub target_mode: String,
+}
+
+impl Default for WakeWordSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            keyword: "echo".to_string(),
+            auto_send: false,
+            target_mode: "last_app".to_string(),
+        }
+    }
+}
+
 /// Post-processing model status
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PostProcessModelStatus {
@@ -160,6 +188,7 @@ pub struct AppState {
     pub asr_engine: Mutex<ASREngine>,
     pub settings: Mutex<Settings>,
     pub recording_state: Mutex<RecordingState>,
+    pub wake_word_listener: Mutex<Option<wake_word::WakeWordListener>>,
 }
 
 /// Recording state
@@ -685,6 +714,125 @@ fn restart_app(app: tauri::AppHandle) {
     app.restart();
 }
 
+// ===== Wake word commands =====
+
+#[tauri::command]
+fn get_wake_word_settings(state: tauri::State<'_, AppState>) -> Result<WakeWordSettings, String> {
+    let settings = state.settings.lock().map_err(|e| e.to_string())?;
+    Ok(settings.wake_word.clone())
+}
+
+#[tauri::command]
+fn update_wake_word_settings(
+    wake_word: WakeWordSettings,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let was_enabled = {
+        let settings = state.settings.lock().map_err(|e| e.to_string())?;
+        settings.wake_word.enabled
+    };
+
+    // Update settings
+    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+    settings.wake_word = wake_word.clone();
+    let settings_clone = settings.clone();
+    drop(settings);
+    save_settings_to_store(&app, &settings_clone)?;
+
+    // Start or stop the listener based on enabled state
+    if wake_word.enabled && !was_enabled {
+        start_wake_word_listener_inner(&app, &state, &wake_word)?;
+    } else if !wake_word.enabled && was_enabled {
+        stop_wake_word_listener_inner(&state)?;
+    } else if wake_word.enabled {
+        // Settings changed while running - restart the listener
+        stop_wake_word_listener_inner(&state)?;
+        start_wake_word_listener_inner(&app, &state, &wake_word)?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn start_wake_word_listener(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let settings = state.settings.lock().map_err(|e| e.to_string())?;
+    let wake_word = settings.wake_word.clone();
+    drop(settings);
+
+    if !wake_word.enabled {
+        return Err("Wake word is not enabled in settings".to_string());
+    }
+
+    start_wake_word_listener_inner(&app, &state, &wake_word)
+}
+
+#[tauri::command]
+fn stop_wake_word_listener(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    stop_wake_word_listener_inner(&state)
+}
+
+#[tauri::command]
+fn get_wake_word_status(state: tauri::State<'_, AppState>) -> Result<bool, String> {
+    let listener = state
+        .wake_word_listener
+        .lock()
+        .map_err(|e| e.to_string())?;
+    Ok(listener.as_ref().map(|l| l.is_running()).unwrap_or(false))
+}
+
+fn start_wake_word_listener_inner(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, AppState>,
+    wake_word: &WakeWordSettings,
+) -> Result<(), String> {
+    let mut listener_guard = state
+        .wake_word_listener
+        .lock()
+        .map_err(|e| e.to_string())?;
+
+    // Stop existing listener if any
+    if let Some(mut existing) = listener_guard.take() {
+        existing.stop();
+    }
+
+    let device_name = state
+        .settings
+        .lock()
+        .ok()
+        .and_then(|s| s.device_name.clone());
+
+    let listener = wake_word::WakeWordListener::start(
+        app.clone(),
+        wake_word.keyword.clone(),
+        wake_word.auto_send,
+        wake_word.target_mode.clone(),
+        device_name,
+    )
+    .map_err(|e| e.to_string())?;
+
+    *listener_guard = Some(listener);
+    log::info!("Wake word listener started");
+    Ok(())
+}
+
+fn stop_wake_word_listener_inner(state: &tauri::State<'_, AppState>) -> Result<(), String> {
+    let mut listener_guard = state
+        .wake_word_listener
+        .lock()
+        .map_err(|e| e.to_string())?;
+
+    if let Some(mut listener) = listener_guard.take() {
+        listener.stop();
+        log::info!("Wake word listener stopped");
+    }
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -712,6 +860,7 @@ pub fn run() {
                 asr_engine: Mutex::new(asr_engine),
                 settings: Mutex::new(settings),
                 recording_state: Mutex::new(RecordingState::default()),
+                wake_word_listener: Mutex::new(None),
             };
             app.manage(app_state);
 
@@ -837,6 +986,12 @@ pub fn run() {
             unload_postprocess_model,
             is_postprocess_model_cached,
             postprocess_text,
+            // Wake word commands
+            get_wake_word_settings,
+            update_wake_word_settings,
+            start_wake_word_listener,
+            stop_wake_word_listener,
+            get_wake_word_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
