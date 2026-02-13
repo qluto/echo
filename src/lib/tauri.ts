@@ -24,6 +24,7 @@ export interface PostProcessSettings {
   enabled: boolean;
   dictionary: Record<string, string>;
   custom_prompt?: string | null;
+  model_name?: string | null;
 }
 
 export interface AppSettings {
@@ -245,6 +246,7 @@ export interface PostProcessModelStatus {
   loaded: boolean;
   loading: boolean;
   error: string | null;
+  available_models: string[];
 }
 
 export interface PostProcessResult {
@@ -293,4 +295,12 @@ export async function postprocessText(
 
 export async function getFrontmostApp(): Promise<ActiveAppInfo> {
   return invoke("get_frontmost_app");
+}
+
+export async function setPostprocessModel(modelName: string): Promise<PostProcessModelStatus> {
+  return invoke("set_postprocess_model", { modelName });
+}
+
+export async function getPostprocessModelStatus(): Promise<PostProcessModelStatus> {
+  return invoke("get_postprocess_model_status");
 }

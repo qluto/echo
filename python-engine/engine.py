@@ -42,7 +42,14 @@ logger = logging.getLogger(__name__)
 class PostProcessor:
     """LLM-based post-processor for ASR text using Qwen3 with /no_think mode"""
 
-    DEFAULT_MODEL = "mlx-community/Qwen3-1.7B-4bit"
+    # Available post-processing models
+    AVAILABLE_MODELS = [
+        "mlx-community/Qwen3-8B-4bit",
+        "mlx-community/Qwen3-4B-4bit",
+        "mlx-community/Qwen3-1.7B-4bit",
+    ]
+
+    DEFAULT_MODEL = "mlx-community/Qwen3-4B-4bit"
 
     # System prompt template for post-processing
     SYSTEM_PROMPT = """/no_think
@@ -86,7 +93,25 @@ Output ONLY the cleaned text. No explanations."""
             "loaded": self._loaded,
             "loading": self._loading,
             "error": self._load_error,
+            "available_models": self.AVAILABLE_MODELS,
         }
+
+    def set_model(self, model_name: str) -> dict:
+        """Set a new post-processor model (requires reload)"""
+        if model_name not in self.AVAILABLE_MODELS:
+            return {
+                "success": False,
+                "error": f"Unknown model: {model_name}. Available: {self.AVAILABLE_MODELS}"
+            }
+
+        # Unload current model if loaded
+        if self._loaded:
+            self.unload_model()
+
+        self.model_name = model_name
+        logger.info(f"Post-processor model set to: {model_name}")
+
+        return {"success": True, "model_name": model_name}
 
     def is_model_cached(self, model_name: Optional[str] = None) -> dict:
         """Check if the post-processor model is already cached locally."""
@@ -894,6 +919,27 @@ def run_daemon(engine: ASREngine):
             elif command == "is_postprocess_model_cached":
                 model_name = request.get("model_name")
                 result = engine._postprocessor.is_model_cached(model_name)
+                response = {
+                    "id": request_id,
+                    "result": result
+                }
+
+            elif command == "set_postprocess_model":
+                model_name = request.get("model_name", "")
+                if not model_name:
+                    response = {
+                        "id": request_id,
+                        "error": "Missing model_name parameter"
+                    }
+                else:
+                    result = engine._postprocessor.set_model(model_name)
+                    response = {
+                        "id": request_id,
+                        "result": result
+                    }
+
+            elif command == "get_postprocess_status":
+                result = engine._postprocessor.get_status()
                 response = {
                     "id": request_id,
                     "result": result

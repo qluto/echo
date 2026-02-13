@@ -16,6 +16,8 @@ import {
   updatePostprocessSettings,
   loadPostprocessModel,
   isPostprocessModelCached,
+  setPostprocessModel,
+  getPostprocessModelStatus,
   AppSettings,
   AudioDevice,
   HandyKeysEvent,
@@ -136,6 +138,13 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [postprocessLoadPhase, setPostprocessLoadPhase] = useState<"idle" | "checking" | "downloading" | "loading">("idle");
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [customPrompt, setCustomPrompt] = useState<string | null>(null);
+  const [postprocessModelName, setPostprocessModelName] = useState<string>("mlx-community/Qwen3-4B-4bit");
+  const [availablePostprocessModels, setAvailablePostprocessModels] = useState<string[]>([
+    "mlx-community/Qwen3-8B-4bit",
+    "mlx-community/Qwen3-4B-4bit",
+    "mlx-community/Qwen3-1.7B-4bit",
+  ]);
+  const [isPostprocessModelChanging, setIsPostprocessModelChanging] = useState(false);
   const currentKeysRef = useRef("");
   const unlistenRef = useRef<(() => void) | null>(null);
 
@@ -148,10 +157,11 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const loadSettings = async () => {
     setIsLoading(true);
     try {
-      const [loadedSettings, loadedDevices, modelStatus] = await Promise.all([
+      const [loadedSettings, loadedDevices, modelStatus, postprocessStatus] = await Promise.all([
         getSettings(),
         getAudioDevices(),
         getModelStatus(),
+        getPostprocessModelStatus().catch(() => null),
       ]);
       setSettings(loadedSettings);
       setDevices(loadedDevices);
@@ -171,6 +181,19 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
           return aIndex - bIndex;
         });
         setAvailableModels(sortedModels);
+      }
+      // Load post-process model status
+      if (postprocessStatus) {
+        if (postprocessStatus.model_name) {
+          setPostprocessModelName(postprocessStatus.model_name);
+        }
+        if (postprocessStatus.available_models && postprocessStatus.available_models.length > 0) {
+          setAvailablePostprocessModels(postprocessStatus.available_models);
+        }
+      }
+      // Override with saved settings if available
+      if (loadedSettings.postprocess?.model_name) {
+        setPostprocessModelName(loadedSettings.postprocess.model_name);
       }
     } catch (e) {
       console.error("Failed to load settings:", e);
@@ -283,6 +306,28 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       } catch (e) {
         console.error("Failed to disable postprocessing:", e);
       }
+    }
+  };
+
+  const handlePostprocessModelChange = async (newModel: string) => {
+    if (newModel === postprocessModelName || isPostprocessModelChanging) return;
+
+    setIsPostprocessModelChanging(true);
+    try {
+      // Set the new model
+      await setPostprocessModel(newModel);
+      setPostprocessModelName(newModel);
+
+      // If postprocessing is enabled, reload the model
+      if (settings.postprocess.enabled) {
+        setPostprocessLoadPhase("downloading");
+        await loadPostprocessModel();
+        setPostprocessLoadPhase("idle");
+      }
+    } catch (e) {
+      console.error("Failed to change postprocess model:", e);
+    } finally {
+      setIsPostprocessModelChanging(false);
     }
   };
 
@@ -909,6 +954,70 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                     </button>
                   )}
                 </div>
+
+                {/* Model selector when enabled */}
+                {settings.postprocess.enabled && (
+                  <div className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between">
+                    <span className="text-sm flex-shrink-0" style={{ color: "var(--text-secondary)" }}>
+                      LLM Model
+                    </span>
+                    <div className="flex items-center gap-2 w-[140px] justify-end">
+                      {isPostprocessModelChanging ? (
+                        <div className="flex items-center gap-2">
+                          <div
+                            className="w-3 h-3 border-2 rounded-full animate-spin"
+                            style={{
+                              borderColor: "var(--border-subtle)",
+                              borderTopColor: "#9370DB",
+                            }}
+                          />
+                          <span
+                            className="font-mono text-xs"
+                            style={{ color: "var(--text-tertiary)" }}
+                          >
+                            Switching...
+                          </span>
+                        </div>
+                      ) : (
+                        <>
+                          <select
+                            value={postprocessModelName}
+                            onChange={(e) => handlePostprocessModelChange(e.target.value)}
+                            className="bg-transparent font-mono text-xs appearance-none cursor-pointer focus:outline-none w-full"
+                            style={{ color: "var(--text-primary)" }}
+                          >
+                            {availablePostprocessModels.map((model) => {
+                              const displayName = model.includes("8B") ? "Qwen3 8B" : model.includes("4B") ? "Qwen3 4B" : "Qwen3 1.7B";
+                              const memInfo = model.includes("8B") ? "~5GB" : model.includes("4B") ? "~2.5GB" : "~1.3GB";
+                              return (
+                                <option
+                                  key={model}
+                                  value={model}
+                                  className="bg-surface"
+                                >
+                                  {displayName} ({memInfo})
+                                </option>
+                              );
+                            })}
+                          </select>
+                          <svg
+                            className="w-4 h-4 flex-shrink-0"
+                            fill="none"
+                            stroke="var(--text-tertiary)"
+                            strokeWidth={2}
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="M19.5 8.25l-7.5 7.5-7.5-7.5"
+                            />
+                          </svg>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {/* Info text when enabled */}
                 {settings.postprocess.enabled && (

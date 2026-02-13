@@ -125,6 +125,9 @@ pub struct PostProcessSettings {
     /// Custom system prompt for the LLM post-processor. If None, uses default.
     #[serde(default)]
     pub custom_prompt: Option<String>,
+    /// Model name for post-processing LLM. If None, uses default.
+    #[serde(default)]
+    pub model_name: Option<String>,
 }
 
 impl Default for PostProcessSettings {
@@ -133,6 +136,7 @@ impl Default for PostProcessSettings {
             enabled: false,
             dictionary: std::collections::HashMap::new(),
             custom_prompt: None,
+            model_name: None,
         }
     }
 }
@@ -144,6 +148,8 @@ pub struct PostProcessModelStatus {
     pub loaded: bool,
     pub loading: bool,
     pub error: Option<String>,
+    #[serde(default)]
+    pub available_models: Vec<String>,
 }
 
 /// Post-processing result
@@ -583,6 +589,32 @@ fn postprocess_text(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn set_postprocess_model(
+    model_name: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<PostProcessModelStatus, String> {
+    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
+    let result = asr_engine.set_postprocess_model(&model_name).map_err(|e| e.to_string())?;
+    drop(asr_engine);
+
+    // Update and save settings with new model name
+    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+    settings.postprocess.model_name = Some(model_name);
+    let settings_clone = settings.clone();
+    drop(settings);
+    save_settings_to_store(&app, &settings_clone)?;
+
+    Ok(result)
+}
+
+#[tauri::command]
+fn get_postprocess_model_status(state: tauri::State<'_, AppState>) -> Result<PostProcessModelStatus, String> {
+    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
+    asr_engine.get_postprocess_status().map_err(|e| e.to_string())
+}
+
 /// Check if accessibility permissions are granted
 #[tauri::command]
 fn check_accessibility_permission() -> bool {
@@ -837,6 +869,8 @@ pub fn run() {
             unload_postprocess_model,
             is_postprocess_model_cached,
             postprocess_text,
+            set_postprocess_model,
+            get_postprocess_model_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
