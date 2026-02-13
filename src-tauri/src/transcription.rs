@@ -891,6 +891,7 @@ impl ASREngine {
             loaded: result.get("success").and_then(|v| v.as_bool()).unwrap_or(false),
             loading: false,
             error: result.get("error").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            available_models: vec![],
         })
     }
 
@@ -964,6 +965,105 @@ impl ASREngine {
             loaded: result.get("cached").and_then(|v| v.as_bool()).unwrap_or(false),
             loading: false,
             error: None,
+            available_models: vec![],
+        })
+    }
+
+    /// Set the post-processing model
+    pub fn set_postprocess_model(&mut self, model_name: &str) -> Result<crate::PostProcessModelStatus> {
+        let process = match self.process.as_mut() {
+            Some(p) => p,
+            None => {
+                return Err(anyhow!("ASR engine not running"));
+            }
+        };
+
+        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        let request = serde_json::json!({
+            "command": "set_postprocess_model",
+            "id": id,
+            "model_name": model_name,
+        });
+
+        let json = serde_json::to_string(&request)?;
+        writeln!(process.stdin, "{}", json)?;
+        process.stdin.flush()?;
+
+        let mut line = String::new();
+        process.stdout.read_line(&mut line)?;
+
+        let response: serde_json::Value = serde_json::from_str(&line)?;
+
+        if let Some(error) = response.get("error").and_then(|e| e.as_str()) {
+            return Err(anyhow!("Failed to set post-process model: {}", error));
+        }
+
+        let result = response.get("result").ok_or_else(|| anyhow!("No result"))?;
+
+        if result.get("success").and_then(|v| v.as_bool()) == Some(false) {
+            return Err(anyhow!(
+                "Failed to set post-process model: {}",
+                result.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error")
+            ));
+        }
+
+        Ok(crate::PostProcessModelStatus {
+            model_name: result
+                .get("model_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(model_name)
+                .to_string(),
+            loaded: false, // Model needs to be reloaded after setting
+            loading: false,
+            error: None,
+            available_models: vec![],
+        })
+    }
+
+    /// Get post-processor status
+    pub fn get_postprocess_status(&mut self) -> Result<crate::PostProcessModelStatus> {
+        let process = match self.process.as_mut() {
+            Some(p) => p,
+            None => {
+                return Err(anyhow!("ASR engine not running"));
+            }
+        };
+
+        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        let request = serde_json::json!({
+            "command": "get_postprocess_status",
+            "id": id,
+        });
+
+        let json = serde_json::to_string(&request)?;
+        writeln!(process.stdin, "{}", json)?;
+        process.stdin.flush()?;
+
+        let mut line = String::new();
+        process.stdout.read_line(&mut line)?;
+
+        let response: serde_json::Value = serde_json::from_str(&line)?;
+
+        if let Some(error) = response.get("error").and_then(|e| e.as_str()) {
+            return Err(anyhow!("Failed to get post-process status: {}", error));
+        }
+
+        let result = response.get("result").ok_or_else(|| anyhow!("No result"))?;
+
+        Ok(crate::PostProcessModelStatus {
+            model_name: result
+                .get("model_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            loaded: result.get("loaded").and_then(|v| v.as_bool()).unwrap_or(false),
+            loading: result.get("loading").and_then(|v| v.as_bool()).unwrap_or(false),
+            error: result.get("error").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            available_models: result
+                .get("available_models")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default(),
         })
     }
 
