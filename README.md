@@ -9,9 +9,11 @@ Offline voice input desktop application optimized for Apple Silicon
 - **LLM-Based Post-Processing**: Optional cleanup of filler words and self-corrections using on-device LLM
 - **Context-Aware Formatting**: Detects active application for context-appropriate output
 - **Customizable Prompts**: Edit post-processing behavior via Advanced Settings
+- **Always-On Transcription**: Continuous listening mode with automatic speech detection (Silero VAD)
 - **Global Hotkey**: System-wide keyboard shortcut for instant recording
 - **Real-time Transcription**: Immediate transcription after recording ends
 - **Auto Text Insertion**: Automatically paste transcription into active applications
+- **Transcription History**: SQLite-backed history with full-text search for always-on mode
 - **Fully Offline**: No internet connection required - all processing happens locally
 
 ## System Requirements
@@ -51,6 +53,18 @@ The app is self-contained - no additional Python installation required!
 4. Release the key when finished
 5. Transcription appears automatically
 6. Text is auto-inserted into the active application (if enabled in Settings)
+
+### Always-On Transcription
+
+Echo also supports continuous listening mode, which runs in the background and automatically detects speech:
+
+1. Click the "Start Listening" button in the app
+2. Echo continuously monitors the microphone using Silero VAD (Voice Activity Detection)
+3. When speech is detected, it automatically records the segment
+4. After a silence pause (1.5s), the segment is transcribed and saved to history
+5. Click "Stop Listening" to end the session
+
+Transcription history is stored in a local SQLite database and can be searched via the History panel.
 
 ## Settings
 
@@ -117,11 +131,12 @@ cd python-engine && ./build.sh
 
 Echo uses a multi-process architecture:
 
-1. **Tauri App (Rust)**: Main application, hotkey handling, audio capture, active app detection
-2. **React Frontend**: User interface, settings management
+1. **Tauri App (Rust)**: Main application, hotkey handling, audio capture, VAD, active app detection
+2. **React Frontend**: User interface, settings management, transcription history
 3. **Python ASR Engine (Sidecar)**: Standalone PyInstaller binary running MLX-Audio for speech recognition
 4. **JSON-RPC Communication**: Rust backend communicates with Python engine via stdin/stdout
 5. **LLM Post-Processor**: Optional on-device cleanup using Qwen3-1.7B-4bit with context awareness
+6. **Continuous Pipeline (Rust)**: Streaming audio → Silero VAD (ONNX) → segment detection → ASR → SQLite
 
 The ASR engine is lazily loaded - models download on first use and remain cached locally. The post-processor LLM auto-loads on startup if enabled.
 
