@@ -7,6 +7,7 @@
 use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, Stream, SupportedStreamConfig};
+use rubato::Resampler;
 use hound::{SampleFormat as HoundSampleFormat, WavSpec, WavWriter};
 use std::fs::File;
 use std::io::BufWriter;
@@ -289,6 +290,32 @@ impl Drop for StreamingCapture {
     }
 }
 
+/// Try to find a device config that supports 16kHz mono directly (like Python's sounddevice).
+/// Falls back to device default if 16kHz is not natively supported.
+fn find_best_input_config(device: &Device) -> Result<(SupportedStreamConfig, bool)> {
+    // Try to find native 16kHz support (matches Python's samplerate=16000 approach)
+    if let Ok(configs) = device.supported_input_configs() {
+        for range in configs {
+            let min = range.min_sample_rate().0;
+            let max = range.max_sample_rate().0;
+            if min <= VAD_SAMPLE_RATE && VAD_SAMPLE_RATE <= max {
+                let config = range.with_sample_rate(cpal::SampleRate(VAD_SAMPLE_RATE));
+                log::info!("Device supports native {}Hz capture", VAD_SAMPLE_RATE);
+                return Ok((config, true));
+            }
+        }
+    }
+
+    // Fall back to device default
+    let config = device.default_input_config()?;
+    log::info!(
+        "Device does not support native {}Hz, using {}Hz with resampling",
+        VAD_SAMPLE_RATE,
+        config.sample_rate().0
+    );
+    Ok((config, false))
+}
+
 fn streaming_thread(
     device_name: Option<String>,
     frame_sender: crossbeam_channel::Sender<Vec<f32>>,
@@ -305,15 +332,16 @@ fn streaming_thread(
             .ok_or_else(|| anyhow!("No default input device"))?
     };
 
-    let supported_config = device.default_input_config()?;
+    let (supported_config, is_native_16k) = find_best_input_config(&device)?;
     let native_rate = supported_config.sample_rate().0;
     let native_channels = supported_config.channels() as usize;
 
     log::info!(
-        "Streaming capture: native {}Hz {}ch, target {}Hz mono",
+        "Streaming capture: {}Hz {}ch → target {}Hz mono (native_16k={})",
         native_rate,
         native_channels,
-        VAD_SAMPLE_RATE
+        VAD_SAMPLE_RATE,
+        is_native_16k,
     );
 
     // Accumulator to collect samples and emit 512-sample frames
@@ -321,7 +349,7 @@ fn streaming_thread(
         native_rate,
         native_channels,
         frame_sender,
-    )));
+    )?));
     let acc_clone = Arc::clone(&accumulator);
 
     let config = supported_config.config();
@@ -373,13 +401,22 @@ fn streaming_thread(
 
 /// Accumulates incoming audio samples, converts to 16kHz mono, and emits
 /// 512-sample frames via the channel.
+///
+/// When the device natively supports 16kHz, no resampling is needed.
+/// Otherwise, uses rubato's sinc interpolation for high-quality resampling
+/// (matching Python sounddevice's driver-level resampling quality).
 struct FrameAccumulator {
     native_rate: u32,
     native_channels: usize,
-    buffer: Vec<f32>,
+    /// Buffer of 16kHz mono samples waiting to be emitted as 512-sample frames.
+    output_buffer: Vec<f32>,
+    /// Input buffer for collecting enough samples for the resampler.
+    resample_input_buffer: Vec<f32>,
     frame_sender: crossbeam_channel::Sender<Vec<f32>>,
-    /// Fractional sample position for resampling
-    resample_pos: f64,
+    /// Sinc resampler (None if native rate == 16kHz).
+    resampler: Option<rubato::SincFixedIn<f32>>,
+    /// Number of input samples the resampler needs per chunk.
+    resampler_chunk_size: usize,
 }
 
 impl FrameAccumulator {
@@ -387,14 +424,44 @@ impl FrameAccumulator {
         native_rate: u32,
         native_channels: usize,
         frame_sender: crossbeam_channel::Sender<Vec<f32>>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        let resampler = if native_rate != VAD_SAMPLE_RATE {
+            let params = rubato::SincInterpolationParameters {
+                sinc_len: 256,
+                f_cutoff: 0.95,
+                oversampling_factor: 128,
+                interpolation: rubato::SincInterpolationType::Cubic,
+                window: rubato::WindowFunction::BlackmanHarris2,
+            };
+            // chunk_size is the number of output frames per processing call
+            let chunk_size = 512;
+            let resampler = rubato::SincFixedIn::<f32>::new(
+                VAD_SAMPLE_RATE as f64 / native_rate as f64,
+                1.0, // max relative ratio deviation
+                params,
+                chunk_size,
+                1, // mono
+            )
+            .map_err(|e| anyhow!("Failed to create resampler: {}", e))?;
+            Some(resampler)
+        } else {
+            None
+        };
+
+        let resampler_chunk_size = resampler
+            .as_ref()
+            .map(|r| r.input_frames_max())
+            .unwrap_or(0);
+
+        Ok(Self {
             native_rate,
             native_channels,
-            buffer: Vec::with_capacity(STREAM_FRAME_SIZE * 4),
+            output_buffer: Vec::with_capacity(STREAM_FRAME_SIZE * 4),
+            resample_input_buffer: Vec::with_capacity(resampler_chunk_size * 2),
             frame_sender,
-            resample_pos: 0.0,
-        }
+            resampler,
+            resampler_chunk_size,
+        })
     }
 
     fn push_samples(&mut self, data: &[f32]) {
@@ -409,28 +476,34 @@ impl FrameAccumulator {
 
         // Resample to 16kHz if needed
         if self.native_rate == VAD_SAMPLE_RATE {
-            self.buffer.extend_from_slice(&mono);
-        } else {
-            let ratio = self.native_rate as f64 / VAD_SAMPLE_RATE as f64;
-            while self.resample_pos < mono.len() as f64 {
-                let idx = self.resample_pos as usize;
-                let frac = self.resample_pos - idx as f64;
+            self.output_buffer.extend_from_slice(&mono);
+        } else if let Some(ref mut resampler) = self.resampler {
+            // Accumulate input samples for rubato
+            self.resample_input_buffer.extend_from_slice(&mono);
 
-                // Linear interpolation
-                let sample = if idx + 1 < mono.len() {
-                    mono[idx] * (1.0 - frac as f32) + mono[idx + 1] * frac as f32
-                } else {
-                    mono[idx]
-                };
-                self.buffer.push(sample);
-                self.resample_pos += ratio;
+            // Process complete chunks through the sinc resampler
+            while self.resample_input_buffer.len() >= self.resampler_chunk_size {
+                let input_chunk: Vec<f32> = self
+                    .resample_input_buffer
+                    .drain(..self.resampler_chunk_size)
+                    .collect();
+
+                match resampler.process(&[input_chunk], None) {
+                    Ok(output) => {
+                        if let Some(channel_data) = output.first() {
+                            self.output_buffer.extend_from_slice(channel_data);
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Resampling error: {}", e);
+                    }
+                }
             }
-            self.resample_pos -= mono.len() as f64;
         }
 
         // Emit complete 512-sample frames
-        while self.buffer.len() >= STREAM_FRAME_SIZE {
-            let frame: Vec<f32> = self.buffer.drain(..STREAM_FRAME_SIZE).collect();
+        while self.output_buffer.len() >= STREAM_FRAME_SIZE {
+            let frame: Vec<f32> = self.output_buffer.drain(..STREAM_FRAME_SIZE).collect();
             if self.frame_sender.send(frame).is_err() {
                 // Receiver dropped, stop accumulating
                 return;

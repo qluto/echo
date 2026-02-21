@@ -196,6 +196,8 @@ fn vad_thread(
                 if let Some(segment) = state.finalize_segment(tmp_dir) {
                     let _ = segment_tx.send(segment);
                 }
+                // Reset VAD LSTM state after segment (matches Python's vad.reset_states())
+                vad.reset();
             }
             break;
         }
@@ -204,6 +206,8 @@ fn vad_thread(
             Ok(frame) => {
                 let event = vad.process_frame(&frame);
                 if let Some(segment) = state.process(event, frame, tmp_dir) {
+                    // Reset VAD LSTM state after each segment (matches Python's vad.reset_states())
+                    vad.reset();
                     if segment_tx.send(segment).is_err() {
                         log::warn!("Segment channel closed, stopping VAD");
                         break;

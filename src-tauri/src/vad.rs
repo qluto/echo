@@ -66,7 +66,7 @@ impl VadProcessor {
 
         let probability = self.detector.predict(audio.iter().copied());
 
-        if probability >= self.threshold {
+        if probability > self.threshold {
             VadEvent::Speech { probability }
         } else {
             VadEvent::Silence
@@ -79,8 +79,7 @@ impl VadProcessor {
         self.detector.predict(audio.iter().copied())
     }
 
-    /// Reset internal LSTM state. Call between separate audio streams.
-    #[allow(dead_code)]
+    /// Reset internal LSTM state. Call between separate audio streams / segments.
     pub fn reset(&mut self) {
         // Recreate the detector to reset LSTM state.
         // voice_activity_detector doesn't expose a reset method directly.
