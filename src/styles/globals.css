@@ -62,7 +62,7 @@ html, body {
   height: 100%;
 }
 
-/* Float window transparency - override :root background */
+/* Float window — override body constraints so dynamic resize works */
 html.float-window,
 html.float-window body,
 html.float-window #root,
@@ -70,6 +70,9 @@ html.float-window #root,
 .float-window #root {
   background: transparent !important;
   background-color: transparent !important;
+  overflow: visible !important;
+  height: auto !important;
+  width: auto !important;
 }
 
 /* Tauri drag region for window dragging */
@@ -106,6 +109,27 @@ html.float-window #root,
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-tertiary);
+}
+
+/* Ambient breathing animation — slow green glow cycle */
+@keyframes ambient-breathe {
+  0%, 100% {
+    opacity: 0.9;
+    box-shadow:
+      0 0 3px 1px rgba(124, 144, 130, 0.6),
+      0 0 8px rgba(124, 144, 130, 0.3);
+  }
+  50% {
+    opacity: 1;
+    box-shadow:
+      0 0 4px 2px rgba(124, 144, 130, 0.8),
+      0 0 12px 2px rgba(124, 144, 130, 0.45),
+      0 0 24px rgba(124, 144, 130, 0.2);
+  }
+}
+
+.animate-ambient-breathe {
+  animation: ambient-breathe 3.5s ease-in-out infinite;
 }
 
 /* Glow animations */

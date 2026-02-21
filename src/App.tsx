@@ -55,6 +55,7 @@ function App() {
 
   const {
     isListening,
+    isSpeechDetected,
     toggleListening,
     error: listeningError,
   } = useContinuousListening();
@@ -167,7 +168,7 @@ function App() {
         const windowWidth = 240;
         const windowHeight = 60;
         const x = Math.round((screenWidth - windowWidth) / 2);
-        const y = Math.round(screenHeight - windowHeight - 80); // 80px from bottom
+        const y = Math.round(screenHeight - windowHeight - 32); // 32px from bottom
         await floatWin.setPosition(new LogicalPosition(x, y));
       }
     } catch (e) {
@@ -176,8 +177,9 @@ function App() {
   };
 
   // Emit state to float window
+  type FloatState = "idle" | "recording" | "processing" | "success" | "ambient" | "ambient-active";
   const emitFloatState = useCallback(
-    async (state: "idle" | "recording" | "processing" | "success", duration: number) => {
+    async (state: FloatState, duration: number) => {
       try {
         await emit("float-state", { state, duration });
       } catch (e) {
@@ -189,12 +191,14 @@ function App() {
 
   // Update float window when state changes
   useEffect(() => {
-    const state = showSuccess
+    const state: FloatState = showSuccess
       ? "success"
       : isRecording
       ? "recording"
       : isTranscribing
       ? "processing"
+      : isListening
+      ? (isSpeechDetected ? "ambient-active" : "ambient")
       : "idle";
     emitFloatState(state, recordingDuration);
 
@@ -202,11 +206,22 @@ function App() {
     if (showSuccess) {
       const timer = setTimeout(() => {
         setShowSuccess(false);
-        emitFloatState("idle", 0);
+        // Return to ambient if still listening, otherwise idle
+        emitFloatState(isListening ? "ambient" : "idle", 0);
       }, 1500);
       return () => clearTimeout(timer);
     }
-  }, [isRecording, isTranscribing, showSuccess, recordingDuration, emitFloatState]);
+  }, [isRecording, isTranscribing, showSuccess, recordingDuration, isListening, isSpeechDetected, emitFloatState]);
+
+  // Listen for toggle-listening requests from float window hover panel
+  useEffect(() => {
+    const unlisten = listen("request-toggle-listening", () => {
+      toggleListening();
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [toggleListening]);
 
   // Window controls
   const handleClose = useCallback(async () => {

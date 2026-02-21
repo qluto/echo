@@ -340,6 +340,19 @@ export function onContinuousTranscription(
   });
 }
 
+// VAD state events (for ambient float indicator)
+export interface ContinuousVadStateEvent {
+  is_speech: boolean;
+}
+
+export function onContinuousVadState(
+  callback: (event: ContinuousVadStateEvent) => void
+): Promise<UnlistenFn> {
+  return listen<ContinuousVadStateEvent>("continuous-vad-state", (event) => {
+    callback(event.payload);
+  });
+}
+
 // Transcription history types and commands
 export interface TranscriptionHistoryEntry {
   id: number;

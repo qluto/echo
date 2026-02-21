@@ -96,6 +96,7 @@ impl ContinuousPipeline {
         // 2. Start VAD processor thread
         let vad_stop = Arc::clone(&stop_flag);
         let vad_tmp_dir = tmp_dir.clone();
+        let vad_app = app.clone();
         let vad_handle = thread::Builder::new()
             .name("echo-vad".into())
             .spawn(move || {
@@ -103,6 +104,7 @@ impl ContinuousPipeline {
                     frame_rx,
                     segment_tx,
                     vad_stop,
+                    vad_app,
                     silence_sec,
                     max_segment_sec,
                     &vad_tmp_dir,
@@ -182,12 +184,14 @@ fn vad_thread(
     frame_rx: channel::Receiver<Vec<f32>>,
     segment_tx: channel::Sender<SpeechSegment>,
     stop_flag: Arc<AtomicBool>,
+    app: AppHandle,
     silence_sec: f64,
     max_segment_sec: u32,
     tmp_dir: &Path,
 ) -> Result<()> {
     let mut vad = VadProcessor::new(0.5)?;
     let mut state = VadStateMachine::new(silence_sec, max_segment_sec);
+    let mut was_speaking = false;
 
     loop {
         if stop_flag.load(Ordering::SeqCst) {
@@ -212,6 +216,14 @@ fn vad_thread(
                         log::warn!("Segment channel closed, stopping VAD");
                         break;
                     }
+                }
+
+                // Emit VAD state change on transitions only
+                if state.is_speaking != was_speaking {
+                    was_speaking = state.is_speaking;
+                    let _ = app.emit("continuous-vad-state", serde_json::json!({
+                        "is_speech": state.is_speaking
+                    }));
                 }
             }
             Err(channel::RecvTimeoutError::Timeout) => continue,

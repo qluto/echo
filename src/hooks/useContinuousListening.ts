@@ -4,11 +4,13 @@ import {
   stopContinuousListening,
   getContinuousListeningStatus,
   onContinuousTranscription,
+  onContinuousVadState,
   ContinuousTranscriptionEvent,
 } from "../lib/tauri";
 
 interface UseContinuousListeningReturn {
   isListening: boolean;
+  isSpeechDetected: boolean;
   segmentCount: number;
   recentEntries: ContinuousTranscriptionEvent[];
   error: string | null;
@@ -21,6 +23,7 @@ const MAX_RECENT_ENTRIES = 50;
 
 export function useContinuousListening(): UseContinuousListeningReturn {
   const [isListening, setIsListening] = useState(false);
+  const [isSpeechDetected, setIsSpeechDetected] = useState(false);
   const [segmentCount, setSegmentCount] = useState(0);
   const [recentEntries, setRecentEntries] = useState<ContinuousTranscriptionEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -54,11 +57,27 @@ export function useContinuousListening(): UseContinuousListeningReturn {
     };
   }, []);
 
+  // Subscribe to VAD speech state changes
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+
+    onContinuousVadState((event) => {
+      setIsSpeechDetected(event.is_speech);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
   const startListening = useCallback(async () => {
     try {
       setError(null);
       await startContinuousListening();
       setIsListening(true);
+      setIsSpeechDetected(false);
       setSegmentCount(0);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -71,6 +90,7 @@ export function useContinuousListening(): UseContinuousListeningReturn {
       setError(null);
       const count = await stopContinuousListening();
       setIsListening(false);
+      setIsSpeechDetected(false);
       setSegmentCount(count);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -88,6 +108,7 @@ export function useContinuousListening(): UseContinuousListeningReturn {
 
   return {
     isListening,
+    isSpeechDetected,
     segmentCount,
     recentEntries,
     error,
