@@ -24,6 +24,7 @@ impl Default for ActiveAppInfo {
 
 /// Get information about the frontmost application on macOS
 #[cfg(target_os = "macos")]
+#[allow(deprecated)]
 pub fn get_frontmost_app() -> ActiveAppInfo {
     use cocoa::base::{id, nil};
 
@@ -65,6 +66,7 @@ pub fn get_frontmost_app() -> ActiveAppInfo {
 
 /// Helper to convert NSString to Rust String
 #[cfg(target_os = "macos")]
+#[allow(deprecated)]
 unsafe fn nsstring_to_string(ns_string: cocoa::base::id) -> Option<String> {
     use cocoa::base::nil;
     use std::ffi::CStr;
@@ -89,6 +91,7 @@ pub fn get_frontmost_app() -> ActiveAppInfo {
 
 /// Known app profiles for post-processing
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub enum AppCategory {
     /// Email applications (Mail, Gmail in browser, etc.)
     Email,
@@ -104,6 +107,7 @@ pub enum AppCategory {
 
 impl AppCategory {
     /// Determine the category from bundle ID
+    #[allow(dead_code)]
     pub fn from_bundle_id(bundle_id: &str) -> Self {
         match bundle_id {
             // Email apps
@@ -134,6 +138,7 @@ impl AppCategory {
 
 impl ActiveAppInfo {
     /// Get the category of this application
+    #[allow(dead_code)]
     pub fn category(&self) -> AppCategory {
         self.bundle_id
             .as_ref()

@@ -29,10 +29,17 @@ tauri-plugin-log = "2.0"
 # オーディオ処理
 cpal = "0.15"
 hound = "3.5"
+voice_activity_detector = "0.2"
 
 # キーボード/マウス制御
 enigo = "0.6.1"
 handy-keys = "0.1.4"
+
+# データベース
+rusqlite = { version = "0.32", features = ["bundled-full"] }
+
+# スレッド間通信
+crossbeam-channel = "0.5"
 
 # ユーティリティ
 anyhow = "1"
@@ -41,6 +48,12 @@ thiserror = "2"
 dirs = "5"
 uuid = { version = "1", features = ["v4"] }
 
+[dev-dependencies]
+tempfile = "3"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"
 objc = "0.2"
+
+[lints.rust]
+unexpected_cfgs = "allow"

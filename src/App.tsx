@@ -3,7 +3,9 @@ import { getCurrentWindow, currentMonitor, LogicalPosition } from "@tauri-apps/a
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { emit, listen } from "@tauri-apps/api/event";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { TranscriptionHistory } from "./components/TranscriptionHistory";
 import { useTranscription } from "./hooks/useTranscription";
+import { useContinuousListening } from "./hooks/useContinuousListening";
 import {
   pingAsrEngine,
   startAsrEngine,
@@ -50,6 +52,12 @@ function App() {
     isTranscribing,
     recordingDuration,
   } = useTranscription();
+
+  const {
+    isListening,
+    toggleListening,
+    error: listeningError,
+  } = useContinuousListening();
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [loadingPhase, setLoadingPhase] = useState<LoadingPhase>("idle");
@@ -513,11 +521,38 @@ function App() {
           </span>
         </div>
 
-        {/* Settings Button */}
-        <button
-          onClick={() => setIsSettingsOpen(true)}
-          className="w-9 h-9 rounded-xl bg-surface-muted flex items-center justify-center hover:bg-surface-elevated transition-colors border border-subtle"
-        >
+        {/* Buttons */}
+        <div className="flex items-center gap-2">
+          {/* Continuous Listening Toggle */}
+          <button
+            onClick={toggleListening}
+            className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors border ${
+              isListening
+                ? "bg-[var(--glow-recording)] border-[var(--glow-recording)]"
+                : "bg-surface-muted border-subtle hover:bg-surface-elevated"
+            }`}
+            title={isListening ? "Stop listening" : "Start continuous listening"}
+          >
+            <svg
+              className="w-[18px] h-[18px]"
+              fill={isListening ? "white" : "none"}
+              stroke={isListening ? "white" : "var(--text-secondary)"}
+              strokeWidth={1.5}
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 18.75a6 6 0 0 0 6-6v-1.5m-6 7.5a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 1-3-3V4.5a3 3 0 1 1 6 0v8.25a3 3 0 0 1-3 3Z"
+              />
+            </svg>
+          </button>
+
+          {/* Settings Button */}
+          <button
+            onClick={() => setIsSettingsOpen(true)}
+            className="w-9 h-9 rounded-xl bg-surface-muted flex items-center justify-center hover:bg-surface-elevated transition-colors border border-subtle"
+          >
           <svg
             className="w-[18px] h-[18px]"
             fill="none"
@@ -536,7 +571,8 @@ function App() {
               d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"
             />
           </svg>
-        </button>
+          </button>
+        </div>
       </header>
 
       {/* Content */}
@@ -634,8 +670,21 @@ function App() {
           )}
         </div>
 
+        {/* Listening Error */}
+        {listeningError && (
+          <div
+            className="px-3 py-2 rounded-lg text-xs"
+            style={{
+              backgroundColor: "rgba(198, 125, 99, 0.15)",
+              color: "var(--glow-recording)",
+            }}
+          >
+            {listeningError}
+          </div>
+        )}
+
         {/* Transcript Section */}
-        <div className="flex flex-col gap-2 flex-1">
+        <div className="flex flex-col gap-2">
           {/* Header */}
           <span
             className="text-xs font-medium"
@@ -645,7 +694,7 @@ function App() {
           </span>
 
           {/* Transcript Card */}
-          <div className="flex-1 flex flex-col rounded-xl bg-surface border border-subtle p-4 gap-3">
+          <div className="flex flex-col rounded-xl bg-surface border border-subtle p-4 gap-3">
             {error ? (
               <div className="flex-1 flex items-center justify-center">
                 <p className="text-sm" style={{ color: "var(--glow-recording)" }}>
@@ -738,6 +787,9 @@ function App() {
             )}
           </div>
         </div>
+
+        {/* Transcription History */}
+        <TranscriptionHistory />
       </main>
 
       {/* Footer */}
