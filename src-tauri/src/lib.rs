@@ -424,7 +424,23 @@ fn start_asr_engine(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    asr_engine.start(&app).map_err(|e| e.to_string())
+    asr_engine.start(&app).map_err(|e| e.to_string())?;
+
+    // Apply saved model after engine is running.
+    // setup() cannot apply it because the sidecar process does not exist yet.
+    let saved_model = {
+        let settings = state.settings.lock().map_err(|e| e.to_string())?;
+        settings.model_name.clone()
+    };
+    if let Some(model_name) = saved_model {
+        if let Err(e) = asr_engine.set_model(&model_name) {
+            log::warn!("Failed to apply saved model '{}' on engine start: {}", model_name, e);
+        } else {
+            log::info!("Applied saved model '{}' on engine start", model_name);
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -851,16 +867,9 @@ pub fn run() {
             // Load settings from persistent store
             let settings = load_settings_from_store(app);
             let hotkey = settings.hotkey.clone();
-            let model_name = settings.model_name.clone();
 
-            // Create ASR engine and apply saved model name if present
-            let mut asr_engine = ASREngine::new();
-            if let Some(ref model) = model_name {
-                log::info!("Applying saved model: {}", model);
-                if let Err(e) = asr_engine.set_model(model) {
-                    log::warn!("Failed to set saved model '{}': {}", model, e);
-                }
-            }
+            // Create ASR engine. Saved model selection is applied when the engine starts.
+            let asr_engine = ASREngine::new();
 
             // Initialize transcription database
             let data_dir = app.path().app_data_dir().map_err(|e| {
