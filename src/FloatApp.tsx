@@ -67,6 +67,17 @@ function formatTime(createdAt: string): string {
   return timePart.slice(0, 5);
 }
 
+function makeLocalTimestamp(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  const ss = String(now.getSeconds()).padStart(2, "0");
+  return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
+}
+
 function FloatApp() {
   const [state, setState] = useState<IndicatorState>("idle");
   const [duration, setDuration] = useState(0);
@@ -125,7 +136,14 @@ function FloatApp() {
     const unlisten = listen<RecentEntry>(
       "continuous-transcription",
       (event) => {
-        setRecentEntries((prev) => [event.payload, ...prev].slice(0, 10));
+        const payload = event.payload;
+        const normalized: RecentEntry = {
+          ...payload,
+          created_at: payload.created_at?.trim()
+            ? payload.created_at
+            : makeLocalTimestamp(),
+        };
+        setRecentEntries((prev) => [normalized, ...prev].slice(0, 10));
       },
     );
     return () => {
