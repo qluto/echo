@@ -22,6 +22,8 @@ import {
   restartApp,
   loadPostprocessModel,
 } from "./lib/tauri";
+import { getModelShortName } from "./lib/models";
+import { formatHotkey } from "./lib/format";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 // Detailed loading phase for user feedback
@@ -71,60 +73,6 @@ function App() {
   const [hotkey, setHotkey] = useState<string>("command+shift+space");
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
   const [showRestartPrompt, setShowRestartPrompt] = useState(false);
-
-  // Model parameter counts
-  const MODEL_SIZES: Record<string, string> = {
-    // Qwen3-ASR models
-    "mlx-community/Qwen3-ASR-1.7B-8bit": "1.7B",
-    "mlx-community/Qwen3-ASR-0.6B-8bit": "0.6B",
-    // Whisper models
-    "mlx-community/whisper-large-v3-turbo": "Turbo",
-    "mlx-community/whisper-large-v3": "1.5B",
-    "mlx-community/whisper-medium": "769M",
-    "mlx-community/whisper-small": "244M",
-    "mlx-community/whisper-base": "74M",
-    "mlx-community/whisper-tiny": "39M",
-  };
-
-  const getModelSize = (name: string): string => {
-    return MODEL_SIZES[name] || "unknown";
-  };
-
-  const getModelFamily = (name: string): string => {
-    if (name.includes("Qwen3-ASR")) return "Qwen3";
-    if (name.includes("whisper")) return "Whisper";
-    return "Unknown";
-  };
-
-  const getModelShortName = (name: string): string => {
-    const family = getModelFamily(name);
-    const size = getModelSize(name);
-    return `${family} · ${size}`;
-  };
-
-  // Format hotkey for display
-  const formatHotkey = (hk: string): string => {
-    return hk
-      // Remove fn when combined with function keys (fn+f12 -> f12)
-      .replace(/\bfn\+?(f(?:[1-9]|1[0-9]|2[0-4]))\b/gi, "$1")
-      .replace(/command/gi, "⌘")
-      .replace(/ctrl/gi, "⌃")
-      .replace(/control/gi, "⌃")
-      .replace(/shift/gi, "⇧")
-      .replace(/option/gi, "⌥")
-      .replace(/alt/gi, "⌥")
-      .replace(/\bfn\b/gi, "🌐")  // Fn key alone
-      .replace(/return/gi, "↵")
-      .replace(/space/gi, "␣")
-      .replace(/escape/gi, "⎋")
-      .replace(/backspace/gi, "⌫")
-      .replace(/delete/gi, "⌦")
-      .replace(/tab/gi, "⇥")
-      // Function keys - uppercase for readability
-      .replace(/\b(f[1-9]|f1[0-9]|f2[0-4])\b/gi, (match) => match.toUpperCase())
-      .replace("CommandOrControl", "⌘")
-      .replace(/\+/g, "");
-  };
 
   const [showSuccess, setShowSuccess] = useState(false);
   const floatWindowRef = useRef<WebviewWindow | null>(null);

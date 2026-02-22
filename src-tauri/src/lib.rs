@@ -5,12 +5,14 @@ extern crate objc;
 mod active_app;
 mod audio_capture;
 mod clipboard;
+mod commands;
 mod continuous;
 mod database;
 mod handy_keys;
 mod hotkey;
 mod input;
 mod transcription;
+mod types;
 mod vad;
 
 use std::sync::{Arc, Mutex};
@@ -20,187 +22,10 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, WindowEvent,
 };
-use tauri_plugin_store::StoreExt;
 
 pub use input::EnigoState;
 pub use transcription::{ASREngine, ModelCacheStatus, ModelStatus, WarmupResult};
-
-/// Application settings
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Settings {
-    pub hotkey: String,
-    pub language: String,
-    pub auto_insert: bool,
-    pub device_name: Option<String>,
-    pub model_name: Option<String>,
-    #[serde(default)]
-    pub postprocess: PostProcessSettings,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            hotkey: "CommandOrControl+Shift+Space".to_string(),
-            language: "auto".to_string(),
-            auto_insert: true,
-            device_name: None,
-            model_name: None,
-            postprocess: PostProcessSettings::default(),
-        }
-    }
-}
-
-const SETTINGS_STORE_FILE: &str = "settings.json";
-const SETTINGS_KEY: &str = "settings";
-
-/// Load settings from persistent store
-fn load_settings_from_store(app: &tauri::App) -> Settings {
-    match app.store(SETTINGS_STORE_FILE) {
-        Ok(store) => {
-            match store.get(SETTINGS_KEY) {
-                Some(value) => {
-                    match serde_json::from_value::<Settings>(value.clone()) {
-                        Ok(settings) => {
-                            log::info!("Loaded settings from store: language={}, hotkey={}, model={:?}",
-                                settings.language, settings.hotkey, settings.model_name);
-                            settings
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to deserialize settings, using defaults: {}", e);
-                            Settings::default()
-                        }
-                    }
-                }
-                None => {
-                    log::info!("No saved settings found, using defaults");
-                    Settings::default()
-                }
-            }
-        }
-        Err(e) => {
-            log::warn!("Failed to open settings store, using defaults: {}", e);
-            Settings::default()
-        }
-    }
-}
-
-/// Save settings to persistent store
-fn save_settings_to_store(app: &tauri::AppHandle, settings: &Settings) -> Result<(), String> {
-    let store = app.store(SETTINGS_STORE_FILE).map_err(|e| e.to_string())?;
-    let value = serde_json::to_value(settings).map_err(|e| e.to_string())?;
-    store.set(SETTINGS_KEY, value);
-    store.save().map_err(|e| e.to_string())?;
-    log::info!("Settings saved to store");
-    Ok(())
-}
-
-/// Transcription result
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct TranscriptionResult {
-    pub success: bool,
-    pub text: String,
-    pub segments: Vec<TranscriptionSegment>,
-    pub language: String,
-    /// True if VAD detected no speech in the audio
-    pub no_speech: Option<bool>,
-}
-
-/// Transcription segment with timestamps
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct TranscriptionSegment {
-    pub start: f64,
-    pub end: f64,
-    pub text: String,
-}
-
-/// Audio device info
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AudioDevice {
-    pub name: String,
-    pub is_default: bool,
-}
-
-/// Post-processing settings
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PostProcessSettings {
-    pub enabled: bool,
-    pub dictionary: std::collections::HashMap<String, String>,
-    /// Custom system prompt for the LLM post-processor. If None, uses default.
-    #[serde(default)]
-    pub custom_prompt: Option<String>,
-    /// Model name for post-processing LLM. If None, uses default.
-    #[serde(default)]
-    pub model_name: Option<String>,
-    /// Custom system prompt for summarization. If None, uses default.
-    #[serde(default)]
-    pub custom_summary_prompt: Option<String>,
-}
-
-impl Default for PostProcessSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            dictionary: std::collections::HashMap::new(),
-            custom_prompt: None,
-            model_name: None,
-            custom_summary_prompt: None,
-        }
-    }
-}
-
-/// Post-processing model status
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PostProcessModelStatus {
-    pub model_name: String,
-    pub loaded: bool,
-    pub loading: bool,
-    pub error: Option<String>,
-    #[serde(default)]
-    pub available_models: Vec<String>,
-}
-
-/// Post-processing result
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PostProcessResult {
-    pub success: bool,
-    pub processed_text: String,
-    pub processing_time_ms: Option<f64>,
-    pub error: Option<String>,
-}
-
-/// A transcription entry for summarization requests
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SummarizeEntry {
-    pub text: String,
-    pub created_at: String,
-}
-
-/// Summarization result
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SummarizeResult {
-    pub success: bool,
-    pub summary: String,
-    pub processing_time_ms: Option<f64>,
-    pub error: Option<String>,
-    pub entry_count: usize,
-}
-
-/// Application state
-pub struct AppState {
-    pub asr_engine: Arc<Mutex<ASREngine>>,
-    pub settings: Mutex<Settings>,
-    pub recording_state: Mutex<RecordingState>,
-    pub transcription_db: Arc<Mutex<database::TranscriptionDb>>,
-    pub continuous_pipeline: Mutex<Option<continuous::ContinuousPipeline>>,
-}
-
-/// Recording state
-#[derive(Debug, Clone, Default)]
-pub struct RecordingState {
-    pub is_recording: bool,
-    pub current_file: Option<String>,
-    pub device_name: Option<String>,
-}
+pub use types::*;
 
 /// Make a window fully transparent on macOS using with_webview
 #[cfg(target_os = "macos")]
@@ -268,679 +93,6 @@ fn make_window_transparent(_window: &tauri::WebviewWindow) {
     // No-op on other platforms
 }
 
-// Tauri commands
-#[tauri::command]
-fn start_recording(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let mut recording = state.recording_state.lock().map_err(|e| e.to_string())?;
-    if recording.is_recording {
-        return Err("Already recording".to_string());
-    }
-
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    let device_name = settings.device_name.clone();
-    drop(settings);
-
-    match audio_capture::start_recording(device_name) {
-        Ok(file_path) => {
-            recording.is_recording = true;
-            recording.current_file = Some(file_path);
-            Ok(())
-        }
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-#[tauri::command]
-fn stop_recording(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let mut recording = state.recording_state.lock().map_err(|e| e.to_string())?;
-    if !recording.is_recording {
-        return Err("Not recording".to_string());
-    }
-
-    recording.is_recording = false;
-    let file_path = recording
-        .current_file
-        .take()
-        .ok_or("No recording file")?;
-
-    audio_capture::stop_recording().map_err(|e| e.to_string())?;
-    Ok(file_path)
-}
-
-#[tauri::command]
-fn transcribe(
-    audio_path: String,
-    language: Option<String>,
-    state: tauri::State<'_, AppState>,
-) -> Result<TranscriptionResult, String> {
-    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    asr_engine
-        .transcribe(&audio_path, language.as_deref())
-        .map_err(|e| e.to_string())
-}
-
-/// Try to initialize Enigo (keyboard/mouse simulation).
-/// On macOS, this will return an error if accessibility permissions are not granted.
-#[tauri::command]
-fn initialize_enigo(app: tauri::AppHandle) -> Result<(), String> {
-    // Check if already initialized
-    if app.try_state::<EnigoState>().is_some() {
-        log::debug!("Enigo already initialized");
-        return Ok(());
-    }
-
-    // Try to initialize
-    match EnigoState::new() {
-        Ok(enigo_state) => {
-            app.manage(enigo_state);
-            log::info!("Enigo initialized successfully after permission grant");
-            Ok(())
-        }
-        Err(e) => {
-            log::warn!(
-                "Failed to initialize Enigo: {} (accessibility permissions may not be granted)",
-                e
-            );
-            Err(format!("Failed to initialize input system: {}", e))
-        }
-    }
-}
-
-#[tauri::command]
-fn insert_text(text: String, app: tauri::AppHandle) -> Result<(), String> {
-    // Try to get or initialize EnigoState
-    let enigo_state = match app.try_state::<EnigoState>() {
-        Some(state) => state,
-        None => {
-            // Try to initialize
-            initialize_enigo(app.clone())?;
-            app.try_state::<EnigoState>()
-                .ok_or_else(|| "Failed to initialize Enigo".to_string())?
-        }
-    };
-
-    let mut enigo = enigo_state.0.lock().map_err(|e| format!("Failed to lock Enigo: {}", e))?;
-    clipboard::paste_via_clipboard(&mut enigo, &text, &app)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn get_audio_devices() -> Result<Vec<AudioDevice>, String> {
-    audio_capture::get_audio_devices().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn set_audio_device(
-    device_name: String,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
-    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
-    settings.device_name = Some(device_name);
-    let settings_clone = settings.clone();
-    drop(settings);
-    save_settings_to_store(&app, &settings_clone)?;
-    Ok(())
-}
-
-#[tauri::command]
-fn get_settings(state: tauri::State<'_, AppState>) -> Result<Settings, String> {
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    Ok(settings.clone())
-}
-
-#[tauri::command]
-fn update_settings(
-    settings: Settings,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
-    log::info!("Updating settings: language={}, hotkey={}, auto_insert={}, model={:?}",
-        settings.language, settings.hotkey, settings.auto_insert, settings.model_name);
-    let mut current_settings = state.settings.lock().map_err(|e| e.to_string())?;
-    *current_settings = settings.clone();
-    drop(current_settings);
-
-    // Persist to store
-    save_settings_to_store(&app, &settings)?;
-    Ok(())
-}
-
-#[tauri::command]
-fn register_global_hotkey(hotkey: String, app: tauri::AppHandle) -> Result<(), String> {
-    let result = handy_keys::register_hotkey(&app, &hotkey);
-    if result.is_ok() {
-        // Emit success event
-        app.emit("hotkey-registered", serde_json::json!({
-            "hotkey": hotkey
-        })).ok();
-    }
-    result
-}
-
-#[tauri::command]
-fn unregister_global_hotkey(app: tauri::AppHandle) -> Result<(), String> {
-    handy_keys::unregister_hotkey(&app)
-}
-
-#[tauri::command]
-fn start_hotkey_recording(app: tauri::AppHandle) -> Result<(), String> {
-    handy_keys::start_recording(&app)
-}
-
-#[tauri::command]
-fn stop_hotkey_recording(app: tauri::AppHandle) -> Result<(), String> {
-    handy_keys::stop_recording(&app)
-}
-
-#[tauri::command]
-fn ping_asr_engine(state: tauri::State<'_, AppState>) -> Result<bool, String> {
-    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    Ok(asr_engine.ping().unwrap_or(false))
-}
-
-#[tauri::command]
-fn start_asr_engine(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
-    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    asr_engine.start(&app).map_err(|e| e.to_string())?;
-
-    // Apply saved model after engine is running.
-    // setup() cannot apply it because the sidecar process does not exist yet.
-    let saved_model = {
-        let settings = state.settings.lock().map_err(|e| e.to_string())?;
-        settings.model_name.clone()
-    };
-    if let Some(model_name) = saved_model {
-        if let Err(e) = asr_engine.set_model(&model_name) {
-            log::warn!("Failed to apply saved model '{}' on engine start: {}", model_name, e);
-        } else {
-            log::info!("Applied saved model '{}' on engine start", model_name);
-        }
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
-fn stop_asr_engine(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    asr_engine.stop().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn get_model_status(state: tauri::State<'_, AppState>) -> Result<ModelStatus, String> {
-    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    asr_engine.get_model_status().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn load_asr_model(state: tauri::State<'_, AppState>) -> Result<ModelStatus, String> {
-    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    let result = asr_engine.load_model().map_err(|e| e.to_string())?;
-
-    // Also load VAD model for speech detection
-    if let Err(e) = asr_engine.load_vad() {
-        log::warn!("Failed to load VAD model (VAD will be disabled): {}", e);
-    }
-
-    Ok(result)
-}
-
-/// Async version that runs model loading in background thread
-/// Emits "model-load-complete" or "model-load-error" events when done
-#[tauri::command]
-async fn load_asr_model_async(app: tauri::AppHandle) -> Result<(), String> {
-    let app_handle = app.clone();
-
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app_handle.state::<AppState>();
-        let mut asr_engine = match state.asr_engine.lock() {
-            Ok(e) => e,
-            Err(e) => {
-                log::error!("Failed to lock ASR engine: {}", e);
-                let _ = app_handle.emit(
-                    "model-load-error",
-                    serde_json::json!({ "error": e.to_string() }),
-                );
-                return;
-            }
-        };
-
-        log::info!("Starting background model load...");
-        match asr_engine.load_model() {
-            Ok(status) => {
-                // Also load VAD model
-                if let Err(e) = asr_engine.load_vad() {
-                    log::warn!("Failed to load VAD model (VAD will be disabled): {}", e);
-                }
-
-                log::info!("Model loaded successfully: {}", status.model_name);
-                let _ = app_handle.emit("model-load-complete", &status);
-            }
-            Err(e) => {
-                log::error!("Failed to load model: {}", e);
-                let _ = app_handle.emit(
-                    "model-load-error",
-                    serde_json::json!({ "error": e.to_string() }),
-                );
-            }
-        }
-    });
-
-    Ok(())
-}
-
-#[tauri::command]
-fn warmup_asr_model(state: tauri::State<'_, AppState>) -> Result<WarmupResult, String> {
-    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-
-    // Warmup ASR model
-    let result = asr_engine.warmup_model().map_err(|e| e.to_string())?;
-
-    // Also warmup VAD if loaded
-    if let Err(e) = asr_engine.warmup_vad() {
-        log::warn!("Failed to warmup VAD (non-critical): {}", e);
-    }
-
-    Ok(result)
-}
-
-#[tauri::command]
-fn set_asr_model(model_name: String, app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<ModelStatus, String> {
-    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    let result = asr_engine.set_model(&model_name).map_err(|e| e.to_string())?;
-    drop(asr_engine);
-
-    // Update and save settings with new model name
-    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
-    settings.model_name = Some(model_name);
-    let settings_clone = settings.clone();
-    drop(settings);
-    save_settings_to_store(&app, &settings_clone)?;
-
-    Ok(result)
-}
-
-#[tauri::command]
-fn is_model_cached(model_name: Option<String>, state: tauri::State<'_, AppState>) -> Result<ModelCacheStatus, String> {
-    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    asr_engine
-        .is_model_cached(model_name.as_deref())
-        .map_err(|e| e.to_string())
-}
-
-// ===== Post-processing commands =====
-
-#[tauri::command]
-fn get_frontmost_app() -> active_app::ActiveAppInfo {
-    active_app::get_frontmost_app()
-}
-
-#[tauri::command]
-fn get_postprocess_settings(state: tauri::State<'_, AppState>) -> Result<PostProcessSettings, String> {
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    Ok(settings.postprocess.clone())
-}
-
-#[tauri::command]
-fn update_postprocess_settings(
-    postprocess: PostProcessSettings,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
-    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
-    settings.postprocess = postprocess;
-    let settings_clone = settings.clone();
-    drop(settings);
-    save_settings_to_store(&app, &settings_clone)?;
-    Ok(())
-}
-
-#[tauri::command]
-fn load_postprocess_model(state: tauri::State<'_, AppState>) -> Result<PostProcessModelStatus, String> {
-    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    asr_engine.load_postprocess_model().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn unload_postprocess_model(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    asr_engine.unload_postprocess_model().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn is_postprocess_model_cached(state: tauri::State<'_, AppState>) -> Result<PostProcessModelStatus, String> {
-    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    asr_engine.is_postprocess_model_cached().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn postprocess_text(
-    text: String,
-    app_name: Option<String>,
-    app_bundle_id: Option<String>,
-    state: tauri::State<'_, AppState>,
-) -> Result<PostProcessResult, String> {
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    let dictionary = if settings.postprocess.dictionary.is_empty() {
-        None
-    } else {
-        Some(settings.postprocess.dictionary.clone())
-    };
-    let custom_prompt = settings.postprocess.custom_prompt.clone();
-    drop(settings);
-
-    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    asr_engine
-        .postprocess_text(
-            &text,
-            app_name.as_deref(),
-            app_bundle_id.as_deref(),
-            dictionary.as_ref(),
-            custom_prompt.as_deref(),
-        )
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn set_postprocess_model(
-    model_name: String,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<PostProcessModelStatus, String> {
-    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    let result = asr_engine.set_postprocess_model(&model_name).map_err(|e| e.to_string())?;
-    drop(asr_engine);
-
-    // Update and save settings with new model name
-    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
-    settings.postprocess.model_name = Some(model_name);
-    let settings_clone = settings.clone();
-    drop(settings);
-    save_settings_to_store(&app, &settings_clone)?;
-
-    Ok(result)
-}
-
-#[tauri::command]
-fn get_postprocess_model_status(state: tauri::State<'_, AppState>) -> Result<PostProcessModelStatus, String> {
-    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    asr_engine.get_postprocess_status().map_err(|e| e.to_string())
-}
-
-// ===== Continuous listening commands =====
-
-#[tauri::command]
-fn start_continuous_listening(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
-    let mut pipeline = state.continuous_pipeline.lock().map_err(|e| e.to_string())?;
-    if pipeline.is_some() {
-        return Err("Already listening".to_string());
-    }
-
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    let language = if settings.language == "auto" {
-        None
-    } else {
-        Some(settings.language.clone())
-    };
-    let device_name = settings.device_name.clone();
-    drop(settings);
-
-    let asr_engine = Arc::clone(&state.asr_engine);
-    let db = Arc::clone(&state.transcription_db);
-
-    let p = continuous::ContinuousPipeline::start(
-        app,
-        asr_engine,
-        db,
-        language,
-        device_name,
-        1.5,  // silence_sec
-        60,   // max_segment_sec
-    )
-    .map_err(|e| e.to_string())?;
-
-    *pipeline = Some(p);
-    Ok(())
-}
-
-#[tauri::command]
-fn stop_continuous_listening(
-    state: tauri::State<'_, AppState>,
-) -> Result<u32, String> {
-    let mut pipeline = state.continuous_pipeline.lock().map_err(|e| e.to_string())?;
-    match pipeline.take() {
-        Some(mut p) => Ok(p.stop()),
-        None => Err("Not listening".to_string()),
-    }
-}
-
-#[tauri::command]
-fn get_continuous_listening_status(
-    state: tauri::State<'_, AppState>,
-) -> Result<continuous::ContinuousListeningStatus, String> {
-    let pipeline = state.continuous_pipeline.lock().map_err(|e| e.to_string())?;
-    Ok(continuous::ContinuousListeningStatus {
-        is_listening: pipeline.is_some(),
-        segment_count: pipeline.as_ref().map_or(0, |p| p.segment_count()),
-    })
-}
-
-// ===== Transcription history commands =====
-
-#[tauri::command]
-fn get_transcription_history(
-    limit: Option<u32>,
-    offset: Option<u32>,
-    state: tauri::State<'_, AppState>,
-) -> Result<database::HistoryPage, String> {
-    let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
-    db.get_all(limit.unwrap_or(20), offset.unwrap_or(0))
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn search_transcription_history(
-    query: String,
-    limit: Option<u32>,
-    offset: Option<u32>,
-    state: tauri::State<'_, AppState>,
-) -> Result<database::HistoryPage, String> {
-    let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
-    db.search(&query, limit.unwrap_or(20), offset.unwrap_or(0))
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn delete_transcription_entry(
-    id: i64,
-    state: tauri::State<'_, AppState>,
-) -> Result<bool, String> {
-    let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
-    db.delete(id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn clear_transcription_history(
-    state: tauri::State<'_, AppState>,
-) -> Result<u32, String> {
-    let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
-    db.delete_all().map_err(|e| e.to_string())
-}
-
-// ===== Summarization commands =====
-
-#[tauri::command]
-async fn summarize_recent_transcriptions(
-    minutes: Option<u32>,
-    app: tauri::AppHandle,
-) -> Result<SummarizeResult, String> {
-    let state = app.state::<AppState>();
-    let minutes = minutes.unwrap_or(30);
-
-    // Query DB for recent entries
-    let entries = {
-        let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
-        db.get_recent(minutes).map_err(|e| e.to_string())?
-    };
-
-    if entries.is_empty() {
-        return Ok(SummarizeResult {
-            success: true,
-            summary: String::new(),
-            processing_time_ms: Some(0.0),
-            error: None,
-            entry_count: 0,
-        });
-    }
-
-    let entry_count = entries.len();
-
-    // Convert to SummarizeEntry
-    let texts: Vec<SummarizeEntry> = entries
-        .iter()
-        .map(|e| SummarizeEntry {
-            text: e.text.clone(),
-            created_at: e.created_at.clone(),
-        })
-        .collect();
-
-    // Detect dominant language from entries
-    let language_hint = entries
-        .iter()
-        .filter_map(|e| e.language.as_deref())
-        .next()
-        .map(|s| s.to_string());
-
-    // Read custom summary prompt from settings
-    let custom_summary_prompt = state
-        .settings
-        .lock()
-        .ok()
-        .and_then(|s| s.postprocess.custom_summary_prompt.clone());
-
-    // Run summarization in blocking thread (LLM inference takes seconds)
-    let asr_engine = Arc::clone(&state.asr_engine);
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut engine = asr_engine.lock().map_err(|e| e.to_string())?;
-        let mut result = engine
-            .summarize_transcriptions(&texts, language_hint.as_deref(), custom_summary_prompt.as_deref())
-            .map_err(|e| e.to_string())?;
-        result.entry_count = entry_count;
-        Ok(result)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// Check if accessibility permissions are granted
-#[tauri::command]
-fn check_accessibility_permission() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        #[link(name = "ApplicationServices", kind = "framework")]
-        extern "C" {
-            fn AXIsProcessTrusted() -> bool;
-        }
-
-        unsafe { AXIsProcessTrusted() }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        true
-    }
-}
-
-/// Request accessibility permissions (shows system prompt on macOS)
-#[tauri::command]
-fn request_accessibility_permission() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        use std::ffi::c_void;
-        use std::ptr;
-
-        #[link(name = "ApplicationServices", kind = "framework")]
-        extern "C" {
-            fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
-        }
-
-        #[link(name = "CoreFoundation", kind = "framework")]
-        extern "C" {
-            fn CFDictionaryCreate(
-                allocator: *const c_void,
-                keys: *const *const c_void,
-                values: *const *const c_void,
-                num_values: isize,
-                key_callbacks: *const c_void,
-                value_callbacks: *const c_void,
-            ) -> *const c_void;
-            fn CFRelease(cf: *const c_void);
-            static kCFTypeDictionaryKeyCallBacks: c_void;
-            static kCFTypeDictionaryValueCallBacks: c_void;
-            static kCFBooleanTrue: *const c_void;
-        }
-
-        // kAXTrustedCheckOptionPrompt key
-        extern "C" {
-            static kAXTrustedCheckOptionPrompt: *const c_void;
-        }
-
-        unsafe {
-            let keys = [kAXTrustedCheckOptionPrompt];
-            let values = [kCFBooleanTrue];
-
-            let options = CFDictionaryCreate(
-                ptr::null(),
-                keys.as_ptr(),
-                values.as_ptr(),
-                1,
-                &kCFTypeDictionaryKeyCallBacks,
-                &kCFTypeDictionaryValueCallBacks,
-            );
-
-            let result = AXIsProcessTrustedWithOptions(options);
-            CFRelease(options);
-            result
-        }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        true
-    }
-}
-
-/// Open System Settings to Accessibility pane
-#[tauri::command]
-fn open_accessibility_settings() -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-            .spawn()
-            .map_err(|e| format!("Failed to open System Settings: {}", e))?;
-        Ok(())
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        Ok(())
-    }
-}
-
-/// Restart the application
-#[tauri::command]
-fn restart_app(app: tauri::AppHandle) {
-    app.restart();
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1004,7 +156,6 @@ pub fn run() {
             setup_system_tray(app)?;
 
             // Initialize handy-keys and register saved hotkey
-            // Use a blocking spawn to ensure initialization completes before the app is ready
             let app_handle = app.handle().clone();
             let hotkey_clone = hotkey.clone();
             std::thread::spawn(move || {
@@ -1013,7 +164,6 @@ pub fn run() {
 
                 if let Err(e) = handy_keys::init(&app_handle) {
                     log::error!("Failed to initialize handy-keys: {}", e);
-                    // Emit error to frontend
                     app_handle.emit("hotkey-init-error", serde_json::json!({
                         "error": format!("Failed to initialize hotkey system: {}. Please ensure Echo has accessibility permissions in System Settings > Privacy & Security > Accessibility.", e)
                     })).ok();
@@ -1031,7 +181,6 @@ pub fn run() {
                     match handy_keys::register_hotkey(&app_handle, &hotkey_clone) {
                         Ok(()) => {
                             log::info!("Hotkey '{}' registered successfully", hotkey_clone);
-                            // Emit success to frontend
                             app_handle.emit("hotkey-registered", serde_json::json!({
                                 "hotkey": hotkey_clone
                             })).ok();
@@ -1043,7 +192,6 @@ pub fn run() {
                     }
                 }
 
-                // All attempts failed
                 if let Some(e) = last_error {
                     log::error!("Failed to register hotkey '{}' after 3 attempts: {}", hotkey_clone, e);
                     app_handle.emit("hotkey-init-error", serde_json::json!({
@@ -1055,12 +203,9 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Hide main window instead of closing the app
             if window.label() == "main" {
                 if let WindowEvent::CloseRequested { api, .. } = event {
-                    // Prevent default close behavior
                     api.prevent_close();
-                    // Hide the window instead
                     if let Err(e) = window.hide() {
                         log::error!("Failed to hide window: {}", e);
                     }
@@ -1069,53 +214,49 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            start_recording,
-            stop_recording,
-            transcribe,
-            initialize_enigo,
-            insert_text,
-            get_audio_devices,
-            set_audio_device,
-            get_settings,
-            update_settings,
-            register_global_hotkey,
-            unregister_global_hotkey,
-            start_hotkey_recording,
-            stop_hotkey_recording,
-            ping_asr_engine,
-            start_asr_engine,
-            stop_asr_engine,
-            get_model_status,
-            load_asr_model,
-            load_asr_model_async,
-            warmup_asr_model,
-            set_asr_model,
-            is_model_cached,
-            check_accessibility_permission,
-            request_accessibility_permission,
-            open_accessibility_settings,
-            restart_app,
-            // Post-processing commands
-            get_frontmost_app,
-            get_postprocess_settings,
-            update_postprocess_settings,
-            load_postprocess_model,
-            unload_postprocess_model,
-            is_postprocess_model_cached,
-            postprocess_text,
-            set_postprocess_model,
-            get_postprocess_model_status,
-            // Continuous listening commands
-            start_continuous_listening,
-            stop_continuous_listening,
-            get_continuous_listening_status,
-            // Transcription history commands
-            get_transcription_history,
-            search_transcription_history,
-            delete_transcription_entry,
-            clear_transcription_history,
-            // Summarization commands
-            summarize_recent_transcriptions,
+            commands::start_recording,
+            commands::stop_recording,
+            commands::transcribe,
+            commands::initialize_enigo,
+            commands::insert_text,
+            commands::get_audio_devices,
+            commands::set_audio_device,
+            commands::get_settings,
+            commands::update_settings,
+            commands::register_global_hotkey,
+            commands::unregister_global_hotkey,
+            commands::start_hotkey_recording,
+            commands::stop_hotkey_recording,
+            commands::ping_asr_engine,
+            commands::start_asr_engine,
+            commands::stop_asr_engine,
+            commands::get_model_status,
+            commands::load_asr_model,
+            commands::load_asr_model_async,
+            commands::warmup_asr_model,
+            commands::set_asr_model,
+            commands::is_model_cached,
+            commands::check_accessibility_permission,
+            commands::request_accessibility_permission,
+            commands::open_accessibility_settings,
+            commands::restart_app,
+            commands::get_frontmost_app,
+            commands::get_postprocess_settings,
+            commands::update_postprocess_settings,
+            commands::load_postprocess_model,
+            commands::unload_postprocess_model,
+            commands::is_postprocess_model_cached,
+            commands::postprocess_text,
+            commands::set_postprocess_model,
+            commands::get_postprocess_model_status,
+            commands::start_continuous_listening,
+            commands::stop_continuous_listening,
+            commands::get_continuous_listening_status,
+            commands::get_transcription_history,
+            commands::search_transcription_history,
+            commands::delete_transcription_entry,
+            commands::clear_transcription_history,
+            commands::summarize_recent_transcriptions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1123,24 +264,18 @@ pub fn run() {
 
 /// Setup system tray icon and menu
 fn setup_system_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    // Create menu items
     let show_item = MenuItem::with_id(app, "show", "ウィンドウを表示", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
-
-    // Create menu
     let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
-    // Load tray icon using include_image! macro (embeds at compile time)
-    // Custom Echo icon with sound wave arcs
     const TRAY_ICON: Image<'_> = tauri::include_image!("icons/tray-icon.png");
 
-    // Build tray icon
     let _tray = TrayIconBuilder::new()
         .icon(TRAY_ICON)
-        .icon_as_template(true) // Use as template for macOS (adapts to light/dark mode)
+        .icon_as_template(true)
         .tooltip("Echo - 音声入力")
         .menu(&menu)
-        .show_menu_on_left_click(false) // Show menu on right-click only
+        .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => {
                 if let Some(window) = app.get_webview_window("main") {
@@ -1155,7 +290,6 @@ fn setup_system_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>>
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            // Show window on left-click
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,

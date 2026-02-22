@@ -23,114 +23,14 @@ import {
   HandyKeysEvent,
   PostProcessSettings,
 } from "../lib/tauri";
+import { MODEL_ORDER, SUPPORTED_LANGUAGES, getModelDisplayName, getModelSize } from "../lib/models";
+import { formatHotkey } from "../lib/format";
+import { DEFAULT_POSTPROCESS_PROMPT, DEFAULT_SUMMARIZE_PROMPT } from "../lib/prompts";
 
 interface SettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
 }
-
-// Default system prompt for post-processing LLM
-const DEFAULT_POSTPROCESS_PROMPT = `/no_think
-You are an assistant that cleans up speech recognition results while preserving the speaker's intended meaning.
-
-## Your Task
-Remove verbal noise while keeping the speaker's message intact:
-
-1. **Remove filler words** - These add no meaning:
-   - English: um, uh, like, you know, well, so, I mean, kind of, sort of, basically, actually, literally, right?, anyway
-   - Japanese: ええと, えーと, あの, まあ, なんか, その, うーん, ちょっと, やっぱ
-
-2. **Handle self-corrections** - When someone corrects themselves mid-sentence, keep only their final intent:
-   - "I'll be there at 3, no 4 o'clock" → "I'll be there at 4 o'clock"
-   - "Send it to Tom, I mean Jerry" → "Send it to Jerry"
-   - "The meeting is on Monday, wait, Tuesday" → "The meeting is on Tuesday"
-   - "AですあやっぱりBです" → "Bです"
-   - "3時に、いや4時に行きます" → "4時に行きます"
-
-3. **Apply user dictionary** - Replace terms as specified
-
-4. **Format for target app** (if specified):
-   - Email: Use polite business language
-   - Notion/Markdown: Format lists as Markdown
-
-## Output
-Output ONLY the cleaned text. No explanations.`;
-
-// Default system prompt for summarization LLM
-const DEFAULT_SUMMARIZE_PROMPT = `You are an assistant that creates concise summaries of speech transcriptions.
-
-## Input
-You will receive a chronological list of speech transcription segments with timestamps.
-
-## Your Task
-1. Identify the main topics and key points discussed
-2. Create a well-organized summary that captures the essential information
-3. Group related topics together
-4. Preserve important details: names, numbers, dates, decisions, action items
-5. Output the summary in the same language as the input transcriptions
-
-## Output Format
-Write a clear, structured summary. Use bullet points for distinct topics.
-Do NOT include timestamps in the summary unless they are semantically important (e.g., "meeting at 3pm").`;
-
-const SUPPORTED_LANGUAGES = [
-  { code: "auto", name: "Auto-detect" },
-  { code: "ja", name: "Japanese" },
-  { code: "en", name: "English" },
-  { code: "zh", name: "Chinese" },
-  { code: "ko", name: "Korean" },
-  { code: "de", name: "German" },
-  { code: "fr", name: "French" },
-  { code: "es", name: "Spanish" },
-];
-
-const MODEL_SIZES: Record<string, string> = {
-  // Qwen3-ASR models
-  "mlx-community/Qwen3-ASR-1.7B-8bit": "1.7B",
-  "mlx-community/Qwen3-ASR-0.6B-8bit": "0.6B",
-  // Whisper models
-  "mlx-community/whisper-large-v3-turbo": "Turbo",
-  "mlx-community/whisper-large-v3": "1.5B",
-  "mlx-community/whisper-medium": "769M",
-  "mlx-community/whisper-small": "244M",
-  "mlx-community/whisper-base": "74M",
-  "mlx-community/whisper-tiny": "39M",
-};
-
-// Model display order (for UI)
-const MODEL_ORDER = [
-  "mlx-community/Qwen3-ASR-0.6B-8bit",
-  "mlx-community/Qwen3-ASR-1.7B-8bit",
-  "mlx-community/whisper-large-v3-turbo",
-  "mlx-community/whisper-large-v3",
-  "mlx-community/whisper-medium",
-  "mlx-community/whisper-small",
-  "mlx-community/whisper-base",
-  "mlx-community/whisper-tiny",
-];
-
-const getModelDisplayName = (name: string): string => {
-  const parts = name.split("/");
-  const modelPart = parts[parts.length - 1];
-
-  // Handle Qwen3-ASR models
-  if (modelPart.includes("Qwen3-ASR")) {
-    return modelPart
-      .replace("-8bit", "")
-      .replace("Qwen3-ASR-", "Qwen3-ASR ");
-  }
-
-  // Handle Whisper models
-  return modelPart
-    .replace("whisper-", "Whisper ")
-    .split("-")
-    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
-    .join(" ");
-};
-
-const getModelSize = (name: string): string => {
-  return MODEL_SIZES[name] || "unknown";
-};
 
 export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [settings, setSettings] = useState<AppSettings>({
@@ -498,32 +398,6 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     } catch (err) {
       console.error("Failed to start recording:", err);
     }
-  };
-
-  const formatHotkey = (hotkey: string): string => {
-    // handy-keys uses lowercase with + separator
-    let formatted = hotkey
-      // Remove fn when combined with function keys (fn+f12 -> f12)
-      .replace(/\bfn\+?(f(?:[1-9]|1[0-9]|2[0-4]))\b/gi, "$1")
-      .replace(/command/gi, "⌘")
-      .replace(/ctrl/gi, "⌃")
-      .replace(/control/gi, "⌃")
-      .replace(/shift/gi, "⇧")
-      .replace(/option/gi, "⌥")
-      .replace(/alt/gi, "⌥")
-      .replace(/\bfn\b/gi, "🌐")  // Fn key alone
-      .replace(/return/gi, "↵")
-      .replace(/space/gi, "␣")
-      .replace(/escape/gi, "⎋")
-      .replace(/backspace/gi, "⌫")
-      .replace(/delete/gi, "⌦")
-      .replace(/tab/gi, "⇥")
-      // Function keys - uppercase for readability
-      .replace(/\b(f[1-9]|f1[0-9]|f2[0-4])\b/gi, (match) => match.toUpperCase())
-      // Legacy format support
-      .replace("CommandOrControl", "⌘")
-      .replace(/\+/g, "");
-    return formatted;
   };
 
   if (!isOpen) return null;
