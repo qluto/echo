@@ -172,6 +172,17 @@ This ensures models are removed when the app is uninstalled. The following envir
 
 ## Build & Release Process
 
+### Local macOS Signed Build (Accessibility persistence)
+
+When rebuilding and reinstalling locally, use:
+
+```bash
+export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+npm run tauri:build:signed
+```
+
+`tauri:build:signed` fails if the output is ad-hoc signed (`Signature=adhoc`) or uses a cdhash-only designated requirement, because that breaks macOS Accessibility permission continuity across app updates.
+
 ### Python Engine Binary Build
 
 The Python ASR engine is bundled using PyInstaller:
