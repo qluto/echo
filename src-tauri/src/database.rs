@@ -208,6 +208,23 @@ impl TranscriptionDb {
         Ok(rows as u32)
     }
 
+    /// Get transcriptions from the last N minutes, ordered chronologically (oldest first).
+    pub fn get_recent(&self, minutes: u32) -> Result<Vec<TranscriptionEntry>> {
+        let modifier = format!("-{} minutes", minutes);
+        let mut stmt = self.conn.prepare(
+            "SELECT id, created_at, duration_seconds, text, raw_text, language, model_name, segments_json
+             FROM transcriptions
+             WHERE created_at >= datetime('now', 'localtime', ?1)
+             ORDER BY created_at ASC",
+        )?;
+
+        let entries = stmt
+            .query_map(params![modifier], Self::row_to_entry)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(entries)
+    }
+
     /// Get the database file path.
     pub fn path(&self) -> &Path {
         &self.path
@@ -230,7 +247,6 @@ impl TranscriptionDb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn temp_db() -> (TranscriptionDb, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -336,6 +352,27 @@ mod tests {
         let deleted = db.delete_all().unwrap();
         assert_eq!(deleted, 3);
         assert_eq!(db.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_get_recent() {
+        let (db, _dir) = temp_db();
+
+        // Insert entries - all will have "now" as created_at (within the time window)
+        for i in 0..3 {
+            db.insert(&sample_entry(&format!("Recent entry {}", i))).unwrap();
+        }
+
+        // All entries should be within the last 30 minutes
+        let entries = db.get_recent(30).unwrap();
+        assert_eq!(entries.len(), 3);
+        // Should be ordered ASC (oldest first)
+        assert_eq!(entries[0].text, "Recent entry 0");
+        assert_eq!(entries[2].text, "Recent entry 2");
+
+        // 1 minute window should still include entries just inserted
+        let entries = db.get_recent(1).unwrap();
+        assert_eq!(entries.len(), 3);
     }
 
     #[test]

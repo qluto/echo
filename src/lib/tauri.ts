@@ -25,6 +25,7 @@ export interface PostProcessSettings {
   dictionary: Record<string, string>;
   custom_prompt?: string | null;
   model_name?: string | null;
+  custom_summary_prompt?: string | null;
 }
 
 export interface AppSettings {
@@ -399,4 +400,21 @@ export async function deleteTranscriptionEntry(id: number): Promise<boolean> {
 
 export async function clearTranscriptionHistory(): Promise<number> {
   return invoke("clear_transcription_history");
+}
+
+// Summarization types and commands
+export interface SummarizeResult {
+  success: boolean;
+  summary: string;
+  processing_time_ms: number | null;
+  error: string | null;
+  entry_count: number;
+}
+
+export async function summarizeRecentTranscriptions(
+  minutes?: number
+): Promise<SummarizeResult> {
+  return invoke("summarize_recent_transcriptions", {
+    minutes: minutes ?? null,
+  });
 }

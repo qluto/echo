@@ -4,8 +4,10 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { emit, listen } from "@tauri-apps/api/event";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { TranscriptionHistory } from "./components/TranscriptionHistory";
+import { SummaryModal } from "./components/SummaryModal";
 import { useTranscription } from "./hooks/useTranscription";
 import { useContinuousListening } from "./hooks/useContinuousListening";
+import { useSummarize } from "./hooks/useSummarize";
 import {
   pingAsrEngine,
   startAsrEngine,
@@ -59,6 +61,9 @@ function App() {
     toggleListening,
     error: listeningError,
   } = useContinuousListening();
+
+  const { summary, isSummarizing, error: summaryError, entryCount, processingTime, summarize, dismiss: dismissSummary } = useSummarize();
+  const [summaryWindowMinutes, setSummaryWindowMinutes] = useState(30);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [loadingPhase, setLoadingPhase] = useState<LoadingPhase>("idle");
@@ -804,7 +809,13 @@ function App() {
         </div>
 
         {/* Transcription History */}
-        <TranscriptionHistory />
+        <TranscriptionHistory
+          onSummarize={(minutes) => {
+            setSummaryWindowMinutes(minutes);
+            summarize(minutes);
+          }}
+          isSummarizing={isSummarizing}
+        />
       </main>
 
       {/* Footer */}
@@ -892,6 +903,17 @@ function App() {
           }
         }}
       />
+
+      {/* Summary Modal */}
+      {(summary !== null || summaryError) && (
+        <SummaryModal
+          summary={summary || summaryError || ""}
+          entryCount={entryCount}
+          processingTime={processingTime}
+          windowMinutes={summaryWindowMinutes}
+          onClose={dismissSummary}
+        />
+      )}
     </div>
   );
 }

@@ -1,8 +1,21 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { useTranscriptionHistory } from "../hooks/useTranscriptionHistory";
 import { useContinuousListening } from "../hooks/useContinuousListening";
 
-export function TranscriptionHistory() {
+const TIME_OPTIONS = [
+  { label: "5 min", minutes: 5 },
+  { label: "15 min", minutes: 15 },
+  { label: "30 min", minutes: 30 },
+  { label: "1 hour", minutes: 60 },
+  { label: "3 hours", minutes: 180 },
+];
+
+interface TranscriptionHistoryProps {
+  onSummarize?: (minutes: number) => void;
+  isSummarizing?: boolean;
+}
+
+export function TranscriptionHistory({ onSummarize, isSummarizing }: TranscriptionHistoryProps) {
   const {
     entries,
     totalCount,
@@ -24,6 +37,8 @@ export function TranscriptionHistory() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showTimeMenu, setShowTimeMenu] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   // Load initial history
   useEffect(() => {
@@ -36,6 +51,18 @@ export function TranscriptionHistory() {
       refresh();
     }
   }, [recentEntries.length]);
+
+  // Close menu on outside click
+  useEffect(() => {
+    if (!showTimeMenu) return;
+    const handleClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setShowTimeMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [showTimeMenu]);
 
   // Debounced search
   const handleSearchInput = useCallback(
@@ -142,6 +169,53 @@ export function TranscriptionHistory() {
             </button>
           )}
         </div>
+
+        {totalCount > 0 && onSummarize && (
+          <div className="relative" ref={menuRef}>
+            <button
+              onClick={() => {
+                if (!isSummarizing) setShowTimeMenu((v) => !v);
+              }}
+              disabled={isSummarizing}
+              className="text-xs flex-shrink-0 px-2 py-0.5 rounded-md transition-colors border border-subtle hover:bg-surface-elevated disabled:opacity-50"
+              style={{ color: "var(--text-secondary)" }}
+              title="Summarize recent transcriptions"
+            >
+              {isSummarizing ? (
+                <span className="flex items-center gap-1">
+                  <span
+                    className="inline-block w-2.5 h-2.5 border border-current rounded-full animate-spin"
+                    style={{ borderTopColor: "transparent" }}
+                  />
+                  Summarizing
+                </span>
+              ) : (
+                "Summarize"
+              )}
+            </button>
+
+            {showTimeMenu && (
+              <div
+                className="absolute right-0 top-full mt-1 py-1 rounded-lg border border-subtle shadow-lg z-10 min-w-[100px]"
+                style={{ backgroundColor: "var(--surface)" }}
+              >
+                {TIME_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.minutes}
+                    onClick={() => {
+                      setShowTimeMenu(false);
+                      onSummarize(opt.minutes);
+                    }}
+                    className="w-full px-3 py-1.5 text-xs text-left hover:bg-surface-elevated transition-colors"
+                    style={{ color: "var(--text-primary)" }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {totalCount > 0 && (
           <button

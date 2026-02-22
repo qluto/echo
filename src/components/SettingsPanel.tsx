@@ -56,6 +56,23 @@ Remove verbal noise while keeping the speaker's message intact:
 ## Output
 Output ONLY the cleaned text. No explanations.`;
 
+// Default system prompt for summarization LLM
+const DEFAULT_SUMMARIZE_PROMPT = `You are an assistant that creates concise summaries of speech transcriptions.
+
+## Input
+You will receive a chronological list of speech transcription segments with timestamps.
+
+## Your Task
+1. Identify the main topics and key points discussed
+2. Create a well-organized summary that captures the essential information
+3. Group related topics together
+4. Preserve important details: names, numbers, dates, decisions, action items
+5. Output the summary in the same language as the input transcriptions
+
+## Output Format
+Write a clear, structured summary. Use bullet points for distinct topics.
+Do NOT include timestamps in the summary unless they are semantically important (e.g., "meeting at 3pm").`;
+
 const SUPPORTED_LANGUAGES = [
   { code: "auto", name: "Auto-detect" },
   { code: "ja", name: "Japanese" },
@@ -138,6 +155,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [postprocessLoadPhase, setPostprocessLoadPhase] = useState<"idle" | "checking" | "downloading" | "loading">("idle");
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [customPrompt, setCustomPrompt] = useState<string | null>(null);
+  const [customSummaryPrompt, setCustomSummaryPrompt] = useState<string | null>(null);
   const [postprocessModelName, setPostprocessModelName] = useState<string>("mlx-community/Qwen3-4B-4bit");
   const [availablePostprocessModels, setAvailablePostprocessModels] = useState<string[]>([
     "mlx-community/Qwen3-8B-4bit",
@@ -167,6 +185,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       setDevices(loadedDevices);
       setHotkeyInput(loadedSettings.hotkey);
       setCustomPrompt(loadedSettings.postprocess?.custom_prompt ?? null);
+      setCustomSummaryPrompt(loadedSettings.postprocess?.custom_summary_prompt ?? null);
       if (modelStatus.model_name) {
         setModelName(modelStatus.model_name);
       }
@@ -1129,6 +1148,60 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                             style={{ color: "var(--text-tertiary)" }}
                           >
                             {customPrompt !== null
+                              ? "Using custom prompt"
+                              : "Using default prompt"}
+                          </span>
+                        </div>
+
+                        {/* Custom Summary Prompt */}
+                        <div className="flex flex-col gap-2">
+                          <div className="flex items-center justify-between">
+                            <span
+                              className="text-xs font-medium"
+                              style={{ color: "var(--text-secondary)" }}
+                            >
+                              Summary Prompt
+                            </span>
+                            <button
+                              onClick={() => {
+                                setCustomSummaryPrompt(null);
+                                const newPostprocess: PostProcessSettings = {
+                                  ...settings.postprocess,
+                                  custom_summary_prompt: null,
+                                };
+                                const newSettings = { ...settings, postprocess: newPostprocess };
+                                setSettings(newSettings);
+                                updatePostprocessSettings(newPostprocess).catch(console.error);
+                              }}
+                              className="text-xs px-2 py-1 rounded transition-colors hover:bg-surface-elevated"
+                              style={{ color: "var(--text-tertiary)" }}
+                            >
+                              Reset to Default
+                            </button>
+                          </div>
+                          <textarea
+                            value={customSummaryPrompt === null ? DEFAULT_SUMMARIZE_PROMPT : customSummaryPrompt}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              setCustomSummaryPrompt(value);
+                              const customValue = value === DEFAULT_SUMMARIZE_PROMPT ? null : value;
+                              const newPostprocess: PostProcessSettings = {
+                                ...settings.postprocess,
+                                custom_summary_prompt: customValue,
+                              };
+                              const newSettings = { ...settings, postprocess: newPostprocess };
+                              setSettings(newSettings);
+                              updatePostprocessSettings(newPostprocess).catch(console.error);
+                            }}
+                            className="w-full h-48 px-3 py-2 rounded-lg bg-surface border border-subtle text-xs font-mono resize-none focus:outline-none focus:border-glow-idle"
+                            style={{ color: "var(--text-primary)" }}
+                            placeholder={DEFAULT_SUMMARIZE_PROMPT}
+                          />
+                          <span
+                            className="text-xs"
+                            style={{ color: "var(--text-tertiary)" }}
+                          >
+                            {customSummaryPrompt !== null
                               ? "Using custom prompt"
                               : "Using default prompt"}
                           </span>

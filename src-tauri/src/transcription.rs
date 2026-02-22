@@ -1124,6 +1124,56 @@ impl ASREngine {
             error: result.get("error").and_then(|v| v.as_str()).map(|s| s.to_string()),
         })
     }
+    /// Summarize a list of transcription entries using the LLM
+    pub fn summarize_transcriptions(
+        &mut self,
+        texts: &[crate::SummarizeEntry],
+        language_hint: Option<&str>,
+        custom_prompt: Option<&str>,
+    ) -> Result<crate::SummarizeResult> {
+        let process = match self.process.as_mut() {
+            Some(p) => p,
+            None => {
+                return Err(anyhow!("ASR engine not running"));
+            }
+        };
+
+        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        let request = serde_json::json!({
+            "command": "summarize_transcriptions",
+            "id": id,
+            "texts": texts,
+            "language_hint": language_hint,
+            "custom_prompt": custom_prompt,
+        });
+
+        let json = serde_json::to_string(&request)?;
+        writeln!(process.stdin, "{}", json)?;
+        process.stdin.flush()?;
+
+        let mut line = String::new();
+        process.stdout.read_line(&mut line)?;
+
+        let response: serde_json::Value = serde_json::from_str(&line)?;
+
+        if let Some(error) = response.get("error").and_then(|e| e.as_str()) {
+            return Err(anyhow!("Summarization failed: {}", error));
+        }
+
+        let result = response.get("result").ok_or_else(|| anyhow!("No result"))?;
+
+        Ok(crate::SummarizeResult {
+            success: result.get("success").and_then(|v| v.as_bool()).unwrap_or(false),
+            summary: result
+                .get("summary")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            processing_time_ms: result.get("processing_time_ms").and_then(|v| v.as_f64()),
+            error: result.get("error").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            entry_count: 0, // Set by caller
+        })
+    }
 }
 
 impl Default for ASREngine {

@@ -131,6 +131,9 @@ pub struct PostProcessSettings {
     /// Model name for post-processing LLM. If None, uses default.
     #[serde(default)]
     pub model_name: Option<String>,
+    /// Custom system prompt for summarization. If None, uses default.
+    #[serde(default)]
+    pub custom_summary_prompt: Option<String>,
 }
 
 impl Default for PostProcessSettings {
@@ -140,6 +143,7 @@ impl Default for PostProcessSettings {
             dictionary: std::collections::HashMap::new(),
             custom_prompt: None,
             model_name: None,
+            custom_summary_prompt: None,
         }
     }
 }
@@ -162,6 +166,23 @@ pub struct PostProcessResult {
     pub processed_text: String,
     pub processing_time_ms: Option<f64>,
     pub error: Option<String>,
+}
+
+/// A transcription entry for summarization requests
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SummarizeEntry {
+    pub text: String,
+    pub created_at: String,
+}
+
+/// Summarization result
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SummarizeResult {
+    pub success: bool,
+    pub summary: String,
+    pub processing_time_ms: Option<f64>,
+    pub error: Option<String>,
+    pub entry_count: usize,
 }
 
 /// Application state
@@ -753,6 +774,71 @@ fn clear_transcription_history(
     db.delete_all().map_err(|e| e.to_string())
 }
 
+// ===== Summarization commands =====
+
+#[tauri::command]
+async fn summarize_recent_transcriptions(
+    minutes: Option<u32>,
+    app: tauri::AppHandle,
+) -> Result<SummarizeResult, String> {
+    let state = app.state::<AppState>();
+    let minutes = minutes.unwrap_or(30);
+
+    // Query DB for recent entries
+    let entries = {
+        let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
+        db.get_recent(minutes).map_err(|e| e.to_string())?
+    };
+
+    if entries.is_empty() {
+        return Ok(SummarizeResult {
+            success: true,
+            summary: String::new(),
+            processing_time_ms: Some(0.0),
+            error: None,
+            entry_count: 0,
+        });
+    }
+
+    let entry_count = entries.len();
+
+    // Convert to SummarizeEntry
+    let texts: Vec<SummarizeEntry> = entries
+        .iter()
+        .map(|e| SummarizeEntry {
+            text: e.text.clone(),
+            created_at: e.created_at.clone(),
+        })
+        .collect();
+
+    // Detect dominant language from entries
+    let language_hint = entries
+        .iter()
+        .filter_map(|e| e.language.as_deref())
+        .next()
+        .map(|s| s.to_string());
+
+    // Read custom summary prompt from settings
+    let custom_summary_prompt = state
+        .settings
+        .lock()
+        .ok()
+        .and_then(|s| s.postprocess.custom_summary_prompt.clone());
+
+    // Run summarization in blocking thread (LLM inference takes seconds)
+    let asr_engine = Arc::clone(&state.asr_engine);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut engine = asr_engine.lock().map_err(|e| e.to_string())?;
+        let mut result = engine
+            .summarize_transcriptions(&texts, language_hint.as_deref(), custom_summary_prompt.as_deref())
+            .map_err(|e| e.to_string())?;
+        result.entry_count = entry_count;
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Check if accessibility permissions are granted
 #[tauri::command]
 fn check_accessibility_permission() -> bool {
@@ -1028,6 +1114,8 @@ pub fn run() {
             search_transcription_history,
             delete_transcription_entry,
             clear_transcription_history,
+            // Summarization commands
+            summarize_recent_transcriptions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

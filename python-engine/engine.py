@@ -259,6 +259,236 @@ Output ONLY the cleaned text. No explanations."""
                 "error": str(e),
             }
 
+    # Summarization constants
+    CONTEXT_LIMIT = 32_768
+    MAX_OUTPUT_TOKENS = 8_192
+    CHUNK_INPUT_BUDGET = 20_000  # 32K - 8K output - overhead margin
+
+    # System prompt for summarization (uses thinking mode for quality)
+    SUMMARIZE_PROMPT = """You are an assistant that creates concise summaries of speech transcriptions.
+
+## Input
+You will receive a chronological list of speech transcription segments with timestamps.
+
+## Your Task
+1. Identify the main topics and key points discussed
+2. Create a well-organized summary that captures the essential information
+3. Group related topics together
+4. Preserve important details: names, numbers, dates, decisions, action items
+5. Output the summary in the same language as the input transcriptions
+
+## Output Format
+Write a clear, structured summary. Use bullet points for distinct topics.
+Do NOT include timestamps in the summary unless they are semantically important (e.g., "meeting at 3pm")."""
+
+    # Prompt for merging partial summaries in multi-stage summarization
+    MERGE_PROMPT = """You are an assistant that combines multiple partial summaries into a single coherent summary.
+
+## Input
+You will receive several partial summaries from different segments of a longer conversation or speech session. Each partial summary covers a contiguous time range.
+
+## Your Task
+1. Read all partial summaries carefully
+2. Identify overlapping themes and connect related topics across parts
+3. Produce ONE unified summary that covers all parts without redundancy
+4. Preserve all important details: names, numbers, dates, decisions, action items
+5. Output the summary in the same language as the input summaries
+
+## Output Format
+Write a clear, structured summary. Use bullet points for distinct topics.
+Do NOT refer to "Part 1", "Part 2", etc. - the output should read as a single unified document."""
+
+    def _count_prompt_tokens(self, messages: list, enable_thinking: bool = True) -> int:
+        """Count tokens for a fully-rendered prompt including chat template overhead."""
+        rendered = self._tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=enable_thinking,
+        )
+        return len(self._tokenizer.encode(rendered))
+
+    def _summarize_chunk(self, entries: list, system_prompt: str,
+                         language_hint: Optional[str],
+                         chunk_index: int, total_chunks: int) -> str:
+        """Run a single summarization pass on a subset of entries. Returns summary text."""
+        from mlx_lm import generate
+
+        lines = [f"[{e.get('created_at', '')}] {e.get('text', '')}" for e in entries]
+        user_content = "\n".join(lines)
+        if language_hint:
+            user_content += f"\n\n(Primary language: {language_hint})"
+        if total_chunks > 1:
+            user_content += f"\n\n(Part {chunk_index + 1} of {total_chunks})"
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ]
+
+        prompt = self._tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True, enable_thinking=True,
+        )
+
+        response = generate(
+            self._model, self._tokenizer, prompt=prompt,
+            max_tokens=self.MAX_OUTPUT_TOKENS, verbose=False,
+        )
+
+        summary = response.strip()
+        if "</think>" in summary:
+            summary = summary.split("</think>", 1)[-1].strip()
+        return summary
+
+    def _split_into_chunks(self, entries: list, system_prompt: str,
+                           language_hint: Optional[str]) -> list:
+        """Split entries into chunks that each fit within CHUNK_INPUT_BUDGET tokens."""
+        chunks = []
+        current_chunk = []
+
+        for entry in entries:
+            candidate = current_chunk + [entry]
+            lines = [f"[{e.get('created_at', '')}] {e.get('text', '')}" for e in candidate]
+            user_content = "\n".join(lines)
+            if language_hint:
+                user_content += f"\n\n(Primary language: {language_hint})"
+
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ]
+            token_count = self._count_prompt_tokens(messages, enable_thinking=True)
+
+            if token_count > self.CHUNK_INPUT_BUDGET and current_chunk:
+                chunks.append(current_chunk)
+                current_chunk = [entry]
+            else:
+                current_chunk = candidate
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        return chunks
+
+    def _merge_summaries(self, partial_summaries: list, language_hint: Optional[str]) -> str:
+        """Merge multiple partial summaries into a single unified summary."""
+        from mlx_lm import generate
+
+        parts_text = "\n\n".join(
+            f"--- Part {i + 1} ---\n{s}" for i, s in enumerate(partial_summaries)
+        )
+        user_content = parts_text
+        if language_hint:
+            user_content += f"\n\n(Primary language: {language_hint})"
+
+        messages = [
+            {"role": "system", "content": self.MERGE_PROMPT},
+            {"role": "user", "content": user_content},
+        ]
+        token_count = self._count_prompt_tokens(messages, enable_thinking=True)
+
+        if (token_count + self.MAX_OUTPUT_TOKENS) > self.CONTEXT_LIMIT:
+            # Recursive case: merge input itself too large
+            logger.warning(
+                f"Merge prompt too large ({token_count} tokens). "
+                f"Recursively merging {len(partial_summaries)} summaries."
+            )
+            mid = len(partial_summaries) // 2
+            left = self._merge_summaries(partial_summaries[:mid], language_hint)
+            right = self._merge_summaries(partial_summaries[mid:], language_hint)
+            return self._merge_summaries([left, right], language_hint)
+
+        prompt = self._tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True, enable_thinking=True,
+        )
+
+        response = generate(
+            self._model, self._tokenizer, prompt=prompt,
+            max_tokens=self.MAX_OUTPUT_TOKENS, verbose=False,
+        )
+
+        summary = response.strip()
+        if "</think>" in summary:
+            summary = summary.split("</think>", 1)[-1].strip()
+        return summary
+
+    def summarize(self, texts: list, language_hint: Optional[str] = None, custom_prompt: Optional[str] = None) -> dict:
+        """
+        Summarize a list of transcription entries.
+        Automatically splits into multiple chunks and merges if input exceeds context window.
+
+        Args:
+            texts: List of dicts with 'text' and 'created_at' keys
+            language_hint: Dominant language to guide output language
+            custom_prompt: Custom system prompt (uses default if None)
+
+        Returns:
+            dict with success, summary, and processing_time_ms
+        """
+        if not self._loaded:
+            return {"success": False, "error": "Post-processor model not loaded"}
+
+        if not texts:
+            return {"success": True, "summary": "", "processing_time_ms": 0}
+
+        try:
+            import time
+
+            start_time = time.time()
+            system_prompt = custom_prompt if custom_prompt else self.SUMMARIZE_PROMPT
+
+            # Count tokens for the full prompt
+            lines = [f"[{e.get('created_at', '')}] {e.get('text', '')}" for e in texts]
+            user_content = "\n".join(lines)
+            if language_hint:
+                user_content += f"\n\n(Primary language: {language_hint})"
+
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ]
+            total_tokens = self._count_prompt_tokens(messages, enable_thinking=True)
+            fits_in_context = (total_tokens + self.MAX_OUTPUT_TOKENS) <= self.CONTEXT_LIMIT
+
+            if fits_in_context:
+                # Single-pass summarization
+                logger.info(f"Summarizing {len(texts)} entries in single pass ({total_tokens} input tokens)")
+                summary = self._summarize_chunk(texts, system_prompt, language_hint, 0, 1)
+            else:
+                # Multi-stage: chunk → partial summaries → merge
+                chunks = self._split_into_chunks(texts, system_prompt, language_hint)
+                logger.info(
+                    f"Input too large ({total_tokens} tokens). "
+                    f"Splitting {len(texts)} entries into {len(chunks)} chunks."
+                )
+                partial_summaries = []
+                for i, chunk in enumerate(chunks):
+                    logger.info(f"Summarizing chunk {i + 1}/{len(chunks)} ({len(chunk)} entries)")
+                    partial = self._summarize_chunk(chunk, system_prompt, language_hint, i, len(chunks))
+                    partial_summaries.append(partial)
+
+                logger.info(f"Merging {len(partial_summaries)} partial summaries")
+                summary = self._merge_summaries(partial_summaries, language_hint)
+
+            processing_time_ms = (time.time() - start_time) * 1000
+            logger.info(f"Summarization complete in {processing_time_ms:.0f}ms: {len(texts)} entries -> {len(summary)} chars")
+
+            return {
+                "success": True,
+                "summary": summary,
+                "processing_time_ms": processing_time_ms,
+            }
+
+        except Exception as e:
+            logger.error(f"Summarization failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "summary": "",
+                "error": str(e),
+            }
+
     def _build_user_message(
         self,
         text: str,
@@ -968,6 +1198,32 @@ def run_daemon(engine: ASREngine):
                         app_name=app_name,
                         app_bundle_id=app_bundle_id,
                         dictionary=dictionary,
+                        custom_prompt=custom_prompt,
+                    )
+                    response = {
+                        "id": request_id,
+                        "result": result
+                    }
+
+            elif command == "summarize_transcriptions":
+                texts = request.get("texts", [])
+                language_hint = request.get("language_hint")
+                custom_prompt = request.get("custom_prompt")
+
+                if not texts:
+                    response = {
+                        "id": request_id,
+                        "result": {"success": True, "summary": "", "processing_time_ms": 0}
+                    }
+                elif not engine._postprocessor._loaded:
+                    response = {
+                        "id": request_id,
+                        "error": "Post-processor model not loaded. Call load_postprocess_model first."
+                    }
+                else:
+                    result = engine._postprocessor.summarize(
+                        texts=texts,
+                        language_hint=language_hint,
                         custom_prompt=custom_prompt,
                     )
                     response = {
