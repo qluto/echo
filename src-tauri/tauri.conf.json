@@ -36,6 +36,8 @@
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
+        "visibleOnAllWorkspaces": true,
+        "acceptFirstMouse": true,
         "skipTaskbar": true,
         "visible": false,
         "focus": false,

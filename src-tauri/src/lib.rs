@@ -185,7 +185,7 @@ pub struct RecordingState {
 #[cfg(target_os = "macos")]
 #[allow(deprecated)]
 fn make_window_transparent(window: &tauri::WebviewWindow) {
-    use cocoa::base::{id, NO};
+    use cocoa::base::{id, NO, YES};
 
     // First, configure the NSWindow
     if let Ok(ns_window) = window.ns_window() {
@@ -197,6 +197,20 @@ fn make_window_transparent(window: &tauri::WebviewWindow) {
 
             // Make window not opaque
             let _: () = msg_send![ns_window, setOpaque: NO];
+
+            // Keep float window interactive and visible even when other apps are active.
+            // NSStatusWindowLevel keeps it above normal/floating app windows.
+            let status_window_level: i64 = 25;
+            let _: () = msg_send![ns_window, setLevel: status_window_level];
+            let _: () = msg_send![ns_window, setIgnoresMouseEvents: NO];
+            let _: () = msg_send![ns_window, setHidesOnDeactivate: NO];
+            let _: () = msg_send![ns_window, setAcceptsMouseMovedEvents: YES];
+
+            // Keep window present across spaces/fullscreen apps as an auxiliary overlay.
+            // NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary
+            let collection_behavior: u64 = (1 << 0) | (1 << 8);
+            let _: () = msg_send![ns_window, setCollectionBehavior: collection_behavior];
+            let _: () = msg_send![ns_window, orderFrontRegardless];
         }
     }
 
@@ -887,6 +901,8 @@ pub fn run() {
             // Make float window transparent on macOS
             if let Some(float_window) = app.get_webview_window("float") {
                 make_window_transparent(&float_window);
+                let _ = float_window.set_always_on_top(true);
+                let _ = float_window.set_visible_on_all_workspaces(true);
             }
 
             // Setup system tray

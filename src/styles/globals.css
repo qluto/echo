@@ -196,6 +196,38 @@ html.float-window #root,
   animation: float-out 0.2s ease-in forwards;
 }
 
+@keyframes ambient-hover-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes ambient-hover-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(6px) scale(0.975);
+  }
+}
+
+.animate-ambient-hover-in {
+  animation: ambient-hover-in 0.14s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+  will-change: transform, opacity;
+}
+
+.animate-ambient-hover-out {
+  animation: ambient-hover-out 0.12s ease-in forwards;
+  will-change: transform, opacity;
+}
+
 /* Recording waveform bars */
 .wave-bar {
   animation: recording-wave 0.8s ease-in-out infinite;
