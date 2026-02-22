@@ -5,7 +5,7 @@
 mlx>=0.20.0
 
 # MLX-Audio for ASR
-mlx-audio>=0.1.0
+mlx-audio>=0.3.1
 
 # MLX-LM for text post-processing (Qwen3 with /no_think mode)
 mlx-lm>=0.24.0

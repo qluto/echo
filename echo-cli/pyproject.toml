@@ -1,0 +1,21 @@
+[project]
+name = "echo-cli"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "echo-engine",
+    "sounddevice>=0.5.0",
+]
+
+[tool.uv]
+prerelease = "allow"
+
+[tool.uv.sources]
+echo-engine = { path = "../python-engine", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+echo-cli = "echo_cli.main:main"

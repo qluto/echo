@@ -5,12 +5,15 @@ extern crate objc;
 mod active_app;
 mod audio_capture;
 mod clipboard;
+mod continuous;
+mod database;
 mod handy_keys;
 mod hotkey;
 mod input;
 mod transcription;
+mod vad;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
@@ -163,9 +166,11 @@ pub struct PostProcessResult {
 
 /// Application state
 pub struct AppState {
-    pub asr_engine: Mutex<ASREngine>,
+    pub asr_engine: Arc<Mutex<ASREngine>>,
     pub settings: Mutex<Settings>,
     pub recording_state: Mutex<RecordingState>,
+    pub transcription_db: Arc<Mutex<database::TranscriptionDb>>,
+    pub continuous_pipeline: Mutex<Option<continuous::ContinuousPipeline>>,
 }
 
 /// Recording state
@@ -180,7 +185,7 @@ pub struct RecordingState {
 #[cfg(target_os = "macos")]
 #[allow(deprecated)]
 fn make_window_transparent(window: &tauri::WebviewWindow) {
-    use cocoa::base::{id, NO};
+    use cocoa::base::{id, NO, YES};
 
     // First, configure the NSWindow
     if let Ok(ns_window) = window.ns_window() {
@@ -192,6 +197,20 @@ fn make_window_transparent(window: &tauri::WebviewWindow) {
 
             // Make window not opaque
             let _: () = msg_send![ns_window, setOpaque: NO];
+
+            // Keep float window interactive and visible even when other apps are active.
+            // NSStatusWindowLevel keeps it above normal/floating app windows.
+            let status_window_level: i64 = 25;
+            let _: () = msg_send![ns_window, setLevel: status_window_level];
+            let _: () = msg_send![ns_window, setIgnoresMouseEvents: NO];
+            let _: () = msg_send![ns_window, setHidesOnDeactivate: NO];
+            let _: () = msg_send![ns_window, setAcceptsMouseMovedEvents: YES];
+
+            // Keep window present across spaces/fullscreen apps as an auxiliary overlay.
+            // NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary
+            let collection_behavior: u64 = (1 << 0) | (1 << 8);
+            let _: () = msg_send![ns_window, setCollectionBehavior: collection_behavior];
+            let _: () = msg_send![ns_window, orderFrontRegardless];
         }
     }
 
@@ -405,7 +424,23 @@ fn start_asr_engine(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    asr_engine.start(&app).map_err(|e| e.to_string())
+    asr_engine.start(&app).map_err(|e| e.to_string())?;
+
+    // Apply saved model after engine is running.
+    // setup() cannot apply it because the sidecar process does not exist yet.
+    let saved_model = {
+        let settings = state.settings.lock().map_err(|e| e.to_string())?;
+        settings.model_name.clone()
+    };
+    if let Some(model_name) = saved_model {
+        if let Err(e) = asr_engine.set_model(&model_name) {
+            log::warn!("Failed to apply saved model '{}' on engine start: {}", model_name, e);
+        } else {
+            log::info!("Applied saved model '{}' on engine start", model_name);
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -615,6 +650,109 @@ fn get_postprocess_model_status(state: tauri::State<'_, AppState>) -> Result<Pos
     asr_engine.get_postprocess_status().map_err(|e| e.to_string())
 }
 
+// ===== Continuous listening commands =====
+
+#[tauri::command]
+fn start_continuous_listening(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let mut pipeline = state.continuous_pipeline.lock().map_err(|e| e.to_string())?;
+    if pipeline.is_some() {
+        return Err("Already listening".to_string());
+    }
+
+    let settings = state.settings.lock().map_err(|e| e.to_string())?;
+    let language = if settings.language == "auto" {
+        None
+    } else {
+        Some(settings.language.clone())
+    };
+    let device_name = settings.device_name.clone();
+    drop(settings);
+
+    let asr_engine = Arc::clone(&state.asr_engine);
+    let db = Arc::clone(&state.transcription_db);
+
+    let p = continuous::ContinuousPipeline::start(
+        app,
+        asr_engine,
+        db,
+        language,
+        device_name,
+        1.5,  // silence_sec
+        60,   // max_segment_sec
+    )
+    .map_err(|e| e.to_string())?;
+
+    *pipeline = Some(p);
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_continuous_listening(
+    state: tauri::State<'_, AppState>,
+) -> Result<u32, String> {
+    let mut pipeline = state.continuous_pipeline.lock().map_err(|e| e.to_string())?;
+    match pipeline.take() {
+        Some(mut p) => Ok(p.stop()),
+        None => Err("Not listening".to_string()),
+    }
+}
+
+#[tauri::command]
+fn get_continuous_listening_status(
+    state: tauri::State<'_, AppState>,
+) -> Result<continuous::ContinuousListeningStatus, String> {
+    let pipeline = state.continuous_pipeline.lock().map_err(|e| e.to_string())?;
+    Ok(continuous::ContinuousListeningStatus {
+        is_listening: pipeline.is_some(),
+        segment_count: pipeline.as_ref().map_or(0, |p| p.segment_count()),
+    })
+}
+
+// ===== Transcription history commands =====
+
+#[tauri::command]
+fn get_transcription_history(
+    limit: Option<u32>,
+    offset: Option<u32>,
+    state: tauri::State<'_, AppState>,
+) -> Result<database::HistoryPage, String> {
+    let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
+    db.get_all(limit.unwrap_or(20), offset.unwrap_or(0))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn search_transcription_history(
+    query: String,
+    limit: Option<u32>,
+    offset: Option<u32>,
+    state: tauri::State<'_, AppState>,
+) -> Result<database::HistoryPage, String> {
+    let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
+    db.search(&query, limit.unwrap_or(20), offset.unwrap_or(0))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_transcription_entry(
+    id: i64,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
+    db.delete(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clear_transcription_history(
+    state: tauri::State<'_, AppState>,
+) -> Result<u32, String> {
+    let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
+    db.delete_all().map_err(|e| e.to_string())
+}
+
 /// Check if accessibility permissions are granted
 #[tauri::command]
 fn check_accessibility_permission() -> bool {
@@ -729,21 +867,29 @@ pub fn run() {
             // Load settings from persistent store
             let settings = load_settings_from_store(app);
             let hotkey = settings.hotkey.clone();
-            let model_name = settings.model_name.clone();
 
-            // Create ASR engine and apply saved model name if present
-            let mut asr_engine = ASREngine::new();
-            if let Some(ref model) = model_name {
-                log::info!("Applying saved model: {}", model);
-                if let Err(e) = asr_engine.set_model(model) {
-                    log::warn!("Failed to set saved model '{}': {}", model, e);
-                }
-            }
+            // Create ASR engine. Saved model selection is applied when the engine starts.
+            let asr_engine = ASREngine::new();
+
+            // Initialize transcription database
+            let data_dir = app.path().app_data_dir().map_err(|e| {
+                anyhow::anyhow!("Failed to get app data dir: {}", e)
+            })?;
+            std::fs::create_dir_all(&data_dir).map_err(|e| {
+                anyhow::anyhow!("Failed to create data dir: {}", e)
+            })?;
+            let db_path = data_dir.join("transcriptions.db");
+            let db = database::TranscriptionDb::open(&db_path).map_err(|e| {
+                anyhow::anyhow!("Failed to open transcription database: {}", e)
+            })?;
+            log::info!("Transcription database opened at {:?}", db_path);
 
             let app_state = AppState {
-                asr_engine: Mutex::new(asr_engine),
+                asr_engine: Arc::new(Mutex::new(asr_engine)),
                 settings: Mutex::new(settings),
                 recording_state: Mutex::new(RecordingState::default()),
+                transcription_db: Arc::new(Mutex::new(db)),
+                continuous_pipeline: Mutex::new(None),
             };
             app.manage(app_state);
 
@@ -764,6 +910,8 @@ pub fn run() {
             // Make float window transparent on macOS
             if let Some(float_window) = app.get_webview_window("float") {
                 make_window_transparent(&float_window);
+                let _ = float_window.set_always_on_top(true);
+                let _ = float_window.set_visible_on_all_workspaces(true);
             }
 
             // Setup system tray
@@ -871,6 +1019,15 @@ pub fn run() {
             postprocess_text,
             set_postprocess_model,
             get_postprocess_model_status,
+            // Continuous listening commands
+            start_continuous_listening,
+            stop_continuous_listening,
+            get_continuous_listening_status,
+            // Transcription history commands
+            get_transcription_history,
+            search_transcription_history,
+            delete_transcription_entry,
+            clear_transcription_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

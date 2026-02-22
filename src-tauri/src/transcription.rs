@@ -71,6 +71,7 @@ pub struct ModelStatus {
 
 /// Generic response for model operations
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ModelOperationResponse {
     id: Option<u64>,
     result: Option<ModelOperationResult>,
@@ -78,6 +79,7 @@ struct ModelOperationResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ModelOperationResult {
     success: Option<bool>,
     model_name: Option<String>,
@@ -98,6 +100,7 @@ pub struct WarmupResult {
 
 /// Generic warmup response from the engine
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct WarmupResponse {
     id: Option<u64>,
     result: Option<WarmupResponseResult>,
@@ -120,6 +123,7 @@ pub struct ModelCacheStatus {
 
 /// Cache check response from the engine
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct CacheCheckResponse {
     id: Option<u64>,
     result: Option<CacheCheckResult>,

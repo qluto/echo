@@ -11,7 +11,9 @@ Echo is an offline voice input desktop application optimized for Apple Silicon. 
 - **Frontend**: React 18, TypeScript, Vite, Tailwind CSS
 - **Backend**: Tauri 2.x, Rust
 - **ASR Engine**: Python 3.11+, MLX-Audio, Whisper/Qwen3-ASR (runs as sidecar process)
+- **VAD**: Silero VAD v5 via ONNX Runtime (`voice_activity_detector` crate), rubato for audio resampling
 - **Post-Processing**: MLX LLM (Qwen3-1.7B-4bit) for cleaning up transcription results
+- **Database**: SQLite with FTS5 full-text search (`rusqlite` crate) for transcription history
 - **Target Platform**: macOS 14.0+ on Apple Silicon (M1/M2/M3/M4)
 
 ## Common Commands
@@ -44,7 +46,7 @@ git push origin v0.x.x
 
 ## Architecture
 
-### Data Flow
+### Data Flow: Hotkey Mode
 
 1. **Hotkey pressed** → `hotkey.rs` receives event, detects active app via `active_app.rs`
 2. **Start recording** → `audio_capture.rs` captures audio to temp file
@@ -55,6 +57,17 @@ git push origin v0.x.x
 7. **Result** → Emitted via Tauri events to React frontend
 8. **Auto-insert** → Text inserted via clipboard + simulated paste
 
+### Data Flow: Always-On Transcription Mode
+
+1. **Start listening** → `continuous.rs` launches the pipeline
+2. **Audio capture** → `audio_capture.rs` (`StreamingCapture`) captures at 16kHz mono via cpal, sends 512-sample frames over crossbeam channel. Prefers native 16kHz capture; falls back to sinc resampling (rubato) if device doesn't support it.
+3. **VAD** → `vad.rs` runs Silero VAD v5 (ONNX Runtime) per frame on a dedicated thread, classifying speech vs silence
+4. **Segment detection** → `VadStateMachine` in `continuous.rs` manages speech onset/offset with 0.3s pre-buffer, 1.5s silence timeout, 60s max segment duration
+5. **WAV save** → Completed segments saved to temp WAV files (16kHz mono 16-bit PCM)
+6. **ASR** → Transcription worker thread sends WAV to Python sidecar via JSON-RPC (same as hotkey mode)
+7. **Storage** → Results saved to SQLite via `database.rs` (FTS5 full-text search enabled)
+8. **Frontend** → `continuous-transcription` Tauri event emitted, rendered in `TranscriptionHistory.tsx`
+
 ### Key Patterns
 
 - **Python Sidecar (PyInstaller Bundled)**: The ASR engine runs as a standalone PyInstaller binary (`mlx-asr-engine-*`), communicating via JSON-RPC over stdin/stdout. Managed by `transcription.rs`. The binary is built by `python-engine/build.sh` and placed in `src-tauri/binaries/`. Requires Python 3.11 (not 3.13 - PyInstaller compatibility issues).
@@ -63,6 +76,8 @@ git push origin v0.x.x
 - **Dual Transcription Paths**: Transcription can be triggered via hotkey (handled entirely in Rust) or manual stop (via frontend hook).
 - **Model Switching**: Users can switch between Whisper and Qwen3-ASR models at runtime via Settings panel.
 - **Context-Aware Post-Processing**: Active app detection (via NSWorkspace API in `active_app.rs`) provides context for LLM-based cleanup. Customizable system prompts in Advanced Settings.
+- **Always-On Pipeline**: `continuous.rs` orchestrates a 3-thread pipeline (audio capture → VAD → transcription worker). Audio is streamed as 512-sample (32ms) frames at 16kHz via crossbeam channels. Silero VAD (ONNX, `vad.rs`) classifies each frame; `VadStateMachine` tracks speech state with pre-buffering. LSTM state is reset between segments (matching Python CLI behavior). Resampling uses rubato sinc interpolation when native 16kHz is unavailable.
+- **Transcription History DB**: `database.rs` provides SQLite storage with FTS5 full-text search for always-on transcriptions. Schema is compatible with echo-cli's Python implementation.
 
 ### ASR Model Support
 
@@ -104,7 +119,14 @@ Optional LLM-based cleanup using Qwen3-1.7B-4bit:
 - `src-tauri/src/hotkey.rs` - Hotkey press/release handling, coordinates recording + transcription
 - `src-tauri/src/transcription.rs` - JSON-RPC communication with Python engine
 - `src-tauri/src/active_app.rs` - Active application detection via NSWorkspace API
-- `src/hooks/useTranscription.ts` - React hook for transcription state management
+- `src-tauri/src/continuous.rs` - Always-on pipeline: VAD state machine, segment detection, transcription worker
+- `src-tauri/src/vad.rs` - Silero VAD v5 wrapper (ONNX Runtime via `voice_activity_detector` crate)
+- `src-tauri/src/audio_capture.rs` - Audio recording (hotkey mode) + streaming capture (always-on mode, with rubato resampling)
+- `src-tauri/src/database.rs` - SQLite storage with FTS5 for transcription history
+- `src/hooks/useTranscription.ts` - React hook for hotkey transcription state
+- `src/hooks/useContinuousListening.ts` - React hook for always-on listening state
+- `src/hooks/useTranscriptionHistory.ts` - React hook for history queries (pagination, search)
+- `src/components/TranscriptionHistory.tsx` - History UI with search and infinite scroll
 - `src/lib/tauri.ts` - TypeScript bindings for Tauri commands
 - `python-engine/engine.py` - MLX-Audio wrapper (Whisper/Qwen3-ASR) + PostProcessor class for LLM cleanup
 
@@ -150,6 +172,17 @@ This ensures models are removed when the app is uninstalled. The following envir
 
 ## Build & Release Process
 
+### Local macOS Signed Build (Accessibility persistence)
+
+When rebuilding and reinstalling locally, use:
+
+```bash
+export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+npm run tauri:build:signed
+```
+
+`tauri:build:signed` fails if the output is ad-hoc signed (`Signature=adhoc`) or uses a cdhash-only designated requirement, because that breaks macOS Accessibility permission continuity across app updates.
+
 ### Python Engine Binary Build
 
 The Python ASR engine is bundled using PyInstaller:
@@ -191,3 +224,16 @@ Required secrets:
 - Post-processor uses Qwen3-1.7B-4bit with `/no_think` mode for fast cleanup (~100-300ms)
 - Custom prompts are stored as `null` when they match the default to simplify version upgrades
 - Active app detection happens on hotkey press, providing context for both ASR and post-processing
+
+### Always-On Pipeline Notes
+
+- VAD and ASR run on separate threads — VAD must never block on ASR
+- Silero VAD LSTM state is reset after each segment finalization (matching Python CLI's `vad.reset_states()`)
+- VAD threshold comparison uses strict `>` (not `>=`) to match Python behavior
+- `StreamingCapture` prefers native 16kHz device capture; uses rubato sinc interpolation as fallback for resampling (replaces earlier linear interpolation)
+- VAD segments are saved as 16kHz mono 16-bit PCM WAV files in `~/Library/Caches/echo/vad_segments/`
+- Segments shorter than 0.5s are discarded (noise filtering)
+- Pre-buffer (0.3s / 9 frames) preserves speech onset that would otherwise be clipped
+- Maximum segment duration is 60s, after which a forced split occurs
+- The echo-cli Python implementation (`echo-cli/`) served as the reference for all VAD parameters and behavior
+- Database schema in `database.rs` is compatible with echo-cli's Python database for potential data migration
