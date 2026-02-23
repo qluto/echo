@@ -159,7 +159,7 @@ function App() {
       const timer = setTimeout(() => {
         setShowSuccess(false);
         emitFloatState(isListening ? "ambient" : "ambient", 0, isListening);
-      }, 800);
+      }, 600);
       return () => clearTimeout(timer);
     }
   }, [isRecording, isTranscribing, showSuccess, recordingDuration, isListening, isSpeechDetected, emitFloatState]);

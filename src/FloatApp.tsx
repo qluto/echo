@@ -36,7 +36,7 @@ interface HistoryPage {
 }
 
 const HOVER_WIDTH = 264;
-const HOVER_HEIGHT = 360;
+const HOVER_HEIGHT = 300;
 const BOTTOM_MARGIN = 12;
 const AMBIENT_PILL_WIDTH = 44;
 const AMBIENT_PILL_HEIGHT = 10;
@@ -378,6 +378,8 @@ function FloatApp() {
       setShowRipple(true);
       const timer = setTimeout(() => setShowRipple(false), 900);
       return () => clearTimeout(timer);
+    } else {
+      setShowRipple(false);
     }
   }, [state]);
 
@@ -588,7 +590,7 @@ function FloatApp() {
   // Content is visible only when fully expanded
   const contentVisible = morphPhase === "indicator";
 
-  const displayEntries = [...recentEntries].reverse().slice(-4);
+  const displayEntries = recentEntries.slice(0, 4);
 
   return (
     <div
@@ -676,30 +678,6 @@ function FloatApp() {
                     }}
                   />
                 </button>
-              </div>
-
-              {/* Scroll hint */}
-              <div
-                className="flex items-center justify-center flex-shrink-0"
-                style={{
-                  height: 24,
-                  background:
-                    "linear-gradient(180deg, transparent 0%, rgba(255,255,255,0.87) 30%, #FFFFFF 100%)",
-                }}
-              >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="#ADADAD"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <polyline points="17 11 12 6 7 11" />
-                  <polyline points="17 18 12 13 7 18" />
-                </svg>
               </div>
 
               {/* History list */}
