@@ -70,7 +70,7 @@ html.float-window #root,
 .float-window #root {
   background: transparent !important;
   background-color: transparent !important;
-  overflow: visible !important;
+  overflow: hidden !important;
   height: auto !important;
   width: auto !important;
 }

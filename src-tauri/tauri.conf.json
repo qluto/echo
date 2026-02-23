@@ -29,7 +29,7 @@
         "label": "float",
         "title": "Echo Indicator",
         "url": "float.html",
-        "width": 240,
+        "width": 260,
         "height": 60,
         "resizable": false,
         "fullscreen": false,

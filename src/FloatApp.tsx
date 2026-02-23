@@ -32,7 +32,7 @@ interface HistoryPage {
   entries: RecentEntry[];
 }
 
-const NORMAL_WIDTH = 240;
+const NORMAL_WIDTH = 260;
 const NORMAL_HEIGHT = 60;
 const HOVER_WIDTH = 264;
 const HOVER_HEIGHT = 360;
@@ -221,6 +221,15 @@ function FloatApp() {
       : [NORMAL_WIDTH, NORMAL_HEIGHT];
     void resizeAndPosition(w, h);
   }, [visible, isAmbientState]);
+
+  // Make the window click-through when hover panel is not shown in ambient mode.
+  // Hover detection uses cursor position polling, so native events aren't needed.
+  useEffect(() => {
+    if (!visible) return;
+    const win = getCurrentWindow();
+    const shouldIgnore = isAmbientState && !isHoverPanelMounted;
+    void win.setIgnoreCursorEvents(shouldIgnore);
+  }, [visible, isAmbientState, isHoverPanelMounted]);
 
   const showHoverPanel = useCallback(() => {
     if (hoverTimeoutRef.current) {
@@ -570,8 +579,13 @@ function FloatApp() {
 
           {/* Duration */}
           <span
-            className="text-xs font-medium"
-            style={{ color: "var(--text-secondary)" }}
+            className="text-xs font-medium font-mono"
+            style={{
+              color: "var(--text-secondary)",
+              fontVariantNumeric: "tabular-nums",
+              minWidth: "2.5em",
+              textAlign: "right",
+            }}
           >
             {formatDuration(duration)}
           </span>
