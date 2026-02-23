@@ -37,7 +37,7 @@ interface HistoryPage {
 
 const HOVER_WIDTH = 264;
 const HOVER_HEIGHT = 360;
-const BOTTOM_MARGIN = 32;
+const BOTTOM_MARGIN = 12;
 const AMBIENT_PILL_WIDTH = 44;
 const AMBIENT_PILL_HEIGHT = 10;
 const AMBIENT_PILL_RADIUS = 5;
@@ -402,17 +402,17 @@ function FloatApp() {
       prev === "recording" || prev === "processing" || prev === "success";
 
     if (prevIsAmbientOrIdle && curIsIndicator) {
-      // Ambient/Idle -> Indicator: start expanding
+      // Ambient/Idle -> Indicator: start expanding (matches spring duration)
       setMorphPhase("expanding");
       morphTimerRef.current = setTimeout(() => {
         setMorphPhase("indicator");
-      }, 260);
+      }, 320);
     } else if (prevIsIndicator && curIsAmbientOrIdle) {
       // Indicator -> Ambient/Idle: start collapsing
       setMorphPhase("collapsing");
       morphTimerRef.current = setTimeout(() => {
         setMorphPhase("ambient");
-      }, 300);
+      }, 280);
     } else if (curIsAmbientOrIdle) {
       setMorphPhase("ambient");
     } else if (curIsIndicator) {
@@ -490,7 +490,7 @@ function FloatApp() {
 
   // Hover state machine driven by cursor position polling
   useEffect(() => {
-    if (!visible || !isAmbientState || !isListening) return;
+    if (!visible || !isAmbientState) return;
     let disposed = false;
 
     const tick = async () => {
@@ -550,7 +550,7 @@ function FloatApp() {
       disposed = true;
       clearInterval(intervalId);
     };
-  }, [visible, isAmbientState, isListening, showHoverPanel, hideHoverPanel]);
+  }, [visible, isAmbientState, showHoverPanel, hideHoverPanel]);
 
   const handleToggleListening = useCallback(async () => {
     await emit("request-toggle-listening", {});
@@ -595,7 +595,7 @@ function FloatApp() {
       style={{ paddingBottom: 15 }}
     >
       {/* Hover panel — only in ambient phase while listening */}
-      {isHoverPanelMounted && isListening && isAmbientState && morphPhase === "ambient" && (
+      {isHoverPanelMounted && isAmbientState && morphPhase === "ambient" && (
           <div
             className="absolute inset-0 flex items-end justify-center bg-transparent p-[2px]"
             style={{ paddingBottom: 15 + AMBIENT_PILL_HEIGHT + 8 }}

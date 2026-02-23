@@ -320,21 +320,37 @@ html.float-window #root,
 
 .morph-pill {
   transition-property: width, height, border-radius, background-color, box-shadow, border-color, opacity;
-  transition-duration: 200ms;
+  transition-duration: 260ms;
   transition-timing-function: cubic-bezier(0.25, 0.46, 0.45, 0.94);
   will-change: width, height, border-radius, background-color, opacity;
 }
 
-/* Expanding: width leads, height follows with 50ms delay */
+/* Expanding: spring overshoot — "pop" outward then settle */
 .morph-pill[data-morph-phase="expanding"] {
-  transition-duration: 200ms, 180ms, 200ms, 160ms, 200ms, 160ms, 120ms;
-  transition-delay:    0ms,   50ms,  0ms,   0ms,   0ms,   0ms,   0ms;
+  transition-duration: 320ms, 280ms, 300ms, 180ms, 240ms, 180ms, 120ms;
+  transition-delay:    0ms,   30ms,  0ms,   0ms,   0ms,   0ms,   0ms;
+  transition-timing-function:
+    cubic-bezier(0.34, 1.56, 0.64, 1),  /* width — overshoot */
+    cubic-bezier(0.34, 1.56, 0.64, 1),  /* height — overshoot */
+    cubic-bezier(0.34, 1.56, 0.64, 1),  /* border-radius — overshoot */
+    cubic-bezier(0.22, 1, 0.36, 1),     /* background-color — smooth */
+    cubic-bezier(0.22, 1, 0.36, 1),     /* box-shadow */
+    cubic-bezier(0.22, 1, 0.36, 1),     /* border-color */
+    ease-out;                            /* opacity */
 }
 
-/* Collapsing: height leads, width follows with 60ms delay */
+/* Collapsing: gentle snap-back — quick start, soft landing */
 .morph-pill[data-morph-phase="collapsing"] {
-  transition-duration: 200ms, 160ms, 200ms, 160ms, 200ms, 160ms, 150ms;
-  transition-delay:    60ms,  0ms,   60ms,  0ms,   0ms,   0ms,   100ms;
+  transition-duration: 260ms, 220ms, 260ms, 180ms, 240ms, 180ms, 150ms;
+  transition-delay:    40ms,  0ms,   40ms,  0ms,   0ms,   0ms,   80ms;
+  transition-timing-function:
+    cubic-bezier(0.22, 1, 0.36, 1),     /* width — fast start, soft end */
+    cubic-bezier(0.22, 1, 0.36, 1),     /* height */
+    cubic-bezier(0.22, 1, 0.36, 1),     /* border-radius */
+    cubic-bezier(0.22, 1, 0.36, 1),     /* background-color */
+    cubic-bezier(0.22, 1, 0.36, 1),     /* box-shadow */
+    cubic-bezier(0.22, 1, 0.36, 1),     /* border-color */
+    ease-in;                             /* opacity — fade in late */
 }
 
 /* Content fade inside morph pill */
@@ -343,7 +359,7 @@ html.float-window #root,
 }
 
 .morph-pill[data-morph-phase="expanding"] .morph-pill-content {
-  transition-delay: 140ms;
+  transition-delay: 180ms;
 }
 
 .morph-pill[data-morph-phase="collapsing"] .morph-pill-content {
