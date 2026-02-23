@@ -112,6 +112,11 @@ pub fn get_audio_devices() -> Result<Vec<AudioDevice>, String> {
 }
 
 #[tauri::command]
+pub fn get_audio_level() -> f32 {
+    audio_capture::get_audio_level()
+}
+
+#[tauri::command]
 pub fn set_audio_device(
     device_name: String,
     app: tauri::AppHandle,

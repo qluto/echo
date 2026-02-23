@@ -12,10 +12,24 @@ use hound::{SampleFormat as HoundSampleFormat, WavSpec, WavWriter};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 
 use crate::AudioDevice;
+
+/// Global atomic holding the current audio input level (f32 bits, 0.0–1.0 normalized RMS).
+static AUDIO_LEVEL: AtomicU32 = AtomicU32::new(0);
+
+/// Get the current audio input level (0.0–1.0).
+pub fn get_audio_level() -> f32 {
+    f32::from_bits(AUDIO_LEVEL.load(Ordering::Relaxed))
+}
+
+/// Reset the audio level to zero.
+fn reset_audio_level() {
+    AUDIO_LEVEL.store(0f32.to_bits(), Ordering::Relaxed);
+}
 
 /// Commands for the audio thread
 #[allow(dead_code)]
@@ -136,6 +150,7 @@ fn start_recording_impl(
     };
 
     stream.play()?;
+    reset_audio_level();
 
     let path_str = file_path.to_string_lossy().to_string();
     *current_recording = Some(RecordingState {
@@ -149,6 +164,7 @@ fn start_recording_impl(
 }
 
 fn stop_recording_impl(current_recording: &mut Option<RecordingState>) -> Result<()> {
+    reset_audio_level();
     if let Some(state) = current_recording.take() {
         // Drop the stream first to stop recording
         drop(state._stream);
@@ -174,12 +190,28 @@ fn build_stream<T>(
 where
     T: cpal::Sample + cpal::SizedSample,
     i16: cpal::FromSample<T>,
+    f32: cpal::FromSample<T>,
 {
     let err_fn = |err| log::error!("Audio stream error: {}", err);
 
     let stream = device.build_input_stream(
         config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
+            // Calculate RMS level for visualization
+            if !data.is_empty() {
+                let sum_sq: f32 = data
+                    .iter()
+                    .map(|&s| {
+                        let f: f32 = cpal::Sample::from_sample(s);
+                        f * f
+                    })
+                    .sum();
+                let rms = (sum_sq / data.len() as f32).sqrt();
+                // Normalize: typical speech RMS is ~0.01–0.1, scale to 0.0–1.0
+                let level = (rms * 14.0).min(1.0);
+                AUDIO_LEVEL.store(level.to_bits(), Ordering::Relaxed);
+            }
+
             if let Ok(mut guard) = writer.lock() {
                 if let Some(ref mut w) = *guard {
                     for &sample in data {

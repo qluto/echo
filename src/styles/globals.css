@@ -144,14 +144,7 @@ html.float-window #root,
   }
 }
 
-@keyframes recording-wave {
-  0%, 100% {
-    transform: scaleY(0.5);
-  }
-  50% {
-    transform: scaleY(1);
-  }
-}
+/* recording-wave keyframes removed — bars are now driven by real audio levels */
 
 @keyframes dot-fade {
   0%, 100% {
@@ -228,16 +221,7 @@ html.float-window #root,
   will-change: transform, opacity;
 }
 
-/* Recording waveform bars */
-.wave-bar {
-  animation: recording-wave 0.8s ease-in-out infinite;
-}
-.wave-bar:nth-child(1) { animation-delay: 0s; }
-.wave-bar:nth-child(2) { animation-delay: 0.1s; }
-.wave-bar:nth-child(3) { animation-delay: 0.2s; }
-.wave-bar:nth-child(4) { animation-delay: 0.3s; }
-.wave-bar:nth-child(5) { animation-delay: 0.4s; }
-.wave-bar:nth-child(6) { animation-delay: 0.5s; }
+/* Wave bars are now driven dynamically by audio levels (no CSS animation needed) */
 
 /* Processing dots */
 .dot-pulse {

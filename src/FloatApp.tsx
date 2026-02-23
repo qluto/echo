@@ -131,13 +131,55 @@ function getGlowSoftColor(state: IndicatorState): string {
   }
 }
 
+/** Base heights for wave bars (used as minimum when no audio) */
+const WAVE_BAR_BASE = [4, 6, 4, 6, 4, 6];
+/** Maximum heights for wave bars */
+const WAVE_BAR_MAX = [10, 22, 16, 26, 18, 22];
+/** Number of history samples to keep for staggered bar animation */
+const LEVEL_HISTORY_SIZE = 8;
+/** Which history index each bar reads from (higher = more delayed) */
+const BAR_DELAY = [0, 2, 4, 1, 3, 5];
+
+/** Wave bars that react to audio levels with per-bar time stagger */
+function WaveBars({ audioLevel, glowColor }: { audioLevel: number; glowColor: string }) {
+  const historyRef = useRef<number[]>(new Array(LEVEL_HISTORY_SIZE).fill(0));
+
+  // Push new level into history ring, shifting older values
+  const history = historyRef.current;
+  history.pop();
+  history.unshift(audioLevel);
+
+  return (
+    <div className="flex items-center gap-[3px] h-7">
+      {WAVE_BAR_BASE.map((base, i) => {
+        const max = WAVE_BAR_MAX[i];
+        const delayed = history[BAR_DELAY[i]] ?? 0;
+        const height = base + (max - base) * delayed;
+        return (
+          <div
+            key={i}
+            className="w-0.5 rounded-sm"
+            style={{
+              height: `${height}px`,
+              backgroundColor: glowColor,
+              transition: "height 60ms ease-out",
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
 /** Render recording/processing/success indicator content */
 function IndicatorContent({
   state,
   duration,
+  audioLevel,
 }: {
   state: IndicatorState;
   duration: number;
+  audioLevel: number;
 }) {
   const glowColor = getGlowColor(state);
   const glowSoft = getGlowSoftColor(state);
@@ -170,18 +212,7 @@ function IndicatorContent({
         >
           {formatDuration(duration)}
         </span>
-        <div className="flex items-center gap-[3px] h-5">
-          {[6, 14, 8, 18, 10, 14].map((height, i) => (
-            <div
-              key={i}
-              className="w-0.5 rounded-sm wave-bar"
-              style={{
-                height: `${height}px`,
-                backgroundColor: glowColor,
-              }}
-            />
-          ))}
-        </div>
+        <WaveBars audioLevel={audioLevel} glowColor={glowColor} />
       </div>
     );
   }
@@ -263,6 +294,7 @@ function FloatApp() {
   const [isHoverPanelMounted, setIsHoverPanelMounted] = useState(false);
   const [recentEntries, setRecentEntries] = useState<RecentEntry[]>([]);
   const [morphPhase, setMorphPhase] = useState<MorphPhase>("ambient");
+  const [audioLevel, setAudioLevel] = useState(0);
 
   const prevModeRef = useRef<"ambient" | "normal" | "hidden">("hidden");
   const prevStateRef = useRef<IndicatorState>("idle");
@@ -270,6 +302,23 @@ function FloatApp() {
   const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hoveredRef = useRef(false);
   const hoverPanelMountedRef = useRef(false);
+
+  // ---- Audio level polling during recording ----
+  useEffect(() => {
+    if (state !== "recording") {
+      setAudioLevel(0);
+      return;
+    }
+    const intervalId = setInterval(async () => {
+      try {
+        const level = await invoke<number>("get_audio_level");
+        setAudioLevel(level);
+      } catch (_) {
+        // ignore polling errors
+      }
+    }, 50);
+    return () => clearInterval(intervalId);
+  }, [state]);
 
   // ---- Event listeners ----
 
@@ -808,7 +857,7 @@ function FloatApp() {
             className="morph-pill-content w-full h-full"
             style={{ opacity: contentVisible ? 1 : 0 }}
           >
-            <IndicatorContent state={state} duration={duration} />
+            <IndicatorContent state={state} duration={duration} audioLevel={audioLevel} />
           </div>
         </div>
       </div>
@@ -857,7 +906,7 @@ function FloatApp() {
             className="morph-pill-content w-full h-full"
             style={{ opacity: contentVisible ? 1 : 0 }}
           >
-            <IndicatorContent state={state} duration={duration} />
+            <IndicatorContent state={state} duration={duration} audioLevel={audioLevel} />
           </div>
         </div>
       </div>
