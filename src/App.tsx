@@ -131,9 +131,9 @@ function App() {
   // Emit state to float window
   type FloatState = "idle" | "recording" | "processing" | "success" | "ambient" | "ambient-active";
   const emitFloatState = useCallback(
-    async (state: FloatState, duration: number) => {
+    async (state: FloatState, duration: number, isListening: boolean) => {
       try {
-        await emit("float-state", { state, duration });
+        await emit("float-state", { state, duration, isListening });
       } catch (e) {
         console.error("Failed to emit float state:", e);
       }
@@ -152,13 +152,13 @@ function App() {
       : isListening
       ? (isSpeechDetected ? "ambient-active" : "ambient")
       : "ambient";
-    emitFloatState(state, recordingDuration);
+    emitFloatState(state, recordingDuration, isListening);
 
     // Auto-hide success after delay
     if (showSuccess) {
       const timer = setTimeout(() => {
         setShowSuccess(false);
-        emitFloatState(isListening ? "ambient" : "ambient", 0);
+        emitFloatState(isListening ? "ambient" : "ambient", 0, isListening);
       }, 800);
       return () => clearTimeout(timer);
     }
