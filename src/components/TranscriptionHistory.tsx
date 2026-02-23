@@ -116,9 +116,6 @@ export function TranscriptionHistory({ onSummarize, isSummarizing }: Transcripti
           style={{ color: "var(--text-tertiary)" }}
         >
           Transcripts
-          {totalCount > 0 && (
-            <span className="ml-1">({totalCount})</span>
-          )}
         </span>
 
         <div className="flex items-center gap-2">
