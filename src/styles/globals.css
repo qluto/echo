@@ -331,3 +331,37 @@ html.float-window #root,
 .card-shadow {
   box-shadow: 0 2px 30px rgba(0, 0, 0, 0.04);
 }
+
+/* ---- Morph pill: ambient pill ↔ float indicator transition ---- */
+
+.morph-pill {
+  transition-property: width, height, border-radius, background-color, box-shadow, border-color, opacity;
+  transition-duration: 200ms;
+  transition-timing-function: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  will-change: width, height, border-radius, background-color, opacity;
+}
+
+/* Expanding: width leads, height follows with 50ms delay */
+.morph-pill[data-morph-phase="expanding"] {
+  transition-duration: 200ms, 180ms, 200ms, 160ms, 200ms, 160ms, 120ms;
+  transition-delay:    0ms,   50ms,  0ms,   0ms,   0ms,   0ms,   0ms;
+}
+
+/* Collapsing: height leads, width follows with 60ms delay */
+.morph-pill[data-morph-phase="collapsing"] {
+  transition-duration: 200ms, 160ms, 200ms, 160ms, 200ms, 160ms, 150ms;
+  transition-delay:    60ms,  0ms,   60ms,  0ms,   0ms,   0ms,   100ms;
+}
+
+/* Content fade inside morph pill */
+.morph-pill-content {
+  transition: opacity 100ms ease-out;
+}
+
+.morph-pill[data-morph-phase="expanding"] .morph-pill-content {
+  transition-delay: 140ms;
+}
+
+.morph-pill[data-morph-phase="collapsing"] .morph-pill-content {
+  transition-delay: 0ms;
+}
