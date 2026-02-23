@@ -217,6 +217,7 @@ function IndicatorContent({
           viewBox="0 0 24 24"
         >
           <path
+            className="checkmark-draw"
             strokeLinecap="round"
             strokeLinejoin="round"
             d="M5 13l4 4L19 7"
@@ -787,7 +788,7 @@ function FloatApp() {
               isInAmbientPhase && state === "ambient-active" && morphPhase === "ambient"
                 ? "animate-ambient-breathe"
                 : ""
-            }`}
+            } ${showRipple ? "animate-success-bounce" : ""}`}
             data-morph-phase={morphPhase}
             style={{
               width: pillWidth,
