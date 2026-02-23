@@ -35,17 +35,22 @@ interface HistoryPage {
   entries: RecentEntry[];
 }
 
-const NORMAL_WIDTH = 260;
-const NORMAL_HEIGHT = 60;
 const HOVER_WIDTH = 264;
-const HOVER_HEIGHT = 360;
-const BOTTOM_MARGIN = 32;
+const HOVER_HEIGHT = 300;
+const BOTTOM_MARGIN = 12;
 const AMBIENT_PILL_WIDTH = 44;
 const AMBIENT_PILL_HEIGHT = 10;
 const AMBIENT_PILL_RADIUS = 5;
-const INDICATOR_WIDTH = 240;
+const INDICATOR_WIDTH = 120;
 const INDICATOR_HEIGHT = 44;
 const INDICATOR_RADIUS = 22;
+
+/** Ripple ring decay: first ring strongest, subsequent rings weaker */
+const RIPPLE_RINGS = [
+  { delay: 0,   borderWidth: 3,   opacity: 0.5  },
+  { delay: 150, borderWidth: 2,   opacity: 0.3  },
+  { delay: 300, borderWidth: 1.5, opacity: 0.15 },
+];
 
 /** Resize float window and anchor its bottom edge near screen bottom. */
 async function resizeAndPosition(width: number, height: number) {
@@ -118,19 +123,6 @@ function getGlowColor(state: IndicatorState): string {
   }
 }
 
-function getGlowSoftColor(state: IndicatorState): string {
-  switch (state) {
-    case "recording":
-      return "var(--glow-recording-soft)";
-    case "processing":
-      return "var(--glow-processing-soft)";
-    case "success":
-      return "var(--glow-success-soft)";
-    default:
-      return "var(--glow-idle-soft)";
-  }
-}
-
 /** Base heights for wave bars (used as minimum when no audio) */
 const WAVE_BAR_BASE = [4, 6, 4, 6, 4, 6];
 /** Maximum heights for wave bars */
@@ -182,97 +174,50 @@ function IndicatorContent({
   audioLevel: number;
 }) {
   const glowColor = getGlowColor(state);
-  const glowSoft = getGlowSoftColor(state);
 
   if (state === "recording") {
     return (
-      <div className="flex items-center gap-3.5 h-full px-5 pl-4">
-        <div
-          className="w-3 h-3 rounded-md animate-glow-pulse"
-          style={{
-            backgroundColor: glowColor,
-            boxShadow: `0 0 8px 2px ${glowColor}, 0 0 16px ${glowSoft}`,
-          }}
-        />
+      <div className="flex items-center justify-center gap-3 h-full">
+        <WaveBars audioLevel={audioLevel} glowColor={glowColor} />
         <span
-          className="font-mono text-[11px] tracking-wide"
-          style={{ color: glowColor }}
-        >
-          transcribing
-        </span>
-        <div className="w-px h-4" style={{ backgroundColor: glowSoft }} />
-        <span
-          className="text-xs font-medium font-mono"
+          className="text-[11px] font-mono flex-shrink-0"
           style={{
             color: "var(--text-secondary)",
             fontVariantNumeric: "tabular-nums",
-            minWidth: "2.5em",
-            textAlign: "right",
           }}
         >
           {formatDuration(duration)}
         </span>
-        <WaveBars audioLevel={audioLevel} glowColor={glowColor} />
       </div>
     );
   }
 
   if (state === "processing") {
     return (
-      <div className="flex items-center gap-3 h-full px-5 pl-4">
-        <div
-          className="w-3 h-3 rounded-md animate-glow-pulse"
-          style={{
-            backgroundColor: glowColor,
-            boxShadow: `0 0 8px 2px ${glowColor}, 0 0 16px ${glowSoft}`,
-          }}
-        />
-        <span
-          className="font-mono text-[11px] tracking-wide"
-          style={{ color: glowColor }}
-        >
-          transcribing
-        </span>
-        <div className="flex items-center gap-1">
-          {[1, 0.5, 0.25].map((opacity, i) => (
-            <div
-              key={i}
-              className="w-1 h-1 rounded-full dot-pulse"
-              style={{
-                backgroundColor: glowColor,
-                opacity,
-              }}
-            />
-          ))}
-        </div>
+      <div className="flex items-center justify-center gap-1.5 h-full">
+        {[0, 1, 2].map((i) => (
+          <div
+            key={i}
+            className="w-1 h-1 rounded-full dot-pulse"
+            style={{ backgroundColor: glowColor }}
+          />
+        ))}
       </div>
     );
   }
 
   if (state === "success") {
     return (
-      <div className="flex items-center gap-2.5 h-full px-5 pl-4">
-        <div
-          className="w-3 h-3 rounded-md"
-          style={{
-            backgroundColor: glowColor,
-            boxShadow: `0 0 8px 2px ${glowColor}, 0 0 16px ${glowSoft}`,
-          }}
-        />
-        <span
-          className="font-mono text-[11px] tracking-wide"
-          style={{ color: glowColor }}
-        >
-          inserted
-        </span>
+      <div className="flex items-center justify-center h-full">
         <svg
-          className="w-3.5 h-3.5"
+          className="w-[18px] h-[18px]"
           fill="none"
           stroke={glowColor}
           strokeWidth={2.5}
           viewBox="0 0 24 24"
         >
           <path
+            className="checkmark-draw"
             strokeLinecap="round"
             strokeLinejoin="round"
             d="M5 13l4 4L19 7"
@@ -295,6 +240,7 @@ function FloatApp() {
   const [recentEntries, setRecentEntries] = useState<RecentEntry[]>([]);
   const [morphPhase, setMorphPhase] = useState<MorphPhase>("ambient");
   const [audioLevel, setAudioLevel] = useState(0);
+  const [showRipple, setShowRipple] = useState(false);
 
   const prevModeRef = useRef<"ambient" | "normal" | "hidden">("hidden");
   const prevStateRef = useRef<IndicatorState>("idle");
@@ -343,40 +289,28 @@ function FloatApp() {
           !nextIsListening && isAmbientLike ? "idle" : rawState;
         setState(newState as IndicatorState);
 
-        if (newState === "idle") {
-          // Delay hide to allow collapse animation to play out
-          const hideDelay = prevModeRef.current !== "hidden" ? 350 : 100;
-          setTimeout(() => {
-            setVisible(false);
-            win.hide();
-            prevModeRef.current = "hidden";
-          }, hideDelay);
-        } else {
-          const isAmbient =
-            newState === "ambient" || newState === "ambient-active";
-          const newMode = isAmbient ? "ambient" : "normal";
+        const isAmbient =
+          newState === "ambient" || newState === "ambient-active" || newState === "idle";
+        const newMode = isAmbient ? "ambient" : "normal";
 
-          // When listening, always use HOVER size (morph happens within this window)
-          if (nextIsListening) {
-            if (prevModeRef.current === "hidden") {
-              await resizeAndPosition(HOVER_WIDTH, HOVER_HEIGHT);
-            }
-          } else {
-            // Not listening — use normal size for indicators
-            if (prevModeRef.current === "hidden" || prevModeRef.current !== newMode) {
-              const [w, h] = [NORMAL_WIDTH, NORMAL_HEIGHT];
-              await resizeAndPosition(w, h);
-            }
-          }
-
-          prevModeRef.current = newMode;
-          setVisible(true);
-          win.show();
+        // Always use HOVER size (bottom-aligned pill lives in this window)
+        if (prevModeRef.current === "hidden") {
+          await resizeAndPosition(HOVER_WIDTH, HOVER_HEIGHT);
         }
+
+        prevModeRef.current = newMode;
+        setVisible(true);
+        win.show();
       },
     );
 
-    win.hide();
+    // Show window immediately on mount with ambient pill
+    void (async () => {
+      await resizeAndPosition(HOVER_WIDTH, HOVER_HEIGHT);
+      setVisible(true);
+      win.show();
+    })();
+
     return () => {
       unlistenState.then((fn) => fn());
     };
@@ -402,7 +336,7 @@ function FloatApp() {
     };
   }, []);
 
-  const isAmbientState = state === "ambient" || state === "ambient-active";
+  const isAmbientState = state === "ambient" || state === "ambient-active" || state === "idle";
 
   // Backfill recent entries from DB when hover panel opens.
   useEffect(() => {
@@ -430,14 +364,22 @@ function FloatApp() {
     void loadRecentEntries();
   }, [isAmbientState, isHovered]);
 
-  // Reset hover & entries on state transitions
+  // Reset hover on non-ambient state transitions
   useEffect(() => {
-    if (state !== "ambient" && state !== "ambient-active") {
+    if (state !== "ambient" && state !== "ambient-active" && state !== "idle") {
       setIsHovered(false);
       setIsHoverPanelMounted(false);
     }
-    if (state === "idle") {
-      setRecentEntries([]);
+  }, [state]);
+
+  // ---- Ripple on success ----
+  useEffect(() => {
+    if (state === "success") {
+      setShowRipple(true);
+      const timer = setTimeout(() => setShowRipple(false), 900);
+      return () => clearTimeout(timer);
+    } else {
+      setShowRipple(false);
     }
   }, [state]);
 
@@ -463,17 +405,17 @@ function FloatApp() {
       prev === "recording" || prev === "processing" || prev === "success";
 
     if (prevIsAmbientOrIdle && curIsIndicator) {
-      // Ambient/Idle -> Indicator: start expanding
+      // Ambient/Idle -> Indicator: start expanding (matches spring duration)
       setMorphPhase("expanding");
       morphTimerRef.current = setTimeout(() => {
         setMorphPhase("indicator");
-      }, 260);
+      }, 320);
     } else if (prevIsIndicator && curIsAmbientOrIdle) {
       // Indicator -> Ambient/Idle: start collapsing
       setMorphPhase("collapsing");
       morphTimerRef.current = setTimeout(() => {
         setMorphPhase("ambient");
-      }, 300);
+      }, 280);
     } else if (curIsAmbientOrIdle) {
       setMorphPhase("ambient");
     } else if (curIsIndicator) {
@@ -499,17 +441,11 @@ function FloatApp() {
 
   // ---- Window sizing ----
 
-  // Keep ambient window fixed as hover size to avoid flicker while expanding/collapsing.
+  // Always use HOVER size — ambient pill lives at bottom of this window.
   useEffect(() => {
     if (!visible) return;
-    if (isListening) {
-      // Always HOVER size when listening (morph container needs space)
-      void resizeAndPosition(HOVER_WIDTH, HOVER_HEIGHT);
-    } else {
-      // Not listening — always use normal size
-      void resizeAndPosition(NORMAL_WIDTH, NORMAL_HEIGHT);
-    }
-  }, [visible, isListening]);
+    void resizeAndPosition(HOVER_WIDTH, HOVER_HEIGHT);
+  }, [visible]);
 
   // Make the window click-through when ambient and not morphing/hovered.
   useEffect(() => {
@@ -629,41 +565,40 @@ function FloatApp() {
     return null;
   }
 
-  // ---- Listening mode: unified morph render ----
-  if (isListening) {
-    const isInIndicatorPhase =
+  // ---- Unified morph render (always bottom-aligned pill) ----
+  const isInIndicatorPhase =
       morphPhase === "expanding" || morphPhase === "indicator";
-    const isInAmbientPhase =
-      morphPhase === "ambient" || morphPhase === "collapsing";
+  const isInAmbientPhase =
+    morphPhase === "ambient" || morphPhase === "collapsing";
 
-    // Morph pill dimensions
-    const pillWidth = isInIndicatorPhase ? INDICATOR_WIDTH : AMBIENT_PILL_WIDTH;
-    const pillHeight = isInIndicatorPhase
-      ? INDICATOR_HEIGHT
-      : AMBIENT_PILL_HEIGHT;
-    const pillRadius = isInIndicatorPhase ? INDICATOR_RADIUS : AMBIENT_PILL_RADIUS;
-    const pillBg = isInIndicatorPhase ? "#FFFFFF" : (state === "ambient-active" ? "#7C9082" : "#1A1A1C");
-    const pillBorder = isInIndicatorPhase
-      ? "1px solid var(--border-subtle)"
-      : "1px solid rgba(255, 255, 255, 0.25)";
-    const pillShadow = isInIndicatorPhase
-      ? getIndicatorShadow(state)
-      : state === "ambient-active"
-        ? "0 0 3px 1px rgba(124, 144, 130, 0.6), 0 0 8px rgba(124, 144, 130, 0.3)"
-        : "0 1px 4px rgba(0, 0, 0, 0.12)";
+  // Morph pill dimensions
+  const pillWidth = isInIndicatorPhase ? INDICATOR_WIDTH : AMBIENT_PILL_WIDTH;
+  const pillHeight = isInIndicatorPhase
+    ? INDICATOR_HEIGHT
+    : AMBIENT_PILL_HEIGHT;
+  const pillRadius = isInIndicatorPhase ? INDICATOR_RADIUS : AMBIENT_PILL_RADIUS;
+  const pillBg = isInIndicatorPhase ? "#FFFFFF" : (state === "ambient-active" ? "#7C9082" : "#1A1A1C");
+  const pillBorder = isInIndicatorPhase
+    ? "1px solid var(--border-subtle)"
+    : "1px solid rgba(255, 255, 255, 0.25)";
+  const pillShadow = isInIndicatorPhase
+    ? getIndicatorShadow(state)
+    : state === "ambient-active"
+      ? "0 0 3px 1px rgba(124, 144, 130, 0.6), 0 0 8px rgba(124, 144, 130, 0.3)"
+      : "0 1px 4px rgba(0, 0, 0, 0.12)";
 
-    // Content is visible only when fully expanded
-    const contentVisible = morphPhase === "indicator";
+  // Content is visible only when fully expanded
+  const contentVisible = morphPhase === "indicator";
 
-    const displayEntries = [...recentEntries].reverse().slice(-4);
+  const displayEntries = recentEntries.slice(0, 4);
 
-    return (
-      <div
-        className="h-screen w-screen relative flex items-end justify-center bg-transparent"
-        style={{ paddingBottom: 15 }}
-      >
-        {/* Hover panel — only in ambient phase */}
-        {isHoverPanelMounted && isAmbientState && morphPhase === "ambient" && (
+  return (
+    <div
+      className="h-screen w-screen relative flex items-end justify-center bg-transparent"
+      style={{ paddingBottom: 15 }}
+    >
+      {/* Hover panel — only in ambient phase while listening */}
+      {isHoverPanelMounted && isAmbientState && morphPhase === "ambient" && (
           <div
             className="absolute inset-0 flex items-end justify-center bg-transparent p-[2px]"
             style={{ paddingBottom: 15 + AMBIENT_PILL_HEIGHT + 8 }}
@@ -745,30 +680,6 @@ function FloatApp() {
                 </button>
               </div>
 
-              {/* Scroll hint */}
-              <div
-                className="flex items-center justify-center flex-shrink-0"
-                style={{
-                  height: 24,
-                  background:
-                    "linear-gradient(180deg, transparent 0%, rgba(255,255,255,0.87) 30%, #FFFFFF 100%)",
-                }}
-              >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="#ADADAD"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <polyline points="17 11 12 6 7 11" />
-                  <polyline points="17 18 12 13 7 18" />
-                </svg>
-              </div>
-
               {/* History list */}
               <div
                 className="flex flex-col flex-1 min-h-0"
@@ -833,85 +744,52 @@ function FloatApp() {
           </div>
         )}
 
-        {/* Morph pill — single element that transitions between ambient pill and indicator */}
-        <div
-          className={`morph-pill flex items-center justify-center ${
-            isInAmbientPhase && state === "ambient-active" && morphPhase === "ambient"
-              ? "animate-ambient-breathe"
-              : ""
-          }`}
-          data-morph-phase={morphPhase}
-          style={{
-            width: pillWidth,
-            height: pillHeight,
-            borderRadius: pillRadius,
-            backgroundColor: pillBg,
-            border: pillBorder,
-            boxShadow: pillShadow,
-            overflow: "hidden",
-            flexShrink: 0,
-          }}
-        >
-          {/* Indicator content — fades in/out */}
+        {/* Morph pill with ripple wrapper */}
+        <div style={{ position: "relative", flexShrink: 0 }}>
+          {showRipple &&
+            RIPPLE_RINGS.map((ring, i) => (
+              <div
+                key={`ripple-${i}`}
+                className="echo-ripple-ring"
+                style={{
+                  width: INDICATOR_WIDTH,
+                  height: INDICATOR_HEIGHT,
+                  borderRadius: INDICATOR_RADIUS,
+                  border: `${ring.borderWidth}px solid var(--glow-success)`,
+                  animationDelay: `${ring.delay}ms`,
+                  "--ripple-opacity": ring.opacity,
+                } as React.CSSProperties}
+              />
+            ))}
           <div
-            className="morph-pill-content w-full h-full"
-            style={{ opacity: contentVisible ? 1 : 0 }}
+            className={`morph-pill flex items-center justify-center ${
+              isInAmbientPhase && state === "ambient-active" && morphPhase === "ambient"
+                ? "animate-ambient-breathe"
+                : ""
+            } ${showRipple ? "animate-success-bounce" : ""}`}
+            data-morph-phase={morphPhase}
+            style={{
+              width: pillWidth,
+              height: pillHeight,
+              borderRadius: pillRadius,
+              backgroundColor: pillBg,
+              border: pillBorder,
+              boxShadow: pillShadow,
+              overflow: "hidden",
+              flexShrink: 0,
+            }}
           >
-            <IndicatorContent state={state} duration={duration} audioLevel={audioLevel} />
+            {/* Indicator content — fades in/out */}
+            <div
+              className="morph-pill-content w-full h-full"
+              style={{ opacity: contentVisible ? 1 : 0 }}
+            >
+              <IndicatorContent state={state} duration={duration} audioLevel={audioLevel} />
+            </div>
           </div>
         </div>
       </div>
-    );
-  }
-
-  // ---- Not listening: morph pill centered in normal-size window ----
-  {
-    const isInIndicatorPhase =
-      morphPhase === "expanding" || morphPhase === "indicator";
-    const isCollapsing = morphPhase === "collapsing";
-
-    // Standalone morph: starts from a tiny dot (no ambient pill to morph from)
-    const DOT_SIZE = 8;
-    const pillWidth = isInIndicatorPhase ? INDICATOR_WIDTH : DOT_SIZE;
-    const pillHeight = isInIndicatorPhase ? INDICATOR_HEIGHT : DOT_SIZE;
-    const pillRadius = isInIndicatorPhase ? INDICATOR_RADIUS : DOT_SIZE / 2;
-    const pillBg = isInIndicatorPhase ? "#FFFFFF" : "rgba(0, 0, 0, 0.15)";
-    const pillBorder = isInIndicatorPhase
-      ? "1px solid var(--border-subtle)"
-      : "1px solid transparent";
-    const pillShadow = isInIndicatorPhase ? getIndicatorShadow(state) : "none";
-
-    // Opacity: visible when expanding/indicator, fades out when collapsing
-    const pillOpacity = isCollapsing ? 0 : isInIndicatorPhase ? 1 : 0;
-    const contentVisible = morphPhase === "indicator";
-
-    return (
-      <div className="h-screen w-screen flex items-center justify-center bg-transparent">
-        <div
-          className="morph-pill flex items-center justify-center"
-          data-morph-phase={morphPhase}
-          style={{
-            width: pillWidth,
-            height: pillHeight,
-            borderRadius: pillRadius,
-            backgroundColor: pillBg,
-            border: pillBorder,
-            boxShadow: pillShadow,
-            opacity: pillOpacity,
-            overflow: "hidden",
-            flexShrink: 0,
-          }}
-        >
-          <div
-            className="morph-pill-content w-full h-full"
-            style={{ opacity: contentVisible ? 1 : 0 }}
-          >
-            <IndicatorContent state={state} duration={duration} audioLevel={audioLevel} />
-          </div>
-        </div>
-      </div>
-    );
-  }
+  );
 }
 
 export default FloatApp;
