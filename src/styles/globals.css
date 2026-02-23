@@ -70,7 +70,7 @@ html.float-window #root,
 .float-window #root {
   background: transparent !important;
   background-color: transparent !important;
-  overflow: visible !important;
+  overflow: hidden !important;
   height: auto !important;
   width: auto !important;
 }
@@ -144,14 +144,7 @@ html.float-window #root,
   }
 }
 
-@keyframes recording-wave {
-  0%, 100% {
-    transform: scaleY(0.5);
-  }
-  50% {
-    transform: scaleY(1);
-  }
-}
+/* recording-wave keyframes removed — bars are now driven by real audio levels */
 
 @keyframes dot-fade {
   0%, 100% {
@@ -228,16 +221,7 @@ html.float-window #root,
   will-change: transform, opacity;
 }
 
-/* Recording waveform bars */
-.wave-bar {
-  animation: recording-wave 0.8s ease-in-out infinite;
-}
-.wave-bar:nth-child(1) { animation-delay: 0s; }
-.wave-bar:nth-child(2) { animation-delay: 0.1s; }
-.wave-bar:nth-child(3) { animation-delay: 0.2s; }
-.wave-bar:nth-child(4) { animation-delay: 0.3s; }
-.wave-bar:nth-child(5) { animation-delay: 0.4s; }
-.wave-bar:nth-child(6) { animation-delay: 0.5s; }
+/* Wave bars are now driven dynamically by audio levels (no CSS animation needed) */
 
 /* Processing dots */
 .dot-pulse {
@@ -330,4 +314,38 @@ html.float-window #root,
 /* Card shadow */
 .card-shadow {
   box-shadow: 0 2px 30px rgba(0, 0, 0, 0.04);
+}
+
+/* ---- Morph pill: ambient pill ↔ float indicator transition ---- */
+
+.morph-pill {
+  transition-property: width, height, border-radius, background-color, box-shadow, border-color, opacity;
+  transition-duration: 200ms;
+  transition-timing-function: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  will-change: width, height, border-radius, background-color, opacity;
+}
+
+/* Expanding: width leads, height follows with 50ms delay */
+.morph-pill[data-morph-phase="expanding"] {
+  transition-duration: 200ms, 180ms, 200ms, 160ms, 200ms, 160ms, 120ms;
+  transition-delay:    0ms,   50ms,  0ms,   0ms,   0ms,   0ms,   0ms;
+}
+
+/* Collapsing: height leads, width follows with 60ms delay */
+.morph-pill[data-morph-phase="collapsing"] {
+  transition-duration: 200ms, 160ms, 200ms, 160ms, 200ms, 160ms, 150ms;
+  transition-delay:    60ms,  0ms,   60ms,  0ms,   0ms,   0ms,   100ms;
+}
+
+/* Content fade inside morph pill */
+.morph-pill-content {
+  transition: opacity 100ms ease-out;
+}
+
+.morph-pill[data-morph-phase="expanding"] .morph-pill-content {
+  transition-delay: 140ms;
+}
+
+.morph-pill[data-morph-phase="collapsing"] .morph-pill-content {
+  transition-delay: 0ms;
 }

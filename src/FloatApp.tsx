@@ -17,9 +17,12 @@ type IndicatorState =
   | "ambient"
   | "ambient-active";
 
+type MorphPhase = "ambient" | "expanding" | "indicator" | "collapsing";
+
 interface FloatStatePayload {
   state: IndicatorState;
   duration: number;
+  isListening: boolean;
 }
 
 interface RecentEntry {
@@ -32,7 +35,7 @@ interface HistoryPage {
   entries: RecentEntry[];
 }
 
-const NORMAL_WIDTH = 240;
+const NORMAL_WIDTH = 260;
 const NORMAL_HEIGHT = 60;
 const HOVER_WIDTH = 264;
 const HOVER_HEIGHT = 360;
@@ -40,6 +43,9 @@ const BOTTOM_MARGIN = 32;
 const AMBIENT_PILL_WIDTH = 44;
 const AMBIENT_PILL_HEIGHT = 10;
 const AMBIENT_PILL_RADIUS = 5;
+const INDICATOR_WIDTH = 240;
+const INDICATOR_HEIGHT = 44;
+const INDICATOR_RADIUS = 22;
 
 /** Resize float window and anchor its bottom edge near screen bottom. */
 async function resizeAndPosition(width: number, height: number) {
@@ -78,17 +84,241 @@ function makeLocalTimestamp(): string {
   return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
 }
 
+function formatDuration(seconds: number): string {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
+/** Box shadow for indicator states */
+function getIndicatorShadow(state: IndicatorState): string {
+  switch (state) {
+    case "recording":
+      return "0 4px 20px rgba(198, 125, 99, 0.2)";
+    case "processing":
+      return "0 4px 20px rgba(212, 165, 116, 0.2)";
+    case "success":
+      return "0 4px 20px rgba(124, 144, 130, 0.2)";
+    default:
+      return "none";
+  }
+}
+
+/** Glow color CSS variable name for a given state */
+function getGlowColor(state: IndicatorState): string {
+  switch (state) {
+    case "recording":
+      return "var(--glow-recording)";
+    case "processing":
+      return "var(--glow-processing)";
+    case "success":
+      return "var(--glow-success)";
+    default:
+      return "var(--glow-idle)";
+  }
+}
+
+function getGlowSoftColor(state: IndicatorState): string {
+  switch (state) {
+    case "recording":
+      return "var(--glow-recording-soft)";
+    case "processing":
+      return "var(--glow-processing-soft)";
+    case "success":
+      return "var(--glow-success-soft)";
+    default:
+      return "var(--glow-idle-soft)";
+  }
+}
+
+/** Base heights for wave bars (used as minimum when no audio) */
+const WAVE_BAR_BASE = [4, 6, 4, 6, 4, 6];
+/** Maximum heights for wave bars */
+const WAVE_BAR_MAX = [10, 22, 16, 26, 18, 22];
+/** Number of history samples to keep for staggered bar animation */
+const LEVEL_HISTORY_SIZE = 8;
+/** Which history index each bar reads from (higher = more delayed) */
+const BAR_DELAY = [0, 2, 4, 1, 3, 5];
+
+/** Wave bars that react to audio levels with per-bar time stagger */
+function WaveBars({ audioLevel, glowColor }: { audioLevel: number; glowColor: string }) {
+  const historyRef = useRef<number[]>(new Array(LEVEL_HISTORY_SIZE).fill(0));
+
+  // Push new level into history ring, shifting older values
+  const history = historyRef.current;
+  history.pop();
+  history.unshift(audioLevel);
+
+  return (
+    <div className="flex items-center gap-[3px] h-7">
+      {WAVE_BAR_BASE.map((base, i) => {
+        const max = WAVE_BAR_MAX[i];
+        const delayed = history[BAR_DELAY[i]] ?? 0;
+        const height = base + (max - base) * delayed;
+        return (
+          <div
+            key={i}
+            className="w-0.5 rounded-sm"
+            style={{
+              height: `${height}px`,
+              backgroundColor: glowColor,
+              transition: "height 60ms ease-out",
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+/** Render recording/processing/success indicator content */
+function IndicatorContent({
+  state,
+  duration,
+  audioLevel,
+}: {
+  state: IndicatorState;
+  duration: number;
+  audioLevel: number;
+}) {
+  const glowColor = getGlowColor(state);
+  const glowSoft = getGlowSoftColor(state);
+
+  if (state === "recording") {
+    return (
+      <div className="flex items-center gap-3.5 h-full px-5 pl-4">
+        <div
+          className="w-3 h-3 rounded-md animate-glow-pulse"
+          style={{
+            backgroundColor: glowColor,
+            boxShadow: `0 0 8px 2px ${glowColor}, 0 0 16px ${glowSoft}`,
+          }}
+        />
+        <span
+          className="font-mono text-[11px] tracking-wide"
+          style={{ color: glowColor }}
+        >
+          transcribing
+        </span>
+        <div className="w-px h-4" style={{ backgroundColor: glowSoft }} />
+        <span
+          className="text-xs font-medium font-mono"
+          style={{
+            color: "var(--text-secondary)",
+            fontVariantNumeric: "tabular-nums",
+            minWidth: "2.5em",
+            textAlign: "right",
+          }}
+        >
+          {formatDuration(duration)}
+        </span>
+        <WaveBars audioLevel={audioLevel} glowColor={glowColor} />
+      </div>
+    );
+  }
+
+  if (state === "processing") {
+    return (
+      <div className="flex items-center gap-3 h-full px-5 pl-4">
+        <div
+          className="w-3 h-3 rounded-md animate-glow-pulse"
+          style={{
+            backgroundColor: glowColor,
+            boxShadow: `0 0 8px 2px ${glowColor}, 0 0 16px ${glowSoft}`,
+          }}
+        />
+        <span
+          className="font-mono text-[11px] tracking-wide"
+          style={{ color: glowColor }}
+        >
+          transcribing
+        </span>
+        <div className="flex items-center gap-1">
+          {[1, 0.5, 0.25].map((opacity, i) => (
+            <div
+              key={i}
+              className="w-1 h-1 rounded-full dot-pulse"
+              style={{
+                backgroundColor: glowColor,
+                opacity,
+              }}
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (state === "success") {
+    return (
+      <div className="flex items-center gap-2.5 h-full px-5 pl-4">
+        <div
+          className="w-3 h-3 rounded-md"
+          style={{
+            backgroundColor: glowColor,
+            boxShadow: `0 0 8px 2px ${glowColor}, 0 0 16px ${glowSoft}`,
+          }}
+        />
+        <span
+          className="font-mono text-[11px] tracking-wide"
+          style={{ color: glowColor }}
+        >
+          inserted
+        </span>
+        <svg
+          className="w-3.5 h-3.5"
+          fill="none"
+          stroke={glowColor}
+          strokeWidth={2.5}
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M5 13l4 4L19 7"
+          />
+        </svg>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 function FloatApp() {
   const [state, setState] = useState<IndicatorState>("idle");
   const [duration, setDuration] = useState(0);
+  const [isListening, setIsListening] = useState(false);
   const [visible, setVisible] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [isHoverPanelMounted, setIsHoverPanelMounted] = useState(false);
   const [recentEntries, setRecentEntries] = useState<RecentEntry[]>([]);
+  const [morphPhase, setMorphPhase] = useState<MorphPhase>("ambient");
+  const [audioLevel, setAudioLevel] = useState(0);
+
   const prevModeRef = useRef<"ambient" | "normal" | "hidden">("hidden");
+  const prevStateRef = useRef<IndicatorState>("idle");
+  const morphTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hoveredRef = useRef(false);
   const hoverPanelMountedRef = useRef(false);
+
+  // ---- Audio level polling during recording ----
+  useEffect(() => {
+    if (state !== "recording") {
+      setAudioLevel(0);
+      return;
+    }
+    const intervalId = setInterval(async () => {
+      try {
+        const level = await invoke<number>("get_audio_level");
+        setAudioLevel(level);
+      } catch (_) {
+        // ignore polling errors
+      }
+    }, 50);
+    return () => clearInterval(intervalId);
+  }, [state]);
 
   // ---- Event listeners ----
 
@@ -98,24 +328,45 @@ function FloatApp() {
     const unlistenState = listen<FloatStatePayload>(
       "float-state",
       async (event) => {
-        const { state: newState, duration: newDuration } = event.payload;
-        setState(newState);
+        const {
+          state: rawState,
+          duration: newDuration,
+          isListening: nextIsListening,
+        } = event.payload;
         setDuration(newDuration);
+        setIsListening(nextIsListening);
+
+        // Normalize: when not listening, ambient states mean "idle" (no persistent indicator)
+        const isAmbientLike =
+          rawState === "ambient" || rawState === "ambient-active";
+        const newState =
+          !nextIsListening && isAmbientLike ? "idle" : rawState;
+        setState(newState as IndicatorState);
 
         if (newState === "idle") {
+          // Delay hide to allow collapse animation to play out
+          const hideDelay = prevModeRef.current !== "hidden" ? 350 : 100;
           setTimeout(() => {
             setVisible(false);
             win.hide();
             prevModeRef.current = "hidden";
-          }, 100);
+          }, hideDelay);
         } else {
           const isAmbient =
             newState === "ambient" || newState === "ambient-active";
           const newMode = isAmbient ? "ambient" : "normal";
 
-          if (prevModeRef.current !== newMode) {
-            const [w, h] = [NORMAL_WIDTH, NORMAL_HEIGHT];
-            await resizeAndPosition(w, h);
+          // When listening, always use HOVER size (morph happens within this window)
+          if (nextIsListening) {
+            if (prevModeRef.current === "hidden") {
+              await resizeAndPosition(HOVER_WIDTH, HOVER_HEIGHT);
+            }
+          } else {
+            // Not listening — use normal size for indicators
+            if (prevModeRef.current === "hidden" || prevModeRef.current !== newMode) {
+              const [w, h] = [NORMAL_WIDTH, NORMAL_HEIGHT];
+              await resizeAndPosition(w, h);
+            }
           }
 
           prevModeRef.current = newMode;
@@ -190,10 +441,51 @@ function FloatApp() {
     }
   }, [state]);
 
-  // Cleanup timeout on unmount
+  // ---- Morph phase detection ----
+
+  useEffect(() => {
+    const prev = prevStateRef.current;
+    prevStateRef.current = state;
+
+    // Clear any pending morph timer
+    if (morphTimerRef.current) {
+      clearTimeout(morphTimerRef.current);
+      morphTimerRef.current = null;
+    }
+
+    const prevIsAmbientOrIdle =
+      prev === "ambient" || prev === "ambient-active" || prev === "idle";
+    const curIsAmbientOrIdle =
+      state === "ambient" || state === "ambient-active" || state === "idle";
+    const curIsIndicator =
+      state === "recording" || state === "processing" || state === "success";
+    const prevIsIndicator =
+      prev === "recording" || prev === "processing" || prev === "success";
+
+    if (prevIsAmbientOrIdle && curIsIndicator) {
+      // Ambient/Idle -> Indicator: start expanding
+      setMorphPhase("expanding");
+      morphTimerRef.current = setTimeout(() => {
+        setMorphPhase("indicator");
+      }, 260);
+    } else if (prevIsIndicator && curIsAmbientOrIdle) {
+      // Indicator -> Ambient/Idle: start collapsing
+      setMorphPhase("collapsing");
+      morphTimerRef.current = setTimeout(() => {
+        setMorphPhase("ambient");
+      }, 300);
+    } else if (curIsAmbientOrIdle) {
+      setMorphPhase("ambient");
+    } else if (curIsIndicator) {
+      setMorphPhase("indicator");
+    }
+  }, [state, isListening]);
+
+  // Cleanup timers on unmount
   useEffect(() => {
     return () => {
       if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+      if (morphTimerRef.current) clearTimeout(morphTimerRef.current);
     };
   }, []);
 
@@ -205,22 +497,32 @@ function FloatApp() {
     hoverPanelMountedRef.current = isHoverPanelMounted;
   }, [isHoverPanelMounted]);
 
-  // ---- Helpers ----
-
-  const formatDuration = (seconds: number): string => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, "0")}`;
-  };
+  // ---- Window sizing ----
 
   // Keep ambient window fixed as hover size to avoid flicker while expanding/collapsing.
   useEffect(() => {
     if (!visible) return;
-    const [w, h] = isAmbientState
-      ? [HOVER_WIDTH, HOVER_HEIGHT]
-      : [NORMAL_WIDTH, NORMAL_HEIGHT];
-    void resizeAndPosition(w, h);
-  }, [visible, isAmbientState]);
+    if (isListening) {
+      // Always HOVER size when listening (morph container needs space)
+      void resizeAndPosition(HOVER_WIDTH, HOVER_HEIGHT);
+    } else {
+      // Not listening — always use normal size
+      void resizeAndPosition(NORMAL_WIDTH, NORMAL_HEIGHT);
+    }
+  }, [visible, isListening]);
+
+  // Make the window click-through when ambient and not morphing/hovered.
+  useEffect(() => {
+    if (!visible) return;
+    const win = getCurrentWindow();
+    const shouldIgnore =
+      isAmbientState && !isHovered && morphPhase === "ambient";
+    void win.setIgnoreCursorEvents(shouldIgnore).catch((error) => {
+      console.error("Failed to set ignore cursor events:", error);
+    });
+  }, [visible, isAmbientState, isHovered, morphPhase]);
+
+  // ---- Hover helpers ----
 
   const showHoverPanel = useCallback(() => {
     if (hoverTimeoutRef.current) {
@@ -252,10 +554,8 @@ function FloatApp() {
       hoverTimeoutRef.current = null;
     }, delay);
   }, []);
-  // Hover state machine driven by cursor position:
-  // - Closed -> Open only when cursor enters pill area.
-  // - Open -> Keep open while cursor is inside window area.
-  // - Open -> Close when cursor leaves window area.
+
+  // Hover state machine driven by cursor position polling
   useEffect(() => {
     if (!visible || !isAmbientState) return;
     let disposed = false;
@@ -292,8 +592,6 @@ function FloatApp() {
           cy <= pillY + pillHeight;
 
         if (hoverPanelMountedRef.current) {
-          // When leaving, never re-open from the expanded window area.
-          // Re-open is only allowed after fully closed, via insidePill below.
           if (!hoveredRef.current) {
             return;
           }
@@ -331,21 +629,50 @@ function FloatApp() {
     return null;
   }
 
-  if (isAmbientState) {
+  // ---- Listening mode: unified morph render ----
+  if (isListening) {
+    const isInIndicatorPhase =
+      morphPhase === "expanding" || morphPhase === "indicator";
+    const isInAmbientPhase =
+      morphPhase === "ambient" || morphPhase === "collapsing";
+
+    // Morph pill dimensions
+    const pillWidth = isInIndicatorPhase ? INDICATOR_WIDTH : AMBIENT_PILL_WIDTH;
+    const pillHeight = isInIndicatorPhase
+      ? INDICATOR_HEIGHT
+      : AMBIENT_PILL_HEIGHT;
+    const pillRadius = isInIndicatorPhase ? INDICATOR_RADIUS : AMBIENT_PILL_RADIUS;
+    const pillBg = isInIndicatorPhase ? "#FFFFFF" : (state === "ambient-active" ? "#7C9082" : "#1A1A1C");
+    const pillBorder = isInIndicatorPhase
+      ? "1px solid var(--border-subtle)"
+      : "1px solid rgba(255, 255, 255, 0.25)";
+    const pillShadow = isInIndicatorPhase
+      ? getIndicatorShadow(state)
+      : state === "ambient-active"
+        ? "0 0 3px 1px rgba(124, 144, 130, 0.6), 0 0 8px rgba(124, 144, 130, 0.3)"
+        : "0 1px 4px rgba(0, 0, 0, 0.12)";
+
+    // Content is visible only when fully expanded
+    const contentVisible = morphPhase === "indicator";
+
     const displayEntries = [...recentEntries].reverse().slice(-4);
+
     return (
       <div
         className="h-screen w-screen relative flex items-end justify-center bg-transparent"
         style={{ paddingBottom: 15 }}
       >
-        {isHoverPanelMounted && (
+        {/* Hover panel — only in ambient phase */}
+        {isHoverPanelMounted && isAmbientState && morphPhase === "ambient" && (
           <div
             className="absolute inset-0 flex items-end justify-center bg-transparent p-[2px]"
             style={{ paddingBottom: 15 + AMBIENT_PILL_HEIGHT + 8 }}
           >
             <div
               className={`flex flex-col min-h-0 overflow-hidden origin-bottom ${
-                isHovered ? "animate-ambient-hover-in" : "animate-ambient-hover-out"
+                isHovered
+                  ? "animate-ambient-hover-in"
+                  : "animate-ambient-hover-out"
               }`}
               style={{
                 width: "100%",
@@ -386,31 +713,33 @@ function FloatApp() {
                     Always-on
                   </span>
                 </div>
-                {/* Toggle (always-on = green/active) */}
                 <button
                   onClick={handleToggleListening}
+                  aria-pressed={isListening}
                   style={{
                     position: "relative",
                     width: 40,
                     height: 22,
                     borderRadius: 11,
-                    backgroundColor: "#7C9082",
+                    backgroundColor: isListening ? "#7C9082" : "#C8CEC9",
                     border: "none",
                     cursor: "pointer",
                     padding: 0,
                     flexShrink: 0,
+                    transition: "background-color 120ms ease",
                   }}
                 >
                   <div
                     style={{
                       position: "absolute",
                       top: 2,
-                      right: 2,
+                      [isListening ? "right" : "left"]: 2,
                       width: 18,
                       height: 18,
                       borderRadius: 9,
                       backgroundColor: "#FFFFFF",
                       boxShadow: "0 1px 2px rgba(0,0,0,0.1)",
+                      transition: "left 120ms ease, right 120ms ease",
                     }}
                   />
                 </button>
@@ -440,7 +769,7 @@ function FloatApp() {
                 </svg>
               </div>
 
-              {/* History list — fills remaining space */}
+              {/* History list */}
               <div
                 className="flex flex-col flex-1 min-h-0"
                 style={{ overflowY: "auto" }}
@@ -504,180 +833,85 @@ function FloatApp() {
           </div>
         )}
 
-        {state === "ambient" && (
+        {/* Morph pill — single element that transitions between ambient pill and indicator */}
+        <div
+          className={`morph-pill flex items-center justify-center ${
+            isInAmbientPhase && state === "ambient-active" && morphPhase === "ambient"
+              ? "animate-ambient-breathe"
+              : ""
+          }`}
+          data-morph-phase={morphPhase}
+          style={{
+            width: pillWidth,
+            height: pillHeight,
+            borderRadius: pillRadius,
+            backgroundColor: pillBg,
+            border: pillBorder,
+            boxShadow: pillShadow,
+            overflow: "hidden",
+            flexShrink: 0,
+          }}
+        >
+          {/* Indicator content — fades in/out */}
           <div
-            style={{
-              width: AMBIENT_PILL_WIDTH,
-              height: AMBIENT_PILL_HEIGHT,
-              borderRadius: AMBIENT_PILL_RADIUS,
-              backgroundColor: "#1A1A1C",
-              boxShadow: "0 1px 4px rgba(0, 0, 0, 0.12)",
-            }}
-          />
-        )}
-        {state === "ambient-active" && (
-          <div
-            className="animate-ambient-breathe"
-            style={{
-              width: AMBIENT_PILL_WIDTH,
-              height: AMBIENT_PILL_HEIGHT,
-              borderRadius: AMBIENT_PILL_RADIUS,
-              backgroundColor: "#7C9082",
-            }}
-          />
-        )}
+            className="morph-pill-content w-full h-full"
+            style={{ opacity: contentVisible ? 1 : 0 }}
+          >
+            <IndicatorContent state={state} duration={duration} audioLevel={audioLevel} />
+          </div>
+        </div>
       </div>
     );
   }
 
-  // Normal states (recording / processing / success)
-  return (
-    <div className="h-screen w-screen flex items-center justify-center bg-transparent">
-      {state === "recording" && (
+  // ---- Not listening: morph pill centered in normal-size window ----
+  {
+    const isInIndicatorPhase =
+      morphPhase === "expanding" || morphPhase === "indicator";
+    const isCollapsing = morphPhase === "collapsing";
+
+    // Standalone morph: starts from a tiny dot (no ambient pill to morph from)
+    const DOT_SIZE = 8;
+    const pillWidth = isInIndicatorPhase ? INDICATOR_WIDTH : DOT_SIZE;
+    const pillHeight = isInIndicatorPhase ? INDICATOR_HEIGHT : DOT_SIZE;
+    const pillRadius = isInIndicatorPhase ? INDICATOR_RADIUS : DOT_SIZE / 2;
+    const pillBg = isInIndicatorPhase ? "#FFFFFF" : "rgba(0, 0, 0, 0.15)";
+    const pillBorder = isInIndicatorPhase
+      ? "1px solid var(--border-subtle)"
+      : "1px solid transparent";
+    const pillShadow = isInIndicatorPhase ? getIndicatorShadow(state) : "none";
+
+    // Opacity: visible when expanding/indicator, fades out when collapsing
+    const pillOpacity = isCollapsing ? 0 : isInIndicatorPhase ? 1 : 0;
+    const contentVisible = morphPhase === "indicator";
+
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-transparent">
         <div
-          className="flex items-center gap-3.5 h-11 px-5 pl-4 rounded-full border animate-float-in"
+          className="morph-pill flex items-center justify-center"
+          data-morph-phase={morphPhase}
           style={{
-            background: "#FFFFFF",
-            borderColor: "var(--border-subtle)",
-            boxShadow: "0 4px 20px rgba(198, 125, 99, 0.2)",
+            width: pillWidth,
+            height: pillHeight,
+            borderRadius: pillRadius,
+            backgroundColor: pillBg,
+            border: pillBorder,
+            boxShadow: pillShadow,
+            opacity: pillOpacity,
+            overflow: "hidden",
+            flexShrink: 0,
           }}
         >
-          {/* Glow Orb */}
           <div
-            className="w-3 h-3 rounded-md animate-glow-pulse"
-            style={{
-              backgroundColor: "var(--glow-recording)",
-              boxShadow:
-                "0 0 8px 2px var(--glow-recording), 0 0 16px var(--glow-recording-soft)",
-            }}
-          />
-
-          {/* Label */}
-          <span
-            className="font-mono text-[11px] tracking-wide"
-            style={{ color: "var(--glow-recording)" }}
+            className="morph-pill-content w-full h-full"
+            style={{ opacity: contentVisible ? 1 : 0 }}
           >
-            transcribing
-          </span>
-
-          {/* Divider */}
-          <div
-            className="w-px h-4"
-            style={{ backgroundColor: "var(--glow-recording-soft)" }}
-          />
-
-          {/* Duration */}
-          <span
-            className="text-xs font-medium"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            {formatDuration(duration)}
-          </span>
-
-          {/* Waveform */}
-          <div className="flex items-center gap-[3px] h-5">
-            {[6, 14, 8, 18, 10, 14].map((height, i) => (
-              <div
-                key={i}
-                className="w-0.5 rounded-sm wave-bar"
-                style={{
-                  height: `${height}px`,
-                  backgroundColor: "var(--glow-recording)",
-                }}
-              />
-            ))}
+            <IndicatorContent state={state} duration={duration} audioLevel={audioLevel} />
           </div>
         </div>
-      )}
-
-      {state === "processing" && (
-        <div
-          className="flex items-center gap-3 h-11 px-5 pl-4 rounded-full border animate-float-in"
-          style={{
-            background: "#FFFFFF",
-            borderColor: "var(--border-subtle)",
-            boxShadow: "0 4px 20px rgba(212, 165, 116, 0.2)",
-          }}
-        >
-          {/* Glow Orb */}
-          <div
-            className="w-3 h-3 rounded-md animate-glow-pulse"
-            style={{
-              backgroundColor: "var(--glow-processing)",
-              boxShadow:
-                "0 0 8px 2px var(--glow-processing), 0 0 16px var(--glow-processing-soft)",
-            }}
-          />
-
-          {/* Label */}
-          <span
-            className="font-mono text-[11px] tracking-wide"
-            style={{ color: "var(--glow-processing)" }}
-          >
-            transcribing
-          </span>
-
-          {/* Loading Dots */}
-          <div className="flex items-center gap-1">
-            {[1, 0.5, 0.25].map((opacity, i) => (
-              <div
-                key={i}
-                className="w-1 h-1 rounded-full dot-pulse"
-                style={{
-                  backgroundColor: "var(--glow-processing)",
-                  opacity,
-                }}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {state === "success" && (
-        <div
-          className="flex items-center gap-2.5 h-11 px-5 pl-4 rounded-full border animate-float-in"
-          style={{
-            background: "#FFFFFF",
-            borderColor: "var(--border-subtle)",
-            boxShadow: "0 4px 20px rgba(124, 144, 130, 0.2)",
-          }}
-        >
-          {/* Glow Orb */}
-          <div
-            className="w-3 h-3 rounded-md"
-            style={{
-              backgroundColor: "var(--glow-success)",
-              boxShadow:
-                "0 0 8px 2px var(--glow-success), 0 0 16px var(--glow-success-soft)",
-            }}
-          />
-
-          {/* Label */}
-          <span
-            className="font-mono text-[11px] tracking-wide"
-            style={{ color: "var(--glow-success)" }}
-          >
-            inserted
-          </span>
-
-          {/* Check Icon */}
-          <svg
-            className="w-3.5 h-3.5"
-            fill="none"
-            stroke="var(--glow-success)"
-            strokeWidth={2.5}
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M5 13l4 4L19 7"
-            />
-          </svg>
-        </div>
-      )}
-    </div>
-  );
+      </div>
+    );
+  }
 }
 
 export default FloatApp;

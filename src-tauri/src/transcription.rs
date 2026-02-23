@@ -4,7 +4,7 @@
 //! which runs as a separate Python process using MLX-Audio.
 
 use anyhow::{anyhow, Result};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,6 +13,8 @@ use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager};
 
 use crate::{TranscriptionResult, TranscriptionSegment};
+
+// ===== Protocol types =====
 
 /// Request sent to the ASR engine
 #[derive(Debug, Serialize)]
@@ -27,13 +29,40 @@ struct ASRRequest {
     model_name: Option<String>,
 }
 
-/// Response from the ASR engine
+impl ASRRequest {
+    fn new(command: &str, id: u64) -> Self {
+        Self {
+            command: command.to_string(),
+            id,
+            audio_path: None,
+            language: None,
+            model_name: None,
+        }
+    }
+}
+
+/// Generic JSON-RPC response wrapper
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct ASRResponse {
+struct EngineResponse<T> {
+    #[allow(dead_code)]
     id: Option<u64>,
-    result: Option<ASRResultInner>,
+    result: Option<T>,
     error: Option<String>,
+}
+
+impl<T> EngineResponse<T> {
+    fn into_result(self, context: &str) -> Result<T> {
+        if let Some(error) = self.error {
+            return Err(anyhow!("{}: {}", context, error));
+        }
+        self.result.ok_or_else(|| anyhow!("No result in response"))
+    }
+}
+
+/// Status response (used during startup)
+#[derive(Debug, Deserialize)]
+struct StatusResponse {
+    status: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,12 +82,6 @@ struct SegmentInner {
     text: String,
 }
 
-/// Status response from the ASR engine
-#[derive(Debug, Deserialize)]
-struct StatusResponse {
-    status: Option<String>,
-}
-
 /// Model status response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelStatus {
@@ -67,15 +90,6 @@ pub struct ModelStatus {
     pub loading: bool,
     pub error: Option<String>,
     pub available_models: Vec<String>,
-}
-
-/// Generic response for model operations
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct ModelOperationResponse {
-    id: Option<u64>,
-    result: Option<ModelOperationResult>,
-    error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -98,15 +112,6 @@ pub struct WarmupResult {
     pub error: Option<String>,
 }
 
-/// Generic warmup response from the engine
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct WarmupResponse {
-    id: Option<u64>,
-    result: Option<WarmupResponseResult>,
-    error: Option<String>,
-}
-
 #[derive(Debug, Deserialize)]
 struct WarmupResponseResult {
     success: Option<bool>,
@@ -121,26 +126,33 @@ pub struct ModelCacheStatus {
     pub model_name: String,
 }
 
-/// Cache check response from the engine
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct CacheCheckResponse {
-    id: Option<u64>,
-    result: Option<CacheCheckResult>,
-    error: Option<String>,
-}
-
 #[derive(Debug, Deserialize)]
 struct CacheCheckResult {
     cached: Option<bool>,
     model_name: Option<String>,
 }
 
+// ===== Process management =====
+
 /// Process handle with I/O streams
 struct ASRProcess {
     child: Child,
     stdin: BufWriter<std::process::ChildStdin>,
     stdout: BufReader<std::process::ChildStdout>,
+}
+
+impl ASRProcess {
+    /// Send a JSON-RPC request and deserialize the response
+    fn send_command<T: DeserializeOwned>(&mut self, request: &impl Serialize) -> Result<T> {
+        let json = serde_json::to_string(request)?;
+        writeln!(self.stdin, "{}", json)?;
+        self.stdin.flush()?;
+        let mut line = String::new();
+        self.stdout
+            .read_line(&mut line)
+            .map_err(|e| anyhow!("Failed to read response: {}", e))?;
+        serde_json::from_str(&line).map_err(|e| anyhow!("Failed to parse response: {}", e))
+    }
 }
 
 /// ASR Engine manager
@@ -155,6 +167,16 @@ impl ASREngine {
             process: None,
             request_id: AtomicU64::new(1),
         }
+    }
+
+    fn get_process(&mut self) -> Result<&mut ASRProcess> {
+        self.process
+            .as_mut()
+            .ok_or_else(|| anyhow!("Engine not running"))
+    }
+
+    fn next_id(&self) -> u64 {
+        self.request_id.fetch_add(1, Ordering::SeqCst)
     }
 
     /// Get the target triple for the current platform
@@ -247,14 +269,11 @@ impl ASREngine {
         log::info!("Starting ASR engine: {} {:?}", program, args);
 
         // Get app cache directory for model storage
-        // This ensures models are stored in ~/Library/Caches/io.qluto.echo/huggingface
-        // so they get removed when the app is uninstalled
         let cache_dir = app
             .path()
             .resolve("huggingface", BaseDirectory::AppCache)
             .map_err(|e| anyhow!("Failed to resolve cache directory: {}", e))?;
 
-        // Create cache directory if it doesn't exist
         if let Err(e) = std::fs::create_dir_all(&cache_dir) {
             log::warn!("Failed to create cache directory {:?}: {}", cache_dir, e);
         }
@@ -262,13 +281,11 @@ impl ASREngine {
         log::info!("Using model cache directory: {:?}", cache_dir);
 
         // Build command with cache environment variables
-        // HF_HOME: Hugging Face Hub cache (Whisper, Qwen3-ASR models)
-        // TORCH_HOME: PyTorch Hub cache (Silero VAD model)
         let mut cmd = Command::new(&program);
         cmd.args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit()) // Let stderr pass through for logging
+            .stderr(Stdio::inherit())
             .env("HF_HOME", &cache_dir)
             .env("TORCH_HOME", &cache_dir);
 
@@ -276,7 +293,6 @@ impl ASREngine {
             .spawn()
             .map_err(|e| anyhow!("Failed to start ASR engine: {}", e))?;
 
-        // Take ownership of stdin/stdout
         let stdin = child
             .stdin
             .take()
@@ -292,10 +308,8 @@ impl ASREngine {
         // Wait for ready signal with timeout
         log::info!("Waiting for ASR engine ready signal...");
         let mut line = String::new();
-
-        // Set a simple timeout using a loop with small reads
         let start = std::time::Instant::now();
-        let timeout = Duration::from_secs(60); // Model loading can take time
+        let timeout = Duration::from_secs(60);
 
         loop {
             if start.elapsed() > timeout {
@@ -343,31 +357,21 @@ impl ASREngine {
     /// Stop the ASR engine
     pub fn stop(&mut self) -> Result<()> {
         if let Some(mut process) = self.process.take() {
-            // Send quit command
-            let request = ASRRequest {
-                command: "quit".to_string(),
-                id: 0,
-                audio_path: None,
-                language: None,
-                model_name: None,
-            };
-
+            let request = ASRRequest::new("quit", 0);
             if let Ok(json) = serde_json::to_string(&request) {
                 let _ = writeln!(process.stdin, "{}", json);
                 let _ = process.stdin.flush();
             }
 
-            // Wait for process to exit gracefully
             std::thread::sleep(Duration::from_millis(500));
-
-            // Force kill if still running
             let _ = process.child.kill();
             let _ = process.child.wait();
-
             log::info!("ASR engine stopped");
         }
         Ok(())
     }
+
+    // ===== ASR model operations =====
 
     /// Get model status from the engine
     pub fn get_model_status(&mut self) -> Result<ModelStatus> {
@@ -384,29 +388,9 @@ impl ASREngine {
             }
         };
 
-        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
-        let request = ASRRequest {
-            command: "get_status".to_string(),
-            id,
-            audio_path: None,
-            language: None,
-            model_name: None,
-        };
-
-        let json = serde_json::to_string(&request)?;
-        writeln!(process.stdin, "{}", json)?;
-        process.stdin.flush()?;
-
-        let mut line = String::new();
-        process.stdout.read_line(&mut line)?;
-
-        let response: ModelOperationResponse = serde_json::from_str(&line)?;
-
-        if let Some(error) = response.error {
-            return Err(anyhow!("Failed to get status: {}", error));
-        }
-
-        let result = response.result.ok_or_else(|| anyhow!("No result in response"))?;
+        let request = ASRRequest::new("get_status", self.request_id.fetch_add(1, Ordering::SeqCst));
+        let response: EngineResponse<ModelOperationResult> = process.send_command(&request)?;
+        let result = response.into_result("Failed to get status")?;
 
         Ok(ModelStatus {
             model_name: result.model_name.unwrap_or_else(|| "unknown".to_string()),
@@ -419,79 +403,27 @@ impl ASREngine {
 
     /// Check if a model is cached locally
     pub fn is_model_cached(&mut self, model_name: Option<&str>) -> Result<ModelCacheStatus> {
-        let process = match self.process.as_mut() {
-            Some(p) => p,
-            None => {
-                return Err(anyhow!("Engine not running"));
-            }
-        };
+        let mut request = ASRRequest::new("is_model_cached", self.next_id());
+        request.model_name = model_name.map(|s| s.to_string());
 
-        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
-        let request = ASRRequest {
-            command: "is_model_cached".to_string(),
-            id,
-            audio_path: None,
-            language: None,
-            model_name: model_name.map(|s| s.to_string()),
-        };
-
-        let json = serde_json::to_string(&request)?;
-        writeln!(process.stdin, "{}", json)?;
-        process.stdin.flush()?;
-
-        let mut line = String::new();
-        process.stdout.read_line(&mut line)?;
-
-        let response: CacheCheckResponse = serde_json::from_str(&line)?;
-
-        if let Some(error) = response.error {
-            return Err(anyhow!("Failed to check cache: {}", error));
-        }
-
-        let result = response.result.ok_or_else(|| anyhow!("No result in response"))?;
+        let response: EngineResponse<CacheCheckResult> =
+            self.get_process()?.send_command(&request)?;
+        let result = response.into_result("Failed to check cache")?;
 
         Ok(ModelCacheStatus {
             cached: result.cached.unwrap_or(false),
-            model_name: result.model_name.unwrap_or_else(|| "unknown".to_string()),
+            model_name: result
+                .model_name
+                .unwrap_or_else(|| "unknown".to_string()),
         })
     }
 
     /// Load the model
     pub fn load_model(&mut self) -> Result<ModelStatus> {
-        let process = match self.process.as_mut() {
-            Some(p) => p,
-            None => {
-                return Err(anyhow!("Engine not running"));
-            }
-        };
-
-        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
-        let request = ASRRequest {
-            command: "load_model".to_string(),
-            id,
-            audio_path: None,
-            language: None,
-            model_name: None,
-        };
-
-        let json = serde_json::to_string(&request)?;
-        writeln!(process.stdin, "{}", json)?;
-        process.stdin.flush()?;
-
-        // Model loading can take a long time, so we need to handle timeouts
-        let mut line = String::new();
-        process
-            .stdout
-            .read_line(&mut line)
-            .map_err(|e| anyhow!("Failed to read response: {}", e))?;
-
-        let response: ModelOperationResponse = serde_json::from_str(&line)?;
-
-        if let Some(error) = response.error {
-            return Err(anyhow!("Failed to load model: {}", error));
-        }
-
-        let result = response.result.ok_or_else(|| anyhow!("No result in response"))?;
+        let request = ASRRequest::new("load_model", self.next_id());
+        let response: EngineResponse<ModelOperationResult> =
+            self.get_process()?.send_command(&request)?;
+        let result = response.into_result("Failed to load model")?;
 
         if result.success == Some(false) {
             return Err(anyhow!(
@@ -501,7 +433,9 @@ impl ASREngine {
         }
 
         Ok(ModelStatus {
-            model_name: result.model_name.unwrap_or_else(|| "unknown".to_string()),
+            model_name: result
+                .model_name
+                .unwrap_or_else(|| "unknown".to_string()),
             loaded: true,
             loading: false,
             error: None,
@@ -511,39 +445,10 @@ impl ASREngine {
 
     /// Load the VAD model
     pub fn load_vad(&mut self) -> Result<()> {
-        let process = match self.process.as_mut() {
-            Some(p) => p,
-            None => {
-                return Err(anyhow!("Engine not running"));
-            }
-        };
-
-        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
-        let request = ASRRequest {
-            command: "load_vad".to_string(),
-            id,
-            audio_path: None,
-            language: None,
-            model_name: None,
-        };
-
-        let json = serde_json::to_string(&request)?;
-        writeln!(process.stdin, "{}", json)?;
-        process.stdin.flush()?;
-
-        let mut line = String::new();
-        process
-            .stdout
-            .read_line(&mut line)
-            .map_err(|e| anyhow!("Failed to read response: {}", e))?;
-
-        let response: ModelOperationResponse = serde_json::from_str(&line)?;
-
-        if let Some(error) = response.error {
-            return Err(anyhow!("Failed to load VAD: {}", error));
-        }
-
-        let result = response.result.ok_or_else(|| anyhow!("No result in response"))?;
+        let request = ASRRequest::new("load_vad", self.next_id());
+        let response: EngineResponse<ModelOperationResult> =
+            self.get_process()?.send_command(&request)?;
+        let result = response.into_result("Failed to load VAD")?;
 
         if result.success == Some(false) {
             return Err(anyhow!(
@@ -558,40 +463,10 @@ impl ASREngine {
 
     /// Warm up the ASR model by running inference on dummy audio
     pub fn warmup_model(&mut self) -> Result<WarmupResult> {
-        let process = match self.process.as_mut() {
-            Some(p) => p,
-            None => {
-                return Err(anyhow!("Engine not running"));
-            }
-        };
-
-        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
-        let request = ASRRequest {
-            command: "warmup_model".to_string(),
-            id,
-            audio_path: None,
-            language: None,
-            model_name: None,
-        };
-
-        let json = serde_json::to_string(&request)?;
-        writeln!(process.stdin, "{}", json)?;
-        process.stdin.flush()?;
-
-        // Warmup can take some time (JIT compilation)
-        let mut line = String::new();
-        process
-            .stdout
-            .read_line(&mut line)
-            .map_err(|e| anyhow!("Failed to read response: {}", e))?;
-
-        let response: WarmupResponse = serde_json::from_str(&line)?;
-
-        if let Some(error) = response.error {
-            return Err(anyhow!("Failed to warmup model: {}", error));
-        }
-
-        let result = response.result.ok_or_else(|| anyhow!("No result in response"))?;
+        let request = ASRRequest::new("warmup_model", self.next_id());
+        let response: EngineResponse<WarmupResponseResult> =
+            self.get_process()?.send_command(&request)?;
+        let result = response.into_result("Failed to warmup model")?;
 
         if result.success == Some(false) {
             log::warn!("Model warmup failed: {:?}", result.error);
@@ -608,39 +483,10 @@ impl ASREngine {
 
     /// Warm up the VAD model
     pub fn warmup_vad(&mut self) -> Result<WarmupResult> {
-        let process = match self.process.as_mut() {
-            Some(p) => p,
-            None => {
-                return Err(anyhow!("Engine not running"));
-            }
-        };
-
-        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
-        let request = ASRRequest {
-            command: "warmup_vad".to_string(),
-            id,
-            audio_path: None,
-            language: None,
-            model_name: None,
-        };
-
-        let json = serde_json::to_string(&request)?;
-        writeln!(process.stdin, "{}", json)?;
-        process.stdin.flush()?;
-
-        let mut line = String::new();
-        process
-            .stdout
-            .read_line(&mut line)
-            .map_err(|e| anyhow!("Failed to read response: {}", e))?;
-
-        let response: WarmupResponse = serde_json::from_str(&line)?;
-
-        if let Some(error) = response.error {
-            return Err(anyhow!("Failed to warmup VAD: {}", error));
-        }
-
-        let result = response.result.ok_or_else(|| anyhow!("No result in response"))?;
+        let request = ASRRequest::new("warmup_vad", self.next_id());
+        let response: EngineResponse<WarmupResponseResult> =
+            self.get_process()?.send_command(&request)?;
+        let result = response.into_result("Failed to warmup VAD")?;
 
         if result.success == Some(false) {
             log::warn!("VAD warmup failed: {:?}", result.error);
@@ -657,36 +503,12 @@ impl ASREngine {
 
     /// Set the model (requires reload)
     pub fn set_model(&mut self, model_name: &str) -> Result<ModelStatus> {
-        let process = match self.process.as_mut() {
-            Some(p) => p,
-            None => {
-                return Err(anyhow!("Engine not running"));
-            }
-        };
+        let mut request = ASRRequest::new("set_model", self.next_id());
+        request.model_name = Some(model_name.to_string());
 
-        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
-        let request = ASRRequest {
-            command: "set_model".to_string(),
-            id,
-            audio_path: None,
-            language: None,
-            model_name: Some(model_name.to_string()),
-        };
-
-        let json = serde_json::to_string(&request)?;
-        writeln!(process.stdin, "{}", json)?;
-        process.stdin.flush()?;
-
-        let mut line = String::new();
-        process.stdout.read_line(&mut line)?;
-
-        let response: ModelOperationResponse = serde_json::from_str(&line)?;
-
-        if let Some(error) = response.error {
-            return Err(anyhow!("Failed to set model: {}", error));
-        }
-
-        let result = response.result.ok_or_else(|| anyhow!("No result in response"))?;
+        let response: EngineResponse<ModelOperationResult> =
+            self.get_process()?.send_command(&request)?;
+        let result = response.into_result("Failed to set model")?;
 
         if result.success == Some(false) {
             return Err(anyhow!(
@@ -696,8 +518,10 @@ impl ASREngine {
         }
 
         Ok(ModelStatus {
-            model_name: result.model_name.unwrap_or_else(|| model_name.to_string()),
-            loaded: false, // Model needs to be reloaded after setting
+            model_name: result
+                .model_name
+                .unwrap_or_else(|| model_name.to_string()),
+            loaded: false,
             loading: false,
             error: None,
             available_models: vec![],
@@ -714,39 +538,17 @@ impl ASREngine {
         // Check if process is still alive
         match process.child.try_wait() {
             Ok(Some(_)) => {
-                // Process has exited
                 self.process = None;
                 return Ok(false);
             }
-            Ok(None) => {} // Still running
+            Ok(None) => {}
             Err(_) => return Ok(false),
         }
 
-        // Send ping request
-        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
-        let request = ASRRequest {
-            command: "ping".to_string(),
-            id,
-            audio_path: None,
-            language: None,
-            model_name: None,
-        };
+        let request = ASRRequest::new("ping", self.request_id.fetch_add(1, Ordering::SeqCst));
+        let response: EngineResponse<ASRResultInner> = process.send_command(&request)?;
 
-        let json = serde_json::to_string(&request)?;
-        writeln!(process.stdin, "{}", json)?;
-        process.stdin.flush()?;
-
-        // Read response
-        let mut line = String::new();
-        process.stdout.read_line(&mut line)?;
-
-        let response: ASRResponse = serde_json::from_str(&line)?;
-
-        if response.error.is_some() {
-            return Ok(false);
-        }
-
-        Ok(response.result.is_some())
+        Ok(response.error.is_none() && response.result.is_some())
     }
 
     /// Transcribe an audio file
@@ -755,14 +557,9 @@ impl ASREngine {
         audio_path: &str,
         language: Option<&str>,
     ) -> Result<TranscriptionResult> {
-        let process = match self.process.as_mut() {
-            Some(p) => p,
-            None => {
-                return Err(anyhow!(
-                    "ASR engine not running. Call start_asr_engine first."
-                ));
-            }
-        };
+        let process = self.get_process().map_err(|_| {
+            anyhow!("ASR engine not running. Call start_asr_engine first.")
+        })?;
 
         // Check if process is still alive
         match process.child.try_wait() {
@@ -770,7 +567,7 @@ impl ASREngine {
                 self.process = None;
                 return Err(anyhow!("ASR engine exited unexpectedly: {:?}", status));
             }
-            Ok(None) => {} // Still running
+            Ok(None) => {}
             Err(e) => {
                 self.process = None;
                 return Err(anyhow!("Failed to check ASR engine status: {}", e));
@@ -778,7 +575,6 @@ impl ASREngine {
         }
 
         let id = self.request_id.fetch_add(1, Ordering::SeqCst);
-
         let request = ASRRequest {
             command: "transcribe".to_string(),
             id,
@@ -787,40 +583,17 @@ impl ASREngine {
             model_name: None,
         };
 
-        log::info!("Sending transcribe request for: {} with language: {:?}", audio_path, language);
+        log::info!(
+            "Sending transcribe request for: {} with language: {:?}",
+            audio_path,
+            language
+        );
 
-        // Send request
-        let json = serde_json::to_string(&request)?;
-        writeln!(process.stdin, "{}", json)
-            .map_err(|e| anyhow!("Failed to write to ASR engine: {}", e))?;
-        process
-            .stdin
-            .flush()
-            .map_err(|e| anyhow!("Failed to flush stdin: {}", e))?;
+        // Need to re-borrow process after the try_wait check above
+        let process = self.process.as_mut().unwrap();
+        let response: EngineResponse<ASRResultInner> = process.send_command(&request)?;
+        let result = response.into_result("ASR engine error")?;
 
-        // Read response
-        let mut line = String::new();
-        process
-            .stdout
-            .read_line(&mut line)
-            .map_err(|e| anyhow!("Failed to read from ASR engine: {}", e))?;
-
-        log::debug!("ASR response: {}", line.trim());
-
-        let response: ASRResponse =
-            serde_json::from_str(&line).map_err(|e| anyhow!("Failed to parse response: {}", e))?;
-
-        // Check for error
-        if let Some(error) = response.error {
-            return Err(anyhow!("ASR engine error: {}", error));
-        }
-
-        // Parse result
-        let result = response
-            .result
-            .ok_or_else(|| anyhow!("No result in ASR response"))?;
-
-        // Check for transcription error
         if !result.success {
             if let Some(error) = result.error {
                 return Err(anyhow!("Transcription failed: {}", error));
@@ -828,7 +601,6 @@ impl ASREngine {
             return Err(anyhow!("Transcription failed: unknown error"));
         }
 
-        // Convert segments
         let segments: Vec<TranscriptionSegment> = result
             .segments
             .into_iter()
@@ -856,35 +628,20 @@ impl ASREngine {
 
     // ===== Post-processing methods =====
 
+    /// Send a JSON value command and return the result as serde_json::Value
+    fn send_json_command(&mut self, request: &serde_json::Value, context: &str) -> Result<serde_json::Value> {
+        let response: EngineResponse<serde_json::Value> =
+            self.get_process()?.send_command(request)?;
+        response.into_result(context)
+    }
+
     /// Load the post-processing model
     pub fn load_postprocess_model(&mut self) -> Result<crate::PostProcessModelStatus> {
-        let process = match self.process.as_mut() {
-            Some(p) => p,
-            None => {
-                return Err(anyhow!("ASR engine not running"));
-            }
-        };
-
-        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
         let request = serde_json::json!({
             "command": "load_postprocess_model",
-            "id": id,
+            "id": self.next_id(),
         });
-
-        let json = serde_json::to_string(&request)?;
-        writeln!(process.stdin, "{}", json)?;
-        process.stdin.flush()?;
-
-        let mut line = String::new();
-        process.stdout.read_line(&mut line)?;
-
-        let response: serde_json::Value = serde_json::from_str(&line)?;
-
-        if let Some(error) = response.get("error").and_then(|e| e.as_str()) {
-            return Err(anyhow!("Failed to load post-process model: {}", error));
-        }
-
-        let result = response.get("result").ok_or_else(|| anyhow!("No result"))?;
+        let result = self.send_json_command(&request, "Failed to load post-process model")?;
 
         Ok(crate::PostProcessModelStatus {
             model_name: result
@@ -892,73 +649,36 @@ impl ASREngine {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string(),
-            loaded: result.get("success").and_then(|v| v.as_bool()).unwrap_or(false),
+            loaded: result
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
             loading: false,
-            error: result.get("error").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            error: result
+                .get("error")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
             available_models: vec![],
         })
     }
 
     /// Unload the post-processing model
     pub fn unload_postprocess_model(&mut self) -> Result<()> {
-        let process = match self.process.as_mut() {
-            Some(p) => p,
-            None => {
-                return Err(anyhow!("ASR engine not running"));
-            }
-        };
-
-        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
         let request = serde_json::json!({
             "command": "unload_postprocess_model",
-            "id": id,
+            "id": self.next_id(),
         });
-
-        let json = serde_json::to_string(&request)?;
-        writeln!(process.stdin, "{}", json)?;
-        process.stdin.flush()?;
-
-        let mut line = String::new();
-        process.stdout.read_line(&mut line)?;
-
-        let response: serde_json::Value = serde_json::from_str(&line)?;
-
-        if let Some(error) = response.get("error").and_then(|e| e.as_str()) {
-            return Err(anyhow!("Failed to unload post-process model: {}", error));
-        }
-
+        self.send_json_command(&request, "Failed to unload post-process model")?;
         Ok(())
     }
 
     /// Check if the post-processing model is cached
     pub fn is_postprocess_model_cached(&mut self) -> Result<crate::PostProcessModelStatus> {
-        let process = match self.process.as_mut() {
-            Some(p) => p,
-            None => {
-                return Err(anyhow!("ASR engine not running"));
-            }
-        };
-
-        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
         let request = serde_json::json!({
             "command": "is_postprocess_model_cached",
-            "id": id,
+            "id": self.next_id(),
         });
-
-        let json = serde_json::to_string(&request)?;
-        writeln!(process.stdin, "{}", json)?;
-        process.stdin.flush()?;
-
-        let mut line = String::new();
-        process.stdout.read_line(&mut line)?;
-
-        let response: serde_json::Value = serde_json::from_str(&line)?;
-
-        if let Some(error) = response.get("error").and_then(|e| e.as_str()) {
-            return Err(anyhow!("Failed to check post-process model cache: {}", error));
-        }
-
-        let result = response.get("result").ok_or_else(|| anyhow!("No result"))?;
+        let result = self.send_json_command(&request, "Failed to check post-process model cache")?;
 
         Ok(crate::PostProcessModelStatus {
             model_name: result
@@ -966,7 +686,10 @@ impl ASREngine {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string(),
-            loaded: result.get("cached").and_then(|v| v.as_bool()).unwrap_or(false),
+            loaded: result
+                .get("cached")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
             loading: false,
             error: None,
             available_models: vec![],
@@ -974,40 +697,24 @@ impl ASREngine {
     }
 
     /// Set the post-processing model
-    pub fn set_postprocess_model(&mut self, model_name: &str) -> Result<crate::PostProcessModelStatus> {
-        let process = match self.process.as_mut() {
-            Some(p) => p,
-            None => {
-                return Err(anyhow!("ASR engine not running"));
-            }
-        };
-
-        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
+    pub fn set_postprocess_model(
+        &mut self,
+        model_name: &str,
+    ) -> Result<crate::PostProcessModelStatus> {
         let request = serde_json::json!({
             "command": "set_postprocess_model",
-            "id": id,
+            "id": self.next_id(),
             "model_name": model_name,
         });
-
-        let json = serde_json::to_string(&request)?;
-        writeln!(process.stdin, "{}", json)?;
-        process.stdin.flush()?;
-
-        let mut line = String::new();
-        process.stdout.read_line(&mut line)?;
-
-        let response: serde_json::Value = serde_json::from_str(&line)?;
-
-        if let Some(error) = response.get("error").and_then(|e| e.as_str()) {
-            return Err(anyhow!("Failed to set post-process model: {}", error));
-        }
-
-        let result = response.get("result").ok_or_else(|| anyhow!("No result"))?;
+        let result = self.send_json_command(&request, "Failed to set post-process model")?;
 
         if result.get("success").and_then(|v| v.as_bool()) == Some(false) {
             return Err(anyhow!(
                 "Failed to set post-process model: {}",
-                result.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error")
+                result
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown error")
             ));
         }
 
@@ -1017,7 +724,7 @@ impl ASREngine {
                 .and_then(|v| v.as_str())
                 .unwrap_or(model_name)
                 .to_string(),
-            loaded: false, // Model needs to be reloaded after setting
+            loaded: false,
             loading: false,
             error: None,
             available_models: vec![],
@@ -1026,33 +733,11 @@ impl ASREngine {
 
     /// Get post-processor status
     pub fn get_postprocess_status(&mut self) -> Result<crate::PostProcessModelStatus> {
-        let process = match self.process.as_mut() {
-            Some(p) => p,
-            None => {
-                return Err(anyhow!("ASR engine not running"));
-            }
-        };
-
-        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
         let request = serde_json::json!({
             "command": "get_postprocess_status",
-            "id": id,
+            "id": self.next_id(),
         });
-
-        let json = serde_json::to_string(&request)?;
-        writeln!(process.stdin, "{}", json)?;
-        process.stdin.flush()?;
-
-        let mut line = String::new();
-        process.stdout.read_line(&mut line)?;
-
-        let response: serde_json::Value = serde_json::from_str(&line)?;
-
-        if let Some(error) = response.get("error").and_then(|e| e.as_str()) {
-            return Err(anyhow!("Failed to get post-process status: {}", error));
-        }
-
-        let result = response.get("result").ok_or_else(|| anyhow!("No result"))?;
+        let result = self.send_json_command(&request, "Failed to get post-process status")?;
 
         Ok(crate::PostProcessModelStatus {
             model_name: result
@@ -1060,13 +745,26 @@ impl ASREngine {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string(),
-            loaded: result.get("loaded").and_then(|v| v.as_bool()).unwrap_or(false),
-            loading: result.get("loading").and_then(|v| v.as_bool()).unwrap_or(false),
-            error: result.get("error").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            loaded: result
+                .get("loaded")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            loading: result
+                .get("loading")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            error: result
+                .get("error")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
             available_models: result
                 .get("available_models")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default(),
         })
     }
@@ -1080,48 +778,67 @@ impl ASREngine {
         dictionary: Option<&std::collections::HashMap<String, String>>,
         custom_prompt: Option<&str>,
     ) -> Result<crate::PostProcessResult> {
-        let process = match self.process.as_mut() {
-            Some(p) => p,
-            None => {
-                return Err(anyhow!("ASR engine not running"));
-            }
-        };
-
-        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
         let request = serde_json::json!({
             "command": "postprocess_text",
-            "id": id,
+            "id": self.next_id(),
             "text": text,
             "app_name": app_name,
             "app_bundle_id": app_bundle_id,
             "dictionary": dictionary,
             "custom_prompt": custom_prompt,
         });
-
-        let json = serde_json::to_string(&request)?;
-        writeln!(process.stdin, "{}", json)?;
-        process.stdin.flush()?;
-
-        let mut line = String::new();
-        process.stdout.read_line(&mut line)?;
-
-        let response: serde_json::Value = serde_json::from_str(&line)?;
-
-        if let Some(error) = response.get("error").and_then(|e| e.as_str()) {
-            return Err(anyhow!("Post-processing failed: {}", error));
-        }
-
-        let result = response.get("result").ok_or_else(|| anyhow!("No result"))?;
+        let result = self.send_json_command(&request, "Post-processing failed")?;
 
         Ok(crate::PostProcessResult {
-            success: result.get("success").and_then(|v| v.as_bool()).unwrap_or(false),
+            success: result
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
             processed_text: result
                 .get("processed_text")
                 .and_then(|v| v.as_str())
                 .unwrap_or(text)
                 .to_string(),
             processing_time_ms: result.get("processing_time_ms").and_then(|v| v.as_f64()),
-            error: result.get("error").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            error: result
+                .get("error")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+        })
+    }
+
+    /// Summarize a list of transcription entries using the LLM
+    pub fn summarize_transcriptions(
+        &mut self,
+        texts: &[crate::SummarizeEntry],
+        language_hint: Option<&str>,
+        custom_prompt: Option<&str>,
+    ) -> Result<crate::SummarizeResult> {
+        let request = serde_json::json!({
+            "command": "summarize_transcriptions",
+            "id": self.next_id(),
+            "texts": texts,
+            "language_hint": language_hint,
+            "custom_prompt": custom_prompt,
+        });
+        let result = self.send_json_command(&request, "Summarization failed")?;
+
+        Ok(crate::SummarizeResult {
+            success: result
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            summary: result
+                .get("summary")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            processing_time_ms: result.get("processing_time_ms").and_then(|v| v.as_f64()),
+            error: result
+                .get("error")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            entry_count: 0, // Set by caller
         })
     }
 }

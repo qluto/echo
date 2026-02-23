@@ -18,102 +18,20 @@ import {
   isPostprocessModelCached,
   setPostprocessModel,
   getPostprocessModelStatus,
+  clearTranscriptionHistory,
   AppSettings,
   AudioDevice,
   HandyKeysEvent,
   PostProcessSettings,
 } from "../lib/tauri";
+import { MODEL_ORDER, SUPPORTED_LANGUAGES, getModelDisplayName, getModelSize } from "../lib/models";
+import { formatHotkey } from "../lib/format";
+import { DEFAULT_POSTPROCESS_PROMPT, DEFAULT_SUMMARIZE_PROMPT } from "../lib/prompts";
 
 interface SettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
 }
-
-// Default system prompt for post-processing LLM
-const DEFAULT_POSTPROCESS_PROMPT = `/no_think
-You are an assistant that cleans up speech recognition results while preserving the speaker's intended meaning.
-
-## Your Task
-Remove verbal noise while keeping the speaker's message intact:
-
-1. **Remove filler words** - These add no meaning:
-   - English: um, uh, like, you know, well, so, I mean, kind of, sort of, basically, actually, literally, right?, anyway
-   - Japanese: ええと, えーと, あの, まあ, なんか, その, うーん, ちょっと, やっぱ
-
-2. **Handle self-corrections** - When someone corrects themselves mid-sentence, keep only their final intent:
-   - "I'll be there at 3, no 4 o'clock" → "I'll be there at 4 o'clock"
-   - "Send it to Tom, I mean Jerry" → "Send it to Jerry"
-   - "The meeting is on Monday, wait, Tuesday" → "The meeting is on Tuesday"
-   - "AですあやっぱりBです" → "Bです"
-   - "3時に、いや4時に行きます" → "4時に行きます"
-
-3. **Apply user dictionary** - Replace terms as specified
-
-4. **Format for target app** (if specified):
-   - Email: Use polite business language
-   - Notion/Markdown: Format lists as Markdown
-
-## Output
-Output ONLY the cleaned text. No explanations.`;
-
-const SUPPORTED_LANGUAGES = [
-  { code: "auto", name: "Auto-detect" },
-  { code: "ja", name: "Japanese" },
-  { code: "en", name: "English" },
-  { code: "zh", name: "Chinese" },
-  { code: "ko", name: "Korean" },
-  { code: "de", name: "German" },
-  { code: "fr", name: "French" },
-  { code: "es", name: "Spanish" },
-];
-
-const MODEL_SIZES: Record<string, string> = {
-  // Qwen3-ASR models
-  "mlx-community/Qwen3-ASR-1.7B-8bit": "1.7B",
-  "mlx-community/Qwen3-ASR-0.6B-8bit": "0.6B",
-  // Whisper models
-  "mlx-community/whisper-large-v3-turbo": "Turbo",
-  "mlx-community/whisper-large-v3": "1.5B",
-  "mlx-community/whisper-medium": "769M",
-  "mlx-community/whisper-small": "244M",
-  "mlx-community/whisper-base": "74M",
-  "mlx-community/whisper-tiny": "39M",
-};
-
-// Model display order (for UI)
-const MODEL_ORDER = [
-  "mlx-community/Qwen3-ASR-0.6B-8bit",
-  "mlx-community/Qwen3-ASR-1.7B-8bit",
-  "mlx-community/whisper-large-v3-turbo",
-  "mlx-community/whisper-large-v3",
-  "mlx-community/whisper-medium",
-  "mlx-community/whisper-small",
-  "mlx-community/whisper-base",
-  "mlx-community/whisper-tiny",
-];
-
-const getModelDisplayName = (name: string): string => {
-  const parts = name.split("/");
-  const modelPart = parts[parts.length - 1];
-
-  // Handle Qwen3-ASR models
-  if (modelPart.includes("Qwen3-ASR")) {
-    return modelPart
-      .replace("-8bit", "")
-      .replace("Qwen3-ASR-", "Qwen3-ASR ");
-  }
-
-  // Handle Whisper models
-  return modelPart
-    .replace("whisper-", "Whisper ")
-    .split("-")
-    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
-    .join(" ");
-};
-
-const getModelSize = (name: string): string => {
-  return MODEL_SIZES[name] || "unknown";
-};
 
 export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [settings, setSettings] = useState<AppSettings>({
@@ -138,6 +56,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [postprocessLoadPhase, setPostprocessLoadPhase] = useState<"idle" | "checking" | "downloading" | "loading">("idle");
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [customPrompt, setCustomPrompt] = useState<string | null>(null);
+  const [customSummaryPrompt, setCustomSummaryPrompt] = useState<string | null>(null);
   const [postprocessModelName, setPostprocessModelName] = useState<string>("mlx-community/Qwen3-4B-4bit");
   const [availablePostprocessModels, setAvailablePostprocessModels] = useState<string[]>([
     "mlx-community/Qwen3-8B-4bit",
@@ -145,6 +64,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     "mlx-community/Qwen3-1.7B-4bit",
   ]);
   const [isPostprocessModelChanging, setIsPostprocessModelChanging] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
   const currentKeysRef = useRef("");
   const unlistenRef = useRef<(() => void) | null>(null);
 
@@ -167,6 +87,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       setDevices(loadedDevices);
       setHotkeyInput(loadedSettings.hotkey);
       setCustomPrompt(loadedSettings.postprocess?.custom_prompt ?? null);
+      setCustomSummaryPrompt(loadedSettings.postprocess?.custom_summary_prompt ?? null);
       if (modelStatus.model_name) {
         setModelName(modelStatus.model_name);
       }
@@ -479,32 +400,6 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     } catch (err) {
       console.error("Failed to start recording:", err);
     }
-  };
-
-  const formatHotkey = (hotkey: string): string => {
-    // handy-keys uses lowercase with + separator
-    let formatted = hotkey
-      // Remove fn when combined with function keys (fn+f12 -> f12)
-      .replace(/\bfn\+?(f(?:[1-9]|1[0-9]|2[0-4]))\b/gi, "$1")
-      .replace(/command/gi, "⌘")
-      .replace(/ctrl/gi, "⌃")
-      .replace(/control/gi, "⌃")
-      .replace(/shift/gi, "⇧")
-      .replace(/option/gi, "⌥")
-      .replace(/alt/gi, "⌥")
-      .replace(/\bfn\b/gi, "🌐")  // Fn key alone
-      .replace(/return/gi, "↵")
-      .replace(/space/gi, "␣")
-      .replace(/escape/gi, "⎋")
-      .replace(/backspace/gi, "⌫")
-      .replace(/delete/gi, "⌦")
-      .replace(/tab/gi, "⇥")
-      // Function keys - uppercase for readability
-      .replace(/\b(f[1-9]|f1[0-9]|f2[0-4])\b/gi, (match) => match.toUpperCase())
-      // Legacy format support
-      .replace("CommandOrControl", "⌘")
-      .replace(/\+/g, "");
-    return formatted;
   };
 
   if (!isOpen) return null;
@@ -1133,58 +1028,152 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                               : "Using default prompt"}
                           </span>
                         </div>
+
+                        {/* Custom Summary Prompt */}
+                        <div className="flex flex-col gap-2">
+                          <div className="flex items-center justify-between">
+                            <span
+                              className="text-xs font-medium"
+                              style={{ color: "var(--text-secondary)" }}
+                            >
+                              Summary Prompt
+                            </span>
+                            <button
+                              onClick={() => {
+                                setCustomSummaryPrompt(null);
+                                const newPostprocess: PostProcessSettings = {
+                                  ...settings.postprocess,
+                                  custom_summary_prompt: null,
+                                };
+                                const newSettings = { ...settings, postprocess: newPostprocess };
+                                setSettings(newSettings);
+                                updatePostprocessSettings(newPostprocess).catch(console.error);
+                              }}
+                              className="text-xs px-2 py-1 rounded transition-colors hover:bg-surface-elevated"
+                              style={{ color: "var(--text-tertiary)" }}
+                            >
+                              Reset to Default
+                            </button>
+                          </div>
+                          <textarea
+                            value={customSummaryPrompt === null ? DEFAULT_SUMMARIZE_PROMPT : customSummaryPrompt}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              setCustomSummaryPrompt(value);
+                              const customValue = value === DEFAULT_SUMMARIZE_PROMPT ? null : value;
+                              const newPostprocess: PostProcessSettings = {
+                                ...settings.postprocess,
+                                custom_summary_prompt: customValue,
+                              };
+                              const newSettings = { ...settings, postprocess: newPostprocess };
+                              setSettings(newSettings);
+                              updatePostprocessSettings(newPostprocess).catch(console.error);
+                            }}
+                            className="w-full h-48 px-3 py-2 rounded-lg bg-surface border border-subtle text-xs font-mono resize-none focus:outline-none focus:border-glow-idle"
+                            style={{ color: "var(--text-primary)" }}
+                            placeholder={DEFAULT_SUMMARIZE_PROMPT}
+                          />
+                          <span
+                            className="text-xs"
+                            style={{ color: "var(--text-tertiary)" }}
+                          >
+                            {customSummaryPrompt !== null
+                              ? "Using custom prompt"
+                              : "Using default prompt"}
+                          </span>
+                        </div>
                       </div>
                     )}
                   </div>
                 )}
               </section>
 
-              {/* About Section */}
+              {/* Data Section */}
               <section className="flex flex-col gap-3">
                 <div className="flex items-center gap-2.5">
                   <div
                     className="w-6 h-6 rounded-md flex items-center justify-center"
-                    style={{ backgroundColor: "rgba(212, 165, 116, 0.12)" }}
+                    style={{ backgroundColor: "rgba(198, 125, 99, 0.12)" }}
                   >
                     <svg
                       className="w-3.5 h-3.5"
-                      fill="var(--glow-processing)"
                       viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="var(--glow-recording)"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
                     >
-                      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z" />
+                      <path d="M3 6h18" />
+                      <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                      <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                      <line x1="10" y1="11" x2="10" y2="17" />
+                      <line x1="14" y1="11" x2="14" y2="17" />
                     </svg>
                   </div>
                   <span
                     className="text-sm font-medium"
                     style={{ color: "var(--text-primary)" }}
                   >
-                    About
+                    Data
                   </span>
                 </div>
 
-                <div className="rounded-xl bg-surface border border-subtle overflow-hidden">
-                  <div className="h-12 px-4 flex items-center justify-between border-b border-subtle">
-                    <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
-                      Version
-                    </span>
-                    <span
-                      className="font-mono text-xs"
-                      style={{ color: "var(--text-primary)" }}
+                <div className="flex flex-col gap-2">
+                  {!showClearConfirm ? (
+                    <button
+                      onClick={() => setShowClearConfirm(true)}
+                      className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between hover:bg-surface-elevated transition-colors"
                     >
-                      0.1.0
-                    </span>
-                  </div>
-                  <div className="h-12 px-4 flex items-center justify-between">
-                    <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
-                      Build
-                    </span>
-                    <span
-                      className="font-mono text-xs"
-                      style={{ color: "var(--text-tertiary)" }}
+                      <span className="text-sm" style={{ color: "var(--glow-recording)" }}>
+                        Clear All History
+                      </span>
+                      <svg
+                        className="w-4 h-4"
+                        fill="none"
+                        stroke="var(--text-tertiary)"
+                        strokeWidth={2}
+                        viewBox="0 0 24 24"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                      </svg>
+                    </button>
+                  ) : (
+                    <div
+                      className="px-4 py-3 rounded-xl border flex flex-col gap-3"
+                      style={{
+                        backgroundColor: "rgba(198, 125, 99, 0.08)",
+                        borderColor: "rgba(198, 125, 99, 0.3)",
+                      }}
                     >
-                      2026.01.30
-                    </span>
-                  </div>
+                      <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                        This will permanently delete all transcription history. This action cannot be undone.
+                      </p>
+                      <div className="flex items-center gap-2 justify-end">
+                        <button
+                          onClick={() => setShowClearConfirm(false)}
+                          className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors hover:bg-surface-elevated"
+                          style={{ color: "var(--text-secondary)" }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={async () => {
+                            try {
+                              await clearTranscriptionHistory();
+                              setShowClearConfirm(false);
+                            } catch (e) {
+                              console.error("Failed to clear history:", e);
+                            }
+                          }}
+                          className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors text-white"
+                          style={{ backgroundColor: "var(--glow-recording)" }}
+                        >
+                          Delete All
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </section>
             </>
