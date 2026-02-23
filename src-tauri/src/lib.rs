@@ -100,7 +100,13 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
-        .plugin(tauri_plugin_log::Builder::new().build())
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Debug)
+                .level_for("tao", log::LevelFilter::Warn)
+                .level_for("tao::platform_impl", log::LevelFilter::Warn)
+                .build(),
+        )
         .setup(|app| {
             // Load settings from persistent store
             let settings = load_settings_from_store(app);
