@@ -349,3 +349,26 @@ html.float-window #root,
 .morph-pill[data-morph-phase="collapsing"] .morph-pill-content {
   transition-delay: 0ms;
 }
+
+/* Echo ripple — concentric rings radiating outward on success */
+@keyframes echo-ripple {
+  0% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: var(--ripple-opacity, 0.5);
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1.5);
+    opacity: 0;
+  }
+}
+
+.echo-ripple-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  background: transparent;
+  pointer-events: none;
+  animation: echo-ripple 600ms ease-out forwards;
+}
