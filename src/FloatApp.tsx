@@ -511,6 +511,7 @@ function FloatApp() {
               height: AMBIENT_PILL_HEIGHT,
               borderRadius: AMBIENT_PILL_RADIUS,
               backgroundColor: "#1A1A1C",
+              border: "1px solid rgba(255, 255, 255, 0.25)",
               boxShadow: "0 1px 4px rgba(0, 0, 0, 0.12)",
             }}
           />
@@ -523,6 +524,7 @@ function FloatApp() {
               height: AMBIENT_PILL_HEIGHT,
               borderRadius: AMBIENT_PILL_RADIUS,
               backgroundColor: "#7C9082",
+              border: "1px solid rgba(255, 255, 255, 0.25)",
             }}
           />
         )}

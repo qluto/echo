@@ -28,7 +28,6 @@ export function TranscriptionHistory({ onSummarize, isSummarizing }: Transcripti
     search,
     clearSearch,
     remove,
-    clearAll,
     refresh,
   } = useTranscriptionHistory();
 
@@ -90,7 +89,6 @@ export function TranscriptionHistory({ onSummarize, isSummarizing }: Transcripti
   const formatTime = (dateStr: string) => {
     if (!dateStr) return "";
     try {
-      // created_at is in "YYYY-MM-DD HH:MM:SS" format (localtime)
       const parts = dateStr.split(" ");
       if (parts.length >= 2) {
         return parts[1].slice(0, 5); // HH:MM
@@ -111,120 +109,105 @@ export function TranscriptionHistory({ onSummarize, isSummarizing }: Transcripti
 
   return (
     <div className="flex flex-col gap-2 flex-1 min-h-0">
-      {/* Header with search */}
-      <div className="flex items-center justify-between gap-2">
+      {/* Header */}
+      <div className="flex items-center justify-between">
         <span
-          className="text-xs font-medium flex-shrink-0"
+          className="text-[11px] font-semibold tracking-wide"
           style={{ color: "var(--text-tertiary)" }}
         >
-          History
+          Transcripts
           {totalCount > 0 && (
-            <span className="ml-1 opacity-60">({totalCount})</span>
+            <span className="ml-1">({totalCount})</span>
           )}
         </span>
 
-        {/* Search input */}
-        <div className="relative flex-1 max-w-[180px]">
-          <input
-            ref={searchInputRef}
-            type="text"
-            placeholder="Search..."
-            defaultValue={searchQuery}
-            onChange={(e) => handleSearchInput(e.target.value)}
-            className="w-full h-6 pl-6 pr-2 text-xs rounded-md bg-surface border border-subtle outline-none focus:border-[var(--glow-idle)] transition-colors"
-            style={{ color: "var(--text-primary)" }}
-          />
-          <svg
-            className="absolute left-1.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5"
-            fill="none"
-            stroke="var(--text-tertiary)"
-            strokeWidth={1.5}
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z"
-            />
-          </svg>
-          {searchQuery && (
-            <button
-              onClick={() => {
-                if (searchInputRef.current) {
-                  searchInputRef.current.value = "";
-                }
-                clearSearch();
-              }}
-              className="absolute right-1.5 top-1/2 -translate-y-1/2"
-            >
-              <svg
-                className="w-3 h-3"
-                fill="none"
-                stroke="var(--text-tertiary)"
-                strokeWidth={2}
-                viewBox="0 0 24 24"
+        <div className="flex items-center gap-2">
+          {/* Summarize */}
+          {totalCount > 0 && onSummarize && (
+            <div className="relative" ref={menuRef}>
+              <button
+                onClick={() => {
+                  if (!isSummarizing) setShowTimeMenu((v) => !v);
+                }}
+                disabled={isSummarizing}
+                className="text-[10px] flex-shrink-0 px-2 py-0.5 rounded-md transition-colors border border-subtle hover:bg-surface-elevated disabled:opacity-50"
+                style={{ color: "var(--text-secondary)" }}
               >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-              </svg>
-            </button>
+                {isSummarizing ? (
+                  <span className="flex items-center gap-1">
+                    <span
+                      className="inline-block w-2 h-2 border border-current rounded-full animate-spin"
+                      style={{ borderTopColor: "transparent" }}
+                    />
+                    Summarizing
+                  </span>
+                ) : (
+                  "Summarize"
+                )}
+              </button>
+
+              {showTimeMenu && (
+                <div
+                  className="absolute right-0 top-full mt-1 py-1 rounded-lg border border-subtle shadow-lg z-10 min-w-[100px]"
+                  style={{ backgroundColor: "var(--surface)" }}
+                >
+                  {TIME_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.minutes}
+                      onClick={() => {
+                        setShowTimeMenu(false);
+                        onSummarize(opt.minutes);
+                      }}
+                      className="w-full px-3 py-1.5 text-xs text-left hover:bg-surface-elevated transition-colors"
+                      style={{ color: "var(--text-primary)" }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
         </div>
+      </div>
 
-        {totalCount > 0 && onSummarize && (
-          <div className="relative" ref={menuRef}>
-            <button
-              onClick={() => {
-                if (!isSummarizing) setShowTimeMenu((v) => !v);
-              }}
-              disabled={isSummarizing}
-              className="text-xs flex-shrink-0 px-2 py-0.5 rounded-md transition-colors border border-subtle hover:bg-surface-elevated disabled:opacity-50"
-              style={{ color: "var(--text-secondary)" }}
-              title="Summarize recent transcriptions"
-            >
-              {isSummarizing ? (
-                <span className="flex items-center gap-1">
-                  <span
-                    className="inline-block w-2.5 h-2.5 border border-current rounded-full animate-spin"
-                    style={{ borderTopColor: "transparent" }}
-                  />
-                  Summarizing
-                </span>
-              ) : (
-                "Summarize"
-              )}
-            </button>
-
-            {showTimeMenu && (
-              <div
-                className="absolute right-0 top-full mt-1 py-1 rounded-lg border border-subtle shadow-lg z-10 min-w-[100px]"
-                style={{ backgroundColor: "var(--surface)" }}
-              >
-                {TIME_OPTIONS.map((opt) => (
-                  <button
-                    key={opt.minutes}
-                    onClick={() => {
-                      setShowTimeMenu(false);
-                      onSummarize(opt.minutes);
-                    }}
-                    className="w-full px-3 py-1.5 text-xs text-left hover:bg-surface-elevated transition-colors"
-                    style={{ color: "var(--text-primary)" }}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {totalCount > 0 && (
+      {/* Search bar */}
+      <div className="relative">
+        <input
+          ref={searchInputRef}
+          type="text"
+          placeholder="Search..."
+          defaultValue={searchQuery}
+          onChange={(e) => handleSearchInput(e.target.value)}
+          className="w-full h-7 pl-7 pr-2 text-xs rounded-lg bg-surface border border-subtle outline-none focus:border-[var(--glow-idle)] transition-colors"
+          style={{ color: "var(--text-primary)" }}
+        />
+        <svg
+          className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5"
+          fill="none"
+          stroke="var(--text-tertiary)"
+          strokeWidth={1.5}
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z"
+          />
+        </svg>
+        {searchQuery && (
           <button
-            onClick={clearAll}
-            className="text-xs flex-shrink-0 opacity-50 hover:opacity-100 transition-opacity"
-            style={{ color: "var(--text-tertiary)" }}
-            title="Clear all history"
+            onClick={() => {
+              if (searchInputRef.current) {
+                searchInputRef.current.value = "";
+              }
+              clearSearch();
+            }}
+            className="absolute right-2 top-1/2 -translate-y-1/2"
           >
-            Clear
+            <svg className="w-3 h-3" fill="none" stroke="var(--text-tertiary)" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+            </svg>
           </button>
         )}
       </div>
@@ -233,7 +216,8 @@ export function TranscriptionHistory({ onSummarize, isSummarizing }: Transcripti
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto rounded-xl bg-surface border border-subtle min-h-0"
+        className="flex-1 overflow-y-auto rounded-[10px] bg-surface border shadow-sm min-h-0"
+        style={{ borderColor: "#E8E4DF" }}
       >
         {error && (
           <div className="p-3 text-xs" style={{ color: "var(--glow-recording)" }}>
@@ -252,23 +236,18 @@ export function TranscriptionHistory({ onSummarize, isSummarizing }: Transcripti
         {entries.map((entry) => (
           <div
             key={entry.id}
-            className="group px-3 py-2.5 border-b border-subtle last:border-b-0 hover:bg-surface-elevated transition-colors"
+            className="group px-3.5 py-2.5 hover:bg-surface-elevated transition-colors"
+            style={{ borderBottom: "0.5px solid #F0EFEC" }}
           >
             <div className="flex items-start gap-2">
               <div className="flex-1 min-w-0">
                 {/* Metadata */}
                 <div className="flex items-center gap-2 mb-0.5">
-                  <span
-                    className="font-mono text-[10px]"
-                    style={{ color: "var(--text-tertiary)" }}
-                  >
+                  <span className="font-mono text-[10px]" style={{ color: "var(--text-tertiary)" }}>
                     {formatTime(entry.created_at)}
                   </span>
                   {entry.duration_seconds != null && (
-                    <span
-                      className="font-mono text-[10px]"
-                      style={{ color: "var(--text-tertiary)" }}
-                    >
+                    <span className="font-mono text-[10px]" style={{ color: "var(--text-tertiary)" }}>
                       {formatDuration(entry.duration_seconds)}
                     </span>
                   )}
@@ -276,7 +255,7 @@ export function TranscriptionHistory({ onSummarize, isSummarizing }: Transcripti
 
                 {/* Text preview */}
                 <p
-                  className="text-xs leading-relaxed line-clamp-2"
+                  className="text-[13px] leading-relaxed line-clamp-2"
                   style={{ color: "var(--text-primary)" }}
                 >
                   {entry.text}
@@ -289,13 +268,7 @@ export function TranscriptionHistory({ onSummarize, isSummarizing }: Transcripti
                 className="opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity flex-shrink-0 mt-0.5"
                 title="Delete"
               >
-                <svg
-                  className="w-3.5 h-3.5"
-                  fill="none"
-                  stroke="var(--text-tertiary)"
-                  strokeWidth={1.5}
-                  viewBox="0 0 24 24"
-                >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="var(--text-tertiary)" strokeWidth={1.5} viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
                 </svg>
               </button>

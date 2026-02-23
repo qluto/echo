@@ -11,7 +11,6 @@ import { useSummarize } from "./hooks/useSummarize";
 import {
   pingAsrEngine,
   startAsrEngine,
-  insertText,
   getModelStatus,
   loadAsrModel,
   warmupAsrModel,
@@ -152,15 +151,14 @@ function App() {
       ? "processing"
       : isListening
       ? (isSpeechDetected ? "ambient-active" : "ambient")
-      : "idle";
+      : "ambient";
     emitFloatState(state, recordingDuration);
 
     // Auto-hide success after delay
     if (showSuccess) {
       const timer = setTimeout(() => {
         setShowSuccess(false);
-        // Return to ambient if still listening, otherwise idle
-        emitFloatState(isListening ? "ambient" : "idle", 0);
+        emitFloatState(isListening ? "ambient" : "ambient", 0);
       }, 1500);
       return () => clearTimeout(timer);
     }
@@ -325,17 +323,6 @@ function App() {
     }
   }, [result]);
 
-  const handleInsert = useCallback(async () => {
-    if (result?.text) {
-      try {
-        await insertText(result.text);
-        setShowSuccess(true);
-      } catch (e) {
-        console.error("Failed to insert:", e);
-      }
-    }
-  }, [result]);
-
   // Auto-insert is now handled by the backend (hotkey.rs)
   // Frontend only shows success state when result arrives
   useEffect(() => {
@@ -448,81 +435,54 @@ function App() {
       {/* Header */}
       <header
         data-tauri-drag-region
-        className="h-14 flex items-center justify-between px-5 flex-shrink-0"
+        className="h-[52px] flex items-center justify-between px-4 flex-shrink-0 border-b"
+        style={{ borderColor: "var(--border-subtle)" }}
       >
         {/* Traffic Lights */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <button
             onClick={handleClose}
-            className="w-3 h-3 rounded-full bg-[#FF5F57] hover:brightness-90 transition-all"
+            className="w-2.5 h-2.5 rounded-full bg-[#FF5F57] hover:brightness-90 transition-all"
             aria-label="Close"
           />
           <button
             onClick={handleMinimize}
-            className="w-3 h-3 rounded-full bg-[#FEBC2E] hover:brightness-90 transition-all"
+            className="w-2.5 h-2.5 rounded-full bg-[#FEBC2E] hover:brightness-90 transition-all"
             aria-label="Minimize"
           />
           <button
             onClick={handleMaximize}
-            className="w-3 h-3 rounded-full bg-[#28C840] hover:brightness-90 transition-all"
+            className="w-2.5 h-2.5 rounded-full bg-[#28C840] hover:brightness-90 transition-all"
             aria-label="Maximize"
           />
         </div>
 
         {/* Logo */}
-        <div className="flex items-center gap-2.5 pointer-events-none" data-tauri-drag-region>
-          <div className="w-7 h-7 rounded-lg overflow-hidden" style={{ backgroundColor: "#7C9082" }}>
-            <svg viewBox="0 0 28 28" className="w-full h-full">
-              {/* Wave rings */}
-              <ellipse cx="14" cy="14" rx="11" ry="11" fill="none" stroke="white" strokeOpacity="0.25" strokeWidth="1"/>
-              <ellipse cx="14" cy="14" rx="8" ry="8" fill="none" stroke="white" strokeOpacity="0.44" strokeWidth="1"/>
-              <ellipse cx="14" cy="14" rx="5" ry="5" fill="none" stroke="white" strokeOpacity="0.63" strokeWidth="1"/>
-              {/* Core */}
-              <ellipse cx="14" cy="14" rx="3" ry="3" fill="white"/>
+        <div className="flex items-center gap-2 pointer-events-none" data-tauri-drag-region>
+          <div className="w-6 h-6 rounded-[7px] overflow-hidden" style={{ backgroundColor: "#7C9082" }}>
+            <svg viewBox="0 0 24 24" className="w-full h-full">
+              <ellipse cx="12" cy="12" rx="9" ry="9" fill="none" stroke="white" strokeOpacity="0.25" strokeWidth="1"/>
+              <ellipse cx="12" cy="12" rx="6.5" ry="6.5" fill="none" stroke="white" strokeOpacity="0.44" strokeWidth="1"/>
+              <ellipse cx="12" cy="12" rx="4" ry="4" fill="none" stroke="white" strokeOpacity="0.63" strokeWidth="1"/>
+              <ellipse cx="12" cy="12" rx="2.5" ry="2.5" fill="white"/>
             </svg>
           </div>
           <span
-            className="font-display text-xl tracking-tight"
+            className="font-display text-base tracking-tight"
             style={{ color: "var(--text-primary)" }}
           >
             echo
           </span>
         </div>
 
-        {/* Buttons */}
-        <div className="flex items-center gap-2">
-          {/* Continuous Listening Toggle */}
-          <button
-            onClick={toggleListening}
-            className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors border ${
-              isListening
-                ? "bg-[var(--glow-recording)] border-[var(--glow-recording)]"
-                : "bg-surface-muted border-subtle hover:bg-surface-elevated"
-            }`}
-            title={isListening ? "Stop listening" : "Start continuous listening"}
-          >
-            <svg
-              className="w-[18px] h-[18px]"
-              fill={isListening ? "white" : "none"}
-              stroke={isListening ? "white" : "var(--text-secondary)"}
-              strokeWidth={1.5}
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M12 18.75a6 6 0 0 0 6-6v-1.5m-6 7.5a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 1-3-3V4.5a3 3 0 1 1 6 0v8.25a3 3 0 0 1-3 3Z"
-              />
-            </svg>
-          </button>
-
-          {/* Settings Button */}
-          <button
-            onClick={() => setIsSettingsOpen(true)}
-            className="w-9 h-9 rounded-xl bg-surface-muted flex items-center justify-center hover:bg-surface-elevated transition-colors border border-subtle"
-          >
+        {/* Settings Button */}
+        <button
+          onClick={() => setIsSettingsOpen(true)}
+          className="w-8 h-8 rounded-2xl flex items-center justify-center hover:bg-surface-elevated transition-colors border"
+          style={{ backgroundColor: "var(--surface-muted)", borderColor: "#E0DDD8" }}
+        >
           <svg
-            className="w-[18px] h-[18px]"
+            className="w-4 h-4"
             fill="none"
             stroke="var(--text-secondary)"
             strokeWidth={1.5}
@@ -539,219 +499,185 @@ function App() {
               d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"
             />
           </svg>
-          </button>
-        </div>
+        </button>
       </header>
 
       {/* Content */}
-      <main className="flex-1 px-5 pb-5 flex flex-col gap-4 overflow-auto">
-        {/* Hotkey Section */}
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-center gap-2 py-2">
-            <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
-              Hold
-            </span>
-            <div className="flex items-center gap-1">
-              <div className="h-7 px-2.5 rounded-lg flex items-center bg-surface-muted border border-subtle">
+      <main className="flex-1 px-5 py-5 flex flex-col gap-6 overflow-auto">
+        {/* Mode Cards */}
+        <div className="flex gap-3">
+          {/* Quick Input Card */}
+          <div className="flex-1 flex flex-col gap-3 rounded-xl bg-surface p-4 border shadow-sm" style={{ borderColor: "#E8E4DF" }}>
+            <div className="flex items-center justify-between">
+              <svg className="w-4 h-4" fill="none" stroke="var(--text-secondary)" strokeWidth={1.5} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z" />
+              </svg>
+              <div
+                className="h-5 px-1.5 rounded flex items-center bg-surface-muted border border-subtle"
+              >
                 <span
-                  className="font-mono text-xs font-medium"
+                  className="font-mono text-[10px] font-medium"
                   style={{ color: "var(--text-primary)" }}
                 >
                   {formatHotkey(hotkey)}
                 </span>
               </div>
             </div>
-            <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
-              to transcribe
-            </span>
-          </div>
-          {hotkeyError && (
-            <div
-              className="mx-4 px-3 py-2.5 rounded-lg text-xs flex flex-col gap-2.5"
-              style={{
-                backgroundColor: "rgba(198, 125, 99, 0.15)",
-                color: "var(--glow-recording)",
-              }}
-            >
-              <div className="flex items-start gap-2">
-                <svg
-                  className="w-4 h-4 flex-shrink-0 mt-0.5"
-                  fill="currentColor"
-                  viewBox="0 0 20 20"
-                >
-                  <path
-                    fillRule="evenodd"
-                    d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z"
-                    clipRule="evenodd"
-                  />
-                </svg>
-                <span>
-                  {showRestartPrompt
-                    ? "Permission granted? Restart to apply."
-                    : "Accessibility permission required for hotkey"}
-                </span>
-              </div>
-              <div className="flex gap-2">
-                {!showRestartPrompt ? (
-                  <button
-                    onClick={async () => {
-                      await requestAccessibilityPermission();
-                      await openAccessibilitySettings();
-                      setShowRestartPrompt(true);
-                    }}
-                    className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
-                    style={{
-                      backgroundColor: "var(--glow-recording)",
-                      color: "white",
-                    }}
-                  >
-                    Open System Settings
-                  </button>
-                ) : (
-                  <>
-                    <button
-                      onClick={() => restartApp()}
-                      className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
-                      style={{
-                        backgroundColor: "var(--glow-idle)",
-                        color: "white",
-                      }}
-                    >
-                      Restart App
-                    </button>
-                    <button
-                      onClick={async () => {
-                        await openAccessibilitySettings();
-                      }}
-                      className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors border"
-                      style={{
-                        borderColor: "var(--border-subtle)",
-                        color: "var(--text-secondary)",
-                      }}
-                    >
-                      Open Settings
-                    </button>
-                  </>
-                )}
-              </div>
+            <div className="flex flex-col gap-1">
+              <span className="text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
+                Quick Input
+              </span>
+              <span className="text-[11px] leading-snug" style={{ color: "var(--text-tertiary)" }}>
+                Hold to transcribe and insert into active app
+              </span>
             </div>
-          )}
+          </div>
+
+          {/* Always-on Card */}
+          <div className="flex-1 flex flex-col gap-3 rounded-xl bg-surface p-4 border shadow-sm" style={{ borderColor: "#E8E4DF" }}>
+            <div className="flex items-center justify-between">
+              <svg className="w-4 h-4" fill="none" stroke="var(--text-secondary)" strokeWidth={1.5} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
+              </svg>
+              <button
+                onClick={toggleListening}
+                className="w-10 h-[22px] rounded-full flex items-center transition-all duration-200"
+                style={{
+                  backgroundColor: isListening ? "var(--glow-idle)" : "var(--border-subtle)",
+                  padding: "2px",
+                }}
+              >
+                <div
+                  className="w-[18px] h-[18px] rounded-full bg-white transition-transform duration-200"
+                  style={{
+                    boxShadow: "0 1px 3px rgba(0, 0, 0, 0.15)",
+                    transform: isListening ? "translateX(18px)" : "translateX(0)",
+                  }}
+                />
+              </button>
+            </div>
+            <div className="flex flex-col gap-1">
+              <span className="text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
+                Always-on
+              </span>
+              <span className="text-[11px] leading-snug" style={{ color: "var(--text-tertiary)" }}>
+                Continuously transcribe and save to log
+              </span>
+            </div>
+          </div>
         </div>
 
-        {/* Listening Error */}
-        {listeningError && (
+        {/* Hotkey Error */}
+        {hotkeyError && (
           <div
-            className="px-3 py-2 rounded-lg text-xs"
+            className="px-3 py-2.5 rounded-lg text-xs flex flex-col gap-2.5"
             style={{
               backgroundColor: "rgba(198, 125, 99, 0.15)",
               color: "var(--glow-recording)",
             }}
           >
+            <div className="flex items-start gap-2">
+              <svg className="w-4 h-4 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+              </svg>
+              <span>
+                {showRestartPrompt
+                  ? "Permission granted? Restart to apply."
+                  : "Accessibility permission required for hotkey"}
+              </span>
+            </div>
+            <div className="flex gap-2">
+              {!showRestartPrompt ? (
+                <button
+                  onClick={async () => {
+                    await requestAccessibilityPermission();
+                    await openAccessibilitySettings();
+                    setShowRestartPrompt(true);
+                  }}
+                  className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+                  style={{ backgroundColor: "var(--glow-recording)", color: "white" }}
+                >
+                  Open System Settings
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={() => restartApp()}
+                    className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+                    style={{ backgroundColor: "var(--glow-idle)", color: "white" }}
+                  >
+                    Restart App
+                  </button>
+                  <button
+                    onClick={() => openAccessibilitySettings()}
+                    className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors border"
+                    style={{ borderColor: "var(--border-subtle)", color: "var(--text-secondary)" }}
+                  >
+                    Open Settings
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Listening Error */}
+        {listeningError && (
+          <div
+            className="px-3 py-2 rounded-lg text-xs"
+            style={{ backgroundColor: "rgba(198, 125, 99, 0.15)", color: "var(--glow-recording)" }}
+          >
             {listeningError}
           </div>
         )}
 
-        {/* Transcript Section */}
+        {/* Last Input Section */}
         <div className="flex flex-col gap-2">
-          {/* Header */}
           <span
-            className="text-xs font-medium"
+            className="text-[11px] font-semibold tracking-wide"
             style={{ color: "var(--text-tertiary)" }}
           >
-            Last transcript
+            Last input
           </span>
 
-          {/* Transcript Card */}
-          <div className="flex flex-col rounded-xl bg-surface border border-subtle p-4 gap-3">
+          <div className="flex flex-col rounded-[14px] bg-surface p-3.5 gap-3 shadow-sm border" style={{ borderColor: "#E8E4DF" }}>
             {error ? (
-              <div className="flex-1 flex items-center justify-center">
-                <p className="text-sm" style={{ color: "var(--glow-recording)" }}>
-                  {error}
-                </p>
-              </div>
+              <p className="text-sm" style={{ color: "var(--glow-recording)" }}>{error}</p>
             ) : result?.text ? (
               <>
-                {/* Duration & Language */}
                 <div className="flex items-center justify-between">
-                  <span
-                    className="font-mono text-xs"
-                    style={{ color: "var(--text-tertiary)" }}
-                  >
+                  <span className="font-mono text-[10px]" style={{ color: "var(--text-tertiary)" }}>
                     {getDuration() ? `${getDuration()!.toFixed(1)}s` : ""}
                   </span>
                   {result.language && (
                     <span
-                      className="font-mono text-xs capitalize"
-                      style={{ color: "var(--text-tertiary)" }}
+                      className="font-mono text-[10px] capitalize px-1.5 py-0.5 rounded-md"
+                      style={{ color: "var(--text-tertiary)", backgroundColor: "var(--surface-muted)" }}
                     >
                       {result.language}
                     </span>
                   )}
                 </div>
-
-                {/* Transcript Text */}
-                <p
-                  className="text-[15px] leading-relaxed flex-1"
-                  style={{ color: "var(--text-primary)" }}
-                >
+                <p className="text-sm leading-relaxed" style={{ color: "var(--text-primary)" }}>
                   {result.text}
                 </p>
-
-                {/* Action Buttons */}
-                <div className="flex items-center justify-end gap-2 pt-2">
+                <div className="flex items-center justify-end">
                   <button
                     onClick={handleCopy}
-                    className="h-9 px-4 rounded-full text-sm font-medium flex items-center gap-2 transition-colors bg-surface border border-subtle hover:bg-surface-elevated"
-                    style={{ color: "var(--text-primary)" }}
+                    className="h-8 px-3.5 rounded-full text-xs font-medium flex items-center gap-1.5 transition-colors border hover:bg-surface-elevated"
+                    style={{ color: "var(--text-primary)", borderColor: "#E0DDD8" }}
                   >
-                    <svg
-                      className="w-4 h-4"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth={1.5}
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H9.75"
-                      />
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75" />
                     </svg>
                     Copy
-                  </button>
-                  <button
-                    onClick={handleInsert}
-                    className="h-9 px-4 rounded-full text-sm font-medium flex items-center gap-2 transition-colors text-white"
-                    style={{
-                      backgroundColor: "var(--text-primary)",
-                    }}
-                  >
-                    <svg
-                      className="w-4 h-4"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth={1.5}
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="m7.49 12-3.75 3.75m0 0 3.75 3.75m-3.75-3.75h16.5V4.499"
-                      />
-                    </svg>
-                    Insert
                   </button>
                 </div>
               </>
             ) : (
-              <div className="flex-1 flex items-center justify-center">
-                <p
-                  className="text-sm text-center"
-                  style={{ color: "var(--text-tertiary)" }}
-                >
-                  Press and hold the hotkey to transcribe
-                </p>
-              </div>
+              <p className="text-xs text-center py-2" style={{ color: "var(--text-tertiary)" }}>
+                Press and hold the hotkey to transcribe
+              </p>
             )}
           </div>
         </div>
@@ -767,7 +693,7 @@ function App() {
       </main>
 
       {/* Footer */}
-      <footer className="h-11 flex items-center justify-between px-5 border-t border-subtle flex-shrink-0">
+      <footer className="h-10 flex items-center justify-between px-5 border-t flex-shrink-0" style={{ borderColor: "var(--border-subtle)" }}>
         {/* Model Info */}
         <div className="flex items-center gap-2">
           <svg

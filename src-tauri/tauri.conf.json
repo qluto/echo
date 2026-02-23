@@ -16,7 +16,7 @@
         "label": "main",
         "title": "Echo",
         "width": 360,
-        "height": 480,
+        "height": 620,
         "resizable": true,
         "fullscreen": false,
         "decorations": false,
