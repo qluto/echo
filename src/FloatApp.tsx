@@ -5,7 +5,7 @@ import {
   getCurrentWindow,
   LogicalSize,
   LogicalPosition,
-  currentMonitor,
+  primaryMonitor,
   cursorPosition,
 } from "@tauri-apps/api/window";
 
@@ -58,13 +58,15 @@ async function resizeAndPosition(width: number, height: number) {
   try {
     await win.setSize(new LogicalSize(width, height));
 
-    const monitor = await currentMonitor();
+    const monitor = await primaryMonitor();
     if (!monitor) return;
     const scaleFactor = monitor.scaleFactor;
     const screenWidth = monitor.size.width / scaleFactor;
     const screenHeight = monitor.size.height / scaleFactor;
-    const x = Math.round((screenWidth - width) / 2);
-    const y = Math.round(screenHeight - BOTTOM_MARGIN - height);
+    const monitorX = monitor.position.x / scaleFactor;
+    const monitorY = monitor.position.y / scaleFactor;
+    const x = Math.round(monitorX + (screenWidth - width) / 2);
+    const y = Math.round(monitorY + screenHeight - BOTTOM_MARGIN - height);
 
     await win.setPosition(new LogicalPosition(x, y));
   } catch (_) {
@@ -445,6 +447,26 @@ function FloatApp() {
   useEffect(() => {
     if (!visible) return;
     void resizeAndPosition(HOVER_WIDTH, HOVER_HEIGHT);
+  }, [visible]);
+
+  // Reposition when monitor configuration changes (display connect/disconnect).
+  useEffect(() => {
+    if (!visible) return;
+    let lastKey = "";
+    const id = setInterval(async () => {
+      try {
+        const monitor = await primaryMonitor();
+        if (!monitor) return;
+        const key = `${monitor.position.x},${monitor.position.y},${monitor.size.width},${monitor.size.height},${monitor.scaleFactor}`;
+        if (lastKey && key !== lastKey) {
+          await resizeAndPosition(HOVER_WIDTH, HOVER_HEIGHT);
+        }
+        lastKey = key;
+      } catch (_) {
+        /* ignore */
+      }
+    }, 2000);
+    return () => clearInterval(id);
   }, [visible]);
 
   // Make the window click-through when ambient and not morphing/hovered.
