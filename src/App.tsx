@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getCurrentWindow, currentMonitor, LogicalPosition } from "@tauri-apps/api/window";
+import { getCurrentWindow, primaryMonitor, LogicalPosition } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { emit, listen } from "@tauri-apps/api/event";
 import { SettingsPanel } from "./components/SettingsPanel";
@@ -113,14 +113,17 @@ function App() {
   // Position float window at bottom center
   const positionFloatWindow = async (floatWin: WebviewWindow) => {
     try {
-      const monitor = await currentMonitor();
+      const monitor = await primaryMonitor();
       if (monitor) {
-        const screenWidth = monitor.size.width / monitor.scaleFactor;
-        const screenHeight = monitor.size.height / monitor.scaleFactor;
+        const scaleFactor = monitor.scaleFactor;
+        const screenWidth = monitor.size.width / scaleFactor;
+        const screenHeight = monitor.size.height / scaleFactor;
+        const monitorX = monitor.position.x / scaleFactor;
+        const monitorY = monitor.position.y / scaleFactor;
         const windowWidth = 240;
         const windowHeight = 60;
-        const x = Math.round((screenWidth - windowWidth) / 2);
-        const y = Math.round(screenHeight - windowHeight - 32); // 32px from bottom
+        const x = Math.round(monitorX + (screenWidth - windowWidth) / 2);
+        const y = Math.round(monitorY + screenHeight - windowHeight - 32); // 32px from bottom
         await floatWin.setPosition(new LogicalPosition(x, y));
       }
     } catch (e) {
