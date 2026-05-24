@@ -28,6 +28,11 @@ export interface PostProcessSettings {
   custom_summary_prompt?: string | null;
 }
 
+export interface GatedAccessSettings {
+  enabled: boolean;
+  hf_token: string | null;
+}
+
 export interface AppSettings {
   hotkey: string;
   language: string;
@@ -35,6 +40,7 @@ export interface AppSettings {
   device_name: string | null;
   model_name: string | null;
   postprocess: PostProcessSettings;
+  gated_access: GatedAccessSettings;
 }
 
 // Tauri commands

@@ -133,12 +133,15 @@ echo "Building with PyInstaller..."
     --hidden-import mlx_audio.transcribe \
     --hidden-import mlx_audio.stt \
     --hidden-import mlx_audio.stt.utils \
+    --hidden-import mlx_audio.stt.models.cohere_asr \
+    --hidden-import mlx_audio.stt.models.cohere_asr.cohere_asr \
     --hidden-import mlx_lm \
     --hidden-import numpy \
     --hidden-import soundfile \
     --hidden-import librosa \
     --hidden-import torch \
     --hidden-import silero_vad \
+    --hidden-import sentencepiece \
     --hidden-import transformers \
     --collect-all mlx \
     --collect-all mlx_audio \

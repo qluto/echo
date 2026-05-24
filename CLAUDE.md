@@ -81,7 +81,7 @@ git push origin v0.x.x
 
 ### ASR Model Support
 
-Two model families are supported with different MLX-Audio APIs:
+Three model families are supported with different MLX-Audio APIs:
 
 **Whisper models** (OpenAI):
 - Uses `mlx_audio.stt.utils.load_model` + `generate_transcription`
@@ -92,6 +92,14 @@ Two model families are supported with different MLX-Audio APIs:
 - Uses `mlx_audio.stt.load` + `model.generate()`
 - Self-contained, no separate processor needed
 - Language: Full names ("English", "Japanese") - does NOT accept None
+
+**Cohere Transcribe** (Cohere Labs, 2B params — **gated model**):
+- Uses `mlx_audio.stt.load` + `model.generate()` (same entry point as Qwen3)
+- Language: ISO codes ("en", "ja", "zh", etc.) — supports 14 languages
+- Apache 2.0 license but the official `CohereLabs/cohere-transcribe-03-2026` repo is gated on HuggingFace
+- Users must accept the license on the HF model page and provide a personal access token via Settings → Gated Models (Advanced)
+- BF16 weights (~4GB download); no MLX quantization exists in non-gated form that respects upstream gating
+- Tokenizer uses SentencePiece — `--hidden-import sentencepiece` required for PyInstaller
 
 ### Post-Processing Pipeline
 
@@ -142,12 +150,18 @@ Optional LLM-based cleanup using Qwen3-1.7B-4bit:
   - `enabled`: Enable LLM-based cleanup (removes fillers, self-corrections)
   - `dictionary`: Custom word replacements (e.g., "GPT" → "GPT-4")
   - `custom_prompt`: Optional custom system prompt (null = use default)
+- `gated_access`: Gated HuggingFace model access (off by default)
+  - `enabled`: User must explicitly opt in before gated models appear in the picker
+  - `hf_token`: HuggingFace personal access token (read scope) — stored in plaintext `settings.json` matching the HF CLI's own `~/.cache/huggingface/token` model
 
 ### Available Models
 
-Qwen3-ASR (recommended for accuracy):
+Qwen3-ASR (recommended for accuracy, especially CJK):
 - `mlx-community/Qwen3-ASR-0.6B-8bit` (default)
 - `mlx-community/Qwen3-ASR-1.7B-8bit`
+
+Cohere Transcribe (gated; 14 languages including JA/ZH/KO; strong on clean read-speech):
+- `CohereLabs/cohere-transcribe-03-2026` — requires HF token + license acceptance (see Gated Access below)
 
 Whisper:
 - `mlx-community/whisper-large-v3-turbo`
@@ -156,6 +170,18 @@ Whisper:
 - `mlx-community/whisper-small`
 - `mlx-community/whisper-base`
 - `mlx-community/whisper-tiny`
+
+### Gated Model Access
+
+Some ASR models (currently Cohere Transcribe) require HuggingFace authentication and license acceptance. Echo handles this via the `Settings → Gated Models (Advanced)` panel:
+
+1. User accepts the model license on the upstream HF page (e.g. `huggingface.co/CohereLabs/cohere-transcribe-03-2026`).
+2. User creates a read-scoped HF token at `huggingface.co/settings/tokens` and enters it into Echo's Advanced settings.
+3. Token is persisted via `tauri-plugin-store` in `settings.json`.
+4. On sidecar spawn (`transcription.rs:start()`), the token is passed via `HF_TOKEN` env var if `gated_access.enabled`.
+5. Mid-session token changes flow through `set_hf_token` JSON-RPC, which updates `os.environ["HF_TOKEN"]` in the live Python process — no restart needed.
+6. The token never appears in logs (only its length).
+7. When `gated_access.enabled` is false, gated models are filtered out of the model picker.
 
 ### macOS Permissions
 
