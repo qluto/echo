@@ -452,15 +452,26 @@ class ASREngine:
             "detected_language": detected_language
         }
 
-    @staticmethod
-    def _coerce_language(value) -> str:
-        """Coerce a language field that may be str | list[str] | None to a single string."""
+    # Sentinel values that mean "no language detected" — Qwen3-ASR's extract_language
+    # returns the literal string "None" for audio with no recognizable speech.
+    _LANGUAGE_SENTINELS = {"", "none", "null", "auto", "unknown"}
+
+    @classmethod
+    def _coerce_language(cls, value) -> str:
+        """Coerce a language field that may be str | list[str] | None to a single string.
+
+        Returns "auto" for None, empty, or any sentinel value indicating no detection.
+        """
         if value is None:
             return "auto"
         if isinstance(value, str):
-            return value
+            return "auto" if value.strip().lower() in cls._LANGUAGE_SENTINELS else value
         if isinstance(value, (list, tuple)):
             for item in value:
+                if item is None:
+                    continue
+                if isinstance(item, str) and item.strip().lower() in cls._LANGUAGE_SENTINELS:
+                    continue
                 if item:
                     return str(item)
             return "auto"
