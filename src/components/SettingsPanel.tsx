@@ -24,7 +24,7 @@ import {
   HandyKeysEvent,
   PostProcessSettings,
 } from "../lib/tauri";
-import { MODEL_ORDER, SUPPORTED_LANGUAGES, getModelDisplayName, getModelSize } from "../lib/models";
+import { MODEL_ORDER, SUPPORTED_LANGUAGES, getModelDisplayName, getModelSize, isGatedModel } from "../lib/models";
 import { formatHotkey } from "../lib/format";
 import { DEFAULT_POSTPROCESS_PROMPT, DEFAULT_SUMMARIZE_PROMPT } from "../lib/prompts";
 
@@ -41,6 +41,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     device_name: null,
     model_name: null,
     postprocess: { enabled: false, dictionary: {} },
+    gated_access: { enabled: false, hf_token: null },
   });
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [modelName, setModelName] = useState<string>("mlx-community/Qwen3-ASR-0.6B-8bit");
@@ -530,15 +531,18 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                           className="bg-transparent font-mono text-xs appearance-none cursor-pointer focus:outline-none w-full"
                           style={{ color: "var(--text-primary)" }}
                         >
-                          {availableModels.map((model) => (
-                            <option
-                              key={model}
-                              value={model}
-                              className="bg-surface"
-                            >
-                              {getModelDisplayName(model)} {getModelSize(model)}
-                            </option>
-                          ))}
+                          {availableModels
+                            .filter((model) => !isGatedModel(model) || settings.gated_access.enabled)
+                            .map((model) => (
+                              <option
+                                key={model}
+                                value={model}
+                                className="bg-surface"
+                              >
+                                {getModelDisplayName(model)} {getModelSize(model)}
+                                {isGatedModel(model) ? " · Gated" : ""}
+                              </option>
+                            ))}
                         </select>
                         <svg
                           className="w-4 h-4 flex-shrink-0"
@@ -1086,6 +1090,142 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                     )}
                   </div>
                 )}
+              </section>
+
+              {/* Gated Models Section (Advanced) */}
+              <section className="flex flex-col gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div
+                    className="w-6 h-6 rounded-md flex items-center justify-center"
+                    style={{ backgroundColor: "rgba(212, 165, 116, 0.12)" }}
+                  >
+                    <svg
+                      className="w-3.5 h-3.5"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="var(--glow-processing)"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                      <path d="M7 11V7a5 5 0 0110 0v4" />
+                    </svg>
+                  </div>
+                  <span
+                    className="text-sm font-medium"
+                    style={{ color: "var(--text-primary)" }}
+                  >
+                    Gated Models (Advanced)
+                  </span>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  {/* Enable toggle */}
+                  <div className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between">
+                    <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                      Enable gated models
+                    </span>
+                    <button
+                      onClick={() => {
+                        const newGated = {
+                          ...settings.gated_access,
+                          enabled: !settings.gated_access.enabled,
+                        };
+                        const newSettings = { ...settings, gated_access: newGated };
+                        setSettings(newSettings);
+                        updateSettings(newSettings).catch(console.error);
+                      }}
+                      className="relative w-10 h-5 rounded-full transition-colors"
+                      style={{
+                        backgroundColor: settings.gated_access.enabled
+                          ? "var(--glow-idle)"
+                          : "var(--border-subtle)",
+                      }}
+                      aria-label="Toggle gated models"
+                    >
+                      <div
+                        className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform"
+                        style={{
+                          transform: settings.gated_access.enabled
+                            ? "translateX(22px)"
+                            : "translateX(2px)",
+                        }}
+                      />
+                    </button>
+                  </div>
+
+                  {settings.gated_access.enabled && (
+                    <>
+                      {/* HF token input */}
+                      <div className="flex flex-col gap-1.5">
+                        <label
+                          className="text-xs px-1"
+                          style={{ color: "var(--text-secondary)" }}
+                        >
+                          HuggingFace Access Token
+                        </label>
+                        <input
+                          type="password"
+                          autoComplete="off"
+                          spellCheck={false}
+                          value={settings.gated_access.hf_token ?? ""}
+                          placeholder="hf_xxxxxxxxxxxxxxxxxxxx"
+                          onChange={(e) => {
+                            const token = e.target.value;
+                            const newGated = {
+                              ...settings.gated_access,
+                              hf_token: token === "" ? null : token,
+                            };
+                            const newSettings = { ...settings, gated_access: newGated };
+                            setSettings(newSettings);
+                          }}
+                          onBlur={() => {
+                            updateSettings(settings).catch(console.error);
+                          }}
+                          className="h-12 px-4 rounded-xl bg-surface border border-subtle text-xs font-mono focus:outline-none focus:border-glow-idle"
+                          style={{ color: "var(--text-primary)" }}
+                        />
+                      </div>
+
+                      {/* Help text */}
+                      <div
+                        className="px-3 py-2 rounded-lg text-xs flex flex-col gap-1"
+                        style={{
+                          backgroundColor: "rgba(212, 165, 116, 0.10)",
+                          color: "var(--text-secondary)",
+                        }}
+                      >
+                        <span>
+                          Gated models require you to (1) accept the model license on its
+                          HuggingFace page and (2) provide a personal access token with read
+                          permission. The token is stored locally in your settings file.
+                        </span>
+                        <span style={{ color: "var(--text-tertiary)" }}>
+                          Currently supported: Cohere Transcribe — accept at{" "}
+                          <a
+                            href="https://huggingface.co/CohereLabs/cohere-transcribe-03-2026"
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{ color: "var(--glow-idle)", textDecoration: "underline" }}
+                          >
+                            CohereLabs/cohere-transcribe-03-2026
+                          </a>
+                          , create a token at{" "}
+                          <a
+                            href="https://huggingface.co/settings/tokens"
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{ color: "var(--glow-idle)", textDecoration: "underline" }}
+                          >
+                            huggingface.co/settings/tokens
+                          </a>
+                          .
+                        </span>
+                      </div>
+                    </>
+                  )}
+                </div>
               </section>
 
               {/* Data Section */}

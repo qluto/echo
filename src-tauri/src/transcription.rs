@@ -27,6 +27,8 @@ struct ASRRequest {
     language: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hf_token: Option<String>,
 }
 
 impl ASRRequest {
@@ -37,6 +39,7 @@ impl ASRRequest {
             audio_path: None,
             language: None,
             model_name: None,
+            hf_token: None,
         }
     }
 }
@@ -200,7 +203,7 @@ impl ASREngine {
     }
 
     /// Start the ASR engine sidecar
-    pub fn start(&mut self, app: &AppHandle) -> Result<()> {
+    pub fn start(&mut self, app: &AppHandle, hf_token: Option<&str>) -> Result<()> {
         if self.process.is_some() {
             log::info!("ASR engine already running");
             return Ok(());
@@ -288,6 +291,13 @@ impl ASREngine {
             .stderr(Stdio::inherit())
             .env("HF_HOME", &cache_dir)
             .env("TORCH_HOME", &cache_dir);
+
+        // Inject HuggingFace token if user opted into gated models.
+        // Never log the token itself; only whether one is set.
+        if let Some(token) = hf_token.filter(|t| !t.is_empty()) {
+            cmd.env("HF_TOKEN", token);
+            log::info!("HF_TOKEN configured for ASR engine (length={})", token.len());
+        }
 
         let mut child = cmd
             .spawn()
@@ -501,6 +511,22 @@ impl ASREngine {
         })
     }
 
+    /// Update the HuggingFace token in the running sidecar.
+    /// Pass None to unset. Takes effect for subsequent model downloads.
+    pub fn set_hf_token(&mut self, token: Option<&str>) -> Result<()> {
+        // If the sidecar is not yet running there is nothing to update —
+        // the token will be picked up via env var at spawn time.
+        if self.process.is_none() {
+            return Ok(());
+        }
+        let mut request = ASRRequest::new("set_hf_token", self.next_id());
+        request.hf_token = Some(token.unwrap_or("").to_string());
+        let response: EngineResponse<ModelOperationResult> =
+            self.get_process()?.send_command(&request)?;
+        let _ = response.into_result("Failed to set HF token")?;
+        Ok(())
+    }
+
     /// Set the model (requires reload)
     pub fn set_model(&mut self, model_name: &str) -> Result<ModelStatus> {
         let mut request = ASRRequest::new("set_model", self.next_id());
@@ -581,6 +607,7 @@ impl ASREngine {
             audio_path: Some(audio_path.to_string()),
             language: language.map(|s| s.to_string()),
             model_name: None,
+            hf_token: None,
         };
 
         log::info!(

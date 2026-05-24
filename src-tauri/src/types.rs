@@ -15,6 +15,8 @@ pub struct Settings {
     pub model_name: Option<String>,
     #[serde(default)]
     pub postprocess: PostProcessSettings,
+    #[serde(default)]
+    pub gated_access: GatedAccessSettings,
 }
 
 impl Default for Settings {
@@ -26,8 +28,20 @@ impl Default for Settings {
             device_name: None,
             model_name: None,
             postprocess: PostProcessSettings::default(),
+            gated_access: GatedAccessSettings::default(),
         }
     }
+}
+
+/// Settings for accessing gated HuggingFace models (e.g. Cohere Transcribe).
+/// The token is stored in the same plaintext settings.json as other settings —
+/// the threat model matches HuggingFace CLI's own ~/.cache/huggingface/token.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct GatedAccessSettings {
+    /// User explicitly opted in to use gated models.
+    pub enabled: bool,
+    /// HuggingFace personal access token. None = not configured.
+    pub hf_token: Option<String>,
 }
 
 pub const SETTINGS_STORE_FILE: &str = "settings.json";

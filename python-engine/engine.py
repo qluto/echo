@@ -61,6 +61,21 @@ def run_daemon(engine: ASREngine):
                     "result": {"pong": True}
                 }
 
+            elif command == "set_hf_token":
+                # Dynamically update HuggingFace auth token for gated model downloads.
+                # Empty string unsets the token. Never log the token value itself.
+                token = request.get("hf_token", "")
+                if token:
+                    os.environ["HF_TOKEN"] = token
+                    logger.info(f"HF_TOKEN updated (length={len(token)})")
+                else:
+                    os.environ.pop("HF_TOKEN", None)
+                    logger.info("HF_TOKEN cleared")
+                response = {
+                    "id": request_id,
+                    "result": {"success": True}
+                }
+
             elif command == "get_status":
                 response = {
                     "id": request_id,

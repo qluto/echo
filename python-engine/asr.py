@@ -37,13 +37,24 @@ class ASREngine:
         "mlx-community/Qwen3-ASR-0.6B-8bit",
     ]
 
+    # Cohere Transcribe — gated model; requires HF_TOKEN + license acceptance
+    # at https://huggingface.co/CohereLabs/cohere-transcribe-03-2026
+    COHERE_ASR_MODELS = [
+        "CohereLabs/cohere-transcribe-03-2026",
+    ]
+
     # All available models
-    AVAILABLE_MODELS = QWEN3_ASR_MODELS + WHISPER_MODELS
+    AVAILABLE_MODELS = QWEN3_ASR_MODELS + COHERE_ASR_MODELS + WHISPER_MODELS
 
     @staticmethod
     def is_qwen3_model(model_name: str) -> bool:
         """Check if a model is a Qwen3-ASR model"""
         return "Qwen3-ASR" in model_name
+
+    @staticmethod
+    def is_cohere_model(model_name: str) -> bool:
+        """Check if a model is a Cohere Transcribe model"""
+        return "cohere-transcribe" in model_name.lower()
 
     def __init__(self, model_name: str = "mlx-community/Qwen3-ASR-0.6B-8bit"):
         self.model_name = model_name
@@ -52,7 +63,7 @@ class ASREngine:
         self._load_error: Optional[str] = None
         self._model = None
         self._generate_fn = None
-        self._model_type: Optional[str] = None  # "whisper" or "qwen3"
+        self._model_type: Optional[str] = None  # "whisper", "qwen3", or "cohere"
         self._vad = VoiceActivityDetector()  # VAD for speech detection
         self._postprocessor = PostProcessor()  # LLM post-processor
 
@@ -134,6 +145,14 @@ class ASREngine:
                 self._model_type = "qwen3"
                 self._generate_fn = None  # Qwen3 uses model.generate() directly
                 logger.info(f"Qwen3-ASR model loaded: {self.model_name}")
+            elif self.is_cohere_model(self.model_name):
+                # Load Cohere Transcribe (gated — requires HF_TOKEN env var)
+                from mlx_audio.stt import load as load_cohere
+
+                self._model = load_cohere(self.model_name)
+                self._model_type = "cohere"
+                self._generate_fn = None  # Cohere uses model.generate() directly
+                logger.info(f"Cohere Transcribe model loaded: {self.model_name}")
             else:
                 # Load Whisper model using the original API
                 from mlx_audio.stt.utils import load_model
@@ -166,7 +185,19 @@ class ASREngine:
 
         except Exception as e:
             self._loading = False
-            self._load_error = f"Failed to load model: {e}"
+            err_str = str(e)
+            # Improve UX for gated-model auth failures
+            if self.is_cohere_model(self.model_name) and (
+                "401" in err_str or "403" in err_str or "gated" in err_str.lower() or "unauthorized" in err_str.lower()
+            ):
+                self._load_error = (
+                    f"Access to {self.model_name} requires a HuggingFace token "
+                    f"and acceptance of the model license. "
+                    f"Visit https://huggingface.co/{self.model_name} to accept the license, "
+                    f"then enter your HF token in Echo's Advanced Settings."
+                )
+            else:
+                self._load_error = f"Failed to load model: {e}"
             logger.error(self._load_error)
             return {"success": False, "error": self._load_error}
 
@@ -215,8 +246,8 @@ class ASREngine:
             temp_path = self._generate_warmup_audio()
 
             # Run inference to trigger JIT compilation
-            if self._model_type == "qwen3":
-                # Qwen3-ASR warmup
+            if self._model_type in ("qwen3", "cohere"):
+                # Qwen3-ASR / Cohere Transcribe warmup (both use model.generate())
                 self._model.generate(temp_path)
             else:
                 # Whisper warmup
@@ -325,6 +356,9 @@ class ASREngine:
             if self._model_type == "qwen3":
                 # Use Qwen3-ASR API
                 result = self._transcribe_qwen3(audio_path, effective_language)
+            elif self._model_type == "cohere":
+                # Use Cohere Transcribe API
+                result = self._transcribe_cohere(audio_path, effective_language)
             else:
                 # Use Whisper API
                 result = self._transcribe_whisper(audio_path, effective_language)
@@ -394,6 +428,45 @@ class ASREngine:
         detected_language = result.language if hasattr(result, 'language') and result.language else "auto"
 
         # Convert segments to our format
+        segments = []
+        if hasattr(result, 'segments') and result.segments:
+            for seg in result.segments:
+                if hasattr(seg, 'start') and hasattr(seg, 'end') and hasattr(seg, 'text'):
+                    segments.append({
+                        "start": float(seg.start),
+                        "end": float(seg.end),
+                        "text": seg.text.strip()
+                    })
+                elif isinstance(seg, dict):
+                    segments.append({
+                        "start": float(seg.get("start", 0)),
+                        "end": float(seg.get("end", 0)),
+                        "text": seg.get("text", "").strip()
+                    })
+
+        return {
+            "text": text,
+            "segments": segments,
+            "detected_language": detected_language
+        }
+
+    def _transcribe_cohere(self, audio_path: str, language: Optional[str]) -> dict:
+        """Transcribe using Cohere Transcribe model.
+
+        Cohere accepts ISO language codes directly (e.g. "en", "ja", "zh").
+        Supported: ar, de, el, en, es, fr, it, ja, ko, nl, pl, pt, vi, zh.
+        """
+        logger.info(f"Calling Cohere Transcribe generate with language={language}")
+
+        kwargs = {}
+        if language:
+            kwargs["language"] = language
+
+        result = self._model.generate(audio_path, **kwargs)
+
+        text = result.text.strip() if hasattr(result, 'text') else ""
+        detected_language = result.language if hasattr(result, 'language') and result.language else "auto"
+
         segments = []
         if hasattr(result, 'segments') and result.segments:
             for seg in result.segments:

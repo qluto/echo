@@ -142,14 +142,46 @@ pub fn update_settings(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    log::info!("Updating settings: language={}, hotkey={}, auto_insert={}, model={:?}",
-        settings.language, settings.hotkey, settings.auto_insert, settings.model_name);
-    let mut current_settings = state.settings.lock().map_err(|e| e.to_string())?;
-    *current_settings = settings.clone();
-    drop(current_settings);
+    log::info!(
+        "Updating settings: language={}, hotkey={}, auto_insert={}, model={:?}, gated_enabled={}, hf_token_set={}",
+        settings.language,
+        settings.hotkey,
+        settings.auto_insert,
+        settings.model_name,
+        settings.gated_access.enabled,
+        settings.gated_access.hf_token.as_ref().is_some_and(|t| !t.is_empty()),
+    );
 
-    // Persist to store
+    // Detect whether the effective HF token changed so we can push it into the sidecar.
+    let new_effective_token = if settings.gated_access.enabled {
+        settings.gated_access.hf_token.clone().filter(|t| !t.is_empty())
+    } else {
+        None
+    };
+    let token_changed = {
+        let current = state.settings.lock().map_err(|e| e.to_string())?;
+        let old_effective = if current.gated_access.enabled {
+            current.gated_access.hf_token.clone().filter(|t| !t.is_empty())
+        } else {
+            None
+        };
+        old_effective != new_effective_token
+    };
+
+    {
+        let mut current_settings = state.settings.lock().map_err(|e| e.to_string())?;
+        *current_settings = settings.clone();
+    }
+
     save_settings_to_store(&app, &settings)?;
+
+    if token_changed {
+        let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
+        if let Err(e) = asr_engine.set_hf_token(new_effective_token.as_deref()) {
+            log::warn!("Failed to update HF token in running sidecar: {}", e);
+        }
+    }
+
     Ok(())
 }
 
@@ -192,14 +224,24 @@ pub fn start_asr_engine(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    asr_engine.start(&app).map_err(|e| e.to_string())?;
+
+    // Snapshot the bits we need from settings without holding the lock during sidecar spawn.
+    let (saved_model, hf_token) = {
+        let settings = state.settings.lock().map_err(|e| e.to_string())?;
+        let token = if settings.gated_access.enabled {
+            settings.gated_access.hf_token.clone()
+        } else {
+            None
+        };
+        (settings.model_name.clone(), token)
+    };
+
+    asr_engine
+        .start(&app, hf_token.as_deref())
+        .map_err(|e| e.to_string())?;
 
     // Apply saved model after engine is running.
     // setup() cannot apply it because the sidecar process does not exist yet.
-    let saved_model = {
-        let settings = state.settings.lock().map_err(|e| e.to_string())?;
-        settings.model_name.clone()
-    };
     if let Some(model_name) = saved_model {
         if let Err(e) = asr_engine.set_model(&model_name) {
             log::warn!("Failed to apply saved model '{}' on engine start: {}", model_name, e);

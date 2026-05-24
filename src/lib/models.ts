@@ -7,6 +7,8 @@ export const MODEL_SIZES: Record<string, string> = {
   // Qwen3-ASR models
   "mlx-community/Qwen3-ASR-1.7B-8bit": "1.7B",
   "mlx-community/Qwen3-ASR-0.6B-8bit": "0.6B",
+  // Cohere Transcribe (gated; BF16 ~4GB)
+  "CohereLabs/cohere-transcribe-03-2026": "2B",
   // Whisper models
   "mlx-community/whisper-large-v3-turbo": "Turbo",
   "mlx-community/whisper-large-v3": "1.5B",
@@ -19,6 +21,7 @@ export const MODEL_SIZES: Record<string, string> = {
 export const MODEL_ORDER = [
   "mlx-community/Qwen3-ASR-0.6B-8bit",
   "mlx-community/Qwen3-ASR-1.7B-8bit",
+  "CohereLabs/cohere-transcribe-03-2026",
   "mlx-community/whisper-large-v3-turbo",
   "mlx-community/whisper-large-v3",
   "mlx-community/whisper-medium",
@@ -26,6 +29,14 @@ export const MODEL_ORDER = [
   "mlx-community/whisper-base",
   "mlx-community/whisper-tiny",
 ];
+
+/// Models that require user-provided HF authentication and license acceptance.
+/// Hidden from the model picker unless the user opts in via Advanced Settings.
+export const GATED_MODELS = new Set<string>([
+  "CohereLabs/cohere-transcribe-03-2026",
+]);
+
+export const isGatedModel = (name: string): boolean => GATED_MODELS.has(name);
 
 export const SUPPORTED_LANGUAGES = [
   { code: "auto", name: "Auto-detect" },
@@ -48,6 +59,10 @@ export const getModelDisplayName = (name: string): string => {
       .replace("Qwen3-ASR-", "Qwen3-ASR ");
   }
 
+  if (modelPart.toLowerCase().includes("cohere-transcribe")) {
+    return "Cohere Transcribe 2B";
+  }
+
   return modelPart
     .replace("whisper-", "Whisper ")
     .split("-")
@@ -61,6 +76,7 @@ export const getModelSize = (name: string): string => {
 
 export const getModelFamily = (name: string): string => {
   if (name.includes("Qwen3-ASR")) return "Qwen3";
+  if (name.toLowerCase().includes("cohere-transcribe")) return "Cohere";
   if (name.includes("whisper")) return "Whisper";
   return "Unknown";
 };

@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "mlx>=0.20.0",
-    "mlx-audio>=0.3.1",
+    "mlx-audio>=0.4.0",
     "mlx-lm>=0.24.0",
     "soundfile>=0.12.1",
     "librosa>=0.10.1",
