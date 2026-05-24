@@ -424,8 +424,10 @@ class ASREngine:
 
         # Parse result
         text = result.text.strip() if hasattr(result, 'text') else ""
-        # Qwen3-ASR may return None for language, default to "auto"
-        detected_language = result.language if hasattr(result, 'language') and result.language else "auto"
+        # mlx-audio >=0.4.0 returns language as a per-segment list (e.g. ["Japanese", "Japanese"])
+        # while older versions returned a single string. Coerce to a single string so the Rust
+        # side (which expects `language: String`) can deserialize.
+        detected_language = self._coerce_language(getattr(result, 'language', None))
 
         # Convert segments to our format
         segments = []
@@ -450,6 +452,20 @@ class ASREngine:
             "detected_language": detected_language
         }
 
+    @staticmethod
+    def _coerce_language(value) -> str:
+        """Coerce a language field that may be str | list[str] | None to a single string."""
+        if value is None:
+            return "auto"
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                if item:
+                    return str(item)
+            return "auto"
+        return str(value)
+
     def _transcribe_cohere(self, audio_path: str, language: Optional[str]) -> dict:
         """Transcribe using Cohere Transcribe model.
 
@@ -465,7 +481,7 @@ class ASREngine:
         result = self._model.generate(audio_path, **kwargs)
 
         text = result.text.strip() if hasattr(result, 'text') else ""
-        detected_language = result.language if hasattr(result, 'language') and result.language else "auto"
+        detected_language = self._coerce_language(getattr(result, 'language', None))
 
         segments = []
         if hasattr(result, 'segments') and result.segments:
@@ -510,7 +526,8 @@ class ASREngine:
 
         # Parse result - STTOutput object with text, segments, language attributes
         text = result.text.strip() if hasattr(result, 'text') else ""
-        detected_language = result.language if hasattr(result, 'language') else None
+        # mlx-audio's STTOutput language shape changed across versions — coerce defensively
+        detected_language = self._coerce_language(getattr(result, 'language', None))
 
         # Convert segments to our format
         segments = []
