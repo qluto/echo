@@ -215,9 +215,22 @@ Three ASR models run **fully in Rust in-process** (no Python sidecar) via the
 - **Cohere Transcribe** (gated, opt-in) → `CohereEngine`, a full-Rust MLX port
   (`mlx-rs` / Apple MLX). Gated checkpoint fetched via `hf-hub` with the HF token.
 
-Note: Whisper uses whisper.cpp's Metal backend while Parakeet/Cohere use MLX's;
-both coexist in-process, serialized by the `ASREngine` mutex (concurrent Metal
-command encoding across the two backends is unsafe, so never run them in
+**Post-processing** also runs in-process: `rust_asr::PostProcessor` is a full-Rust
+mlx-rs port of Qwen3 (4-bit quantized: quantized_matmul + dequantize, GQA, RoPE,
+per-head q/k RMSNorm, SwiGLU, tied lm_head). It runs in **BF16** to match mlx-lm
+bit-for-bit (validated: identical cleaned output vs the Python postprocessor on
+the same model). `ASREngine.postprocess_text` / `summarize_transcriptions` /
+`*_postprocess_model` route to it; the Qwen3 chat template is applied manually
+with the `enable_thinking=False` empty-`<think>` priming for cleanup and thinking
+mode for summaries. Models: Qwen3-8B/4B/1.7B-4bit (default 4B).
+
+With ASR (Whisper/Parakeet/Cohere) and post-processing (Qwen3) all in-process,
+the **Python sidecar is no longer needed** for the default experience — it stays
+only as an optional fallback for unported ASR models (e.g. Qwen3-ASR).
+
+Note: Whisper uses whisper.cpp's Metal backend while Parakeet/Cohere/Qwen3 use
+MLX's; both coexist in-process, serialized by the `ASREngine` mutex (concurrent
+Metal command encoding across the two backends is unsafe, so never run them in
 parallel — cargo tests for these must use `--test-threads=1`).
 
 `ASREngine` in `transcription.rs` dispatches internally: for Whisper/Cohere it

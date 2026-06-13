@@ -13,7 +13,15 @@ use std::time::Duration;
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager};
 
-use rust_asr::{CohereEngine, ParakeetEngine, WhisperEngine};
+use rust_asr::{CohereEngine, ParakeetEngine, PostProcessor, WhisperEngine};
+
+/// Post-processing LLMs supported by the in-process Qwen3 engine.
+const POSTPROCESS_MODELS: [&str; 3] = [
+    "mlx-community/Qwen3-8B-4bit",
+    "mlx-community/Qwen3-4B-4bit",
+    "mlx-community/Qwen3-1.7B-4bit",
+];
+const DEFAULT_POSTPROCESS_MODEL: &str = "mlx-community/Qwen3-4B-4bit";
 
 use crate::{TranscriptionResult, TranscriptionSegment};
 
@@ -179,6 +187,10 @@ pub struct ASREngine {
     /// In-process Parakeet engine (full-Rust MLX), Japanese-specialized.
     parakeet: Option<ParakeetEngine>,
     parakeet_loaded: bool,
+    /// In-process post-processing LLM (Qwen3, full-Rust MLX).
+    postproc: Option<PostProcessor>,
+    postproc_loaded: bool,
+    postproc_model: String,
     /// Currently selected ASR model id (drives the in-process vs sidecar dispatch).
     active_model: String,
     /// HF hub cache root (`<appcache>/huggingface/hub`), captured at start().
@@ -198,6 +210,9 @@ impl ASREngine {
             whisper_loaded: false,
             parakeet: None,
             parakeet_loaded: false,
+            postproc: None,
+            postproc_loaded: false,
+            postproc_model: DEFAULT_POSTPROCESS_MODEL.to_string(),
             active_model: String::new(),
             cohere_hub_dir: None,
             hf_token: None,
@@ -987,150 +1002,90 @@ impl ASREngine {
         })
     }
 
-    // ===== Post-processing methods =====
+    // ===== Post-processing methods (in-process Qwen3, full Rust) =====
 
-    /// Send a JSON value command and return the result as serde_json::Value
-    fn send_json_command(&mut self, request: &serde_json::Value, context: &str) -> Result<serde_json::Value> {
-        let response: EngineResponse<serde_json::Value> =
-            self.get_process()?.send_command(request)?;
-        response.into_result(context)
-    }
-
-    /// Load the post-processing model
-    pub fn load_postprocess_model(&mut self) -> Result<crate::PostProcessModelStatus> {
-        let request = serde_json::json!({
-            "command": "load_postprocess_model",
-            "id": self.next_id(),
-        });
-        let result = self.send_json_command(&request, "Failed to load post-process model")?;
-
-        Ok(crate::PostProcessModelStatus {
-            model_name: result
-                .get("model_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string(),
-            loaded: result
-                .get("success")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
+    fn postproc_status(&self, loaded: bool, error: Option<String>) -> crate::PostProcessModelStatus {
+        crate::PostProcessModelStatus {
+            model_name: self.postproc_model.clone(),
+            loaded,
             loading: false,
-            error: result
-                .get("error")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            available_models: vec![],
-        })
+            error,
+            available_models: POSTPROCESS_MODELS.iter().map(|s| s.to_string()).collect(),
+        }
     }
 
-    /// Unload the post-processing model
+    /// Load the post-processing LLM (Qwen3) in-process.
+    pub fn load_postprocess_model(&mut self) -> Result<crate::PostProcessModelStatus> {
+        if self.postproc_loaded && self.postproc.is_some() {
+            return Ok(self.postproc_status(true, None));
+        }
+        let hub = self
+            .cohere_hub_dir
+            .clone()
+            .ok_or_else(|| anyhow!("Cache dir not set; start the engine first"))?;
+        log::info!(
+            "Loading post-processor (Qwen3) in-process: {}",
+            self.postproc_model
+        );
+        match PostProcessor::load(&hub, &self.postproc_model) {
+            Ok(pp) => {
+                self.postproc = Some(pp);
+                self.postproc_loaded = true;
+                log::info!("Post-processor loaded");
+                Ok(self.postproc_status(true, None))
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                log::error!("Failed to load post-processor: {}", msg);
+                Ok(self.postproc_status(false, Some(msg)))
+            }
+        }
+    }
+
+    /// Unload the post-processing model to free memory.
     pub fn unload_postprocess_model(&mut self) -> Result<()> {
-        let request = serde_json::json!({
-            "command": "unload_postprocess_model",
-            "id": self.next_id(),
-        });
-        self.send_json_command(&request, "Failed to unload post-process model")?;
+        self.postproc = None;
+        self.postproc_loaded = false;
         Ok(())
     }
 
-    /// Check if the post-processing model is cached
+    /// Check if the post-processing model is present in the shared HF cache.
     pub fn is_postprocess_model_cached(&mut self) -> Result<crate::PostProcessModelStatus> {
-        let request = serde_json::json!({
-            "command": "is_postprocess_model_cached",
-            "id": self.next_id(),
-        });
-        let result = self.send_json_command(&request, "Failed to check post-process model cache")?;
-
+        let repo = format!("models--{}", self.postproc_model.replace('/', "--"));
+        let cached = self
+            .cohere_hub_dir
+            .as_ref()
+            .map(|hub| hub.join(&repo).join("snapshots").exists())
+            .unwrap_or(false);
         Ok(crate::PostProcessModelStatus {
-            model_name: result
-                .get("model_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string(),
-            loaded: result
-                .get("cached")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
+            model_name: self.postproc_model.clone(),
+            loaded: cached,
             loading: false,
             error: None,
-            available_models: vec![],
+            available_models: POSTPROCESS_MODELS.iter().map(|s| s.to_string()).collect(),
         })
     }
 
-    /// Set the post-processing model
+    /// Set the post-processing model (requires reload).
     pub fn set_postprocess_model(
         &mut self,
         model_name: &str,
     ) -> Result<crate::PostProcessModelStatus> {
-        let request = serde_json::json!({
-            "command": "set_postprocess_model",
-            "id": self.next_id(),
-            "model_name": model_name,
-        });
-        let result = self.send_json_command(&request, "Failed to set post-process model")?;
-
-        if result.get("success").and_then(|v| v.as_bool()) == Some(false) {
-            return Err(anyhow!(
-                "Failed to set post-process model: {}",
-                result
-                    .get("error")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown error")
-            ));
+        if !POSTPROCESS_MODELS.contains(&model_name) {
+            return Err(anyhow!("Unknown post-process model: {}", model_name));
         }
-
-        Ok(crate::PostProcessModelStatus {
-            model_name: result
-                .get("model_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or(model_name)
-                .to_string(),
-            loaded: false,
-            loading: false,
-            error: None,
-            available_models: vec![],
-        })
+        self.postproc_model = model_name.to_string();
+        self.postproc = None;
+        self.postproc_loaded = false;
+        Ok(self.postproc_status(false, None))
     }
 
-    /// Get post-processor status
+    /// Get post-processor status.
     pub fn get_postprocess_status(&mut self) -> Result<crate::PostProcessModelStatus> {
-        let request = serde_json::json!({
-            "command": "get_postprocess_status",
-            "id": self.next_id(),
-        });
-        let result = self.send_json_command(&request, "Failed to get post-process status")?;
-
-        Ok(crate::PostProcessModelStatus {
-            model_name: result
-                .get("model_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string(),
-            loaded: result
-                .get("loaded")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            loading: result
-                .get("loading")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            error: result
-                .get("error")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            available_models: result
-                .get("available_models")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default(),
-        })
+        Ok(self.postproc_status(self.postproc_loaded, None))
     }
 
-    /// Post-process transcribed text
+    /// Post-process transcribed text with the in-process LLM.
     pub fn postprocess_text(
         &mut self,
         text: &str,
@@ -1139,68 +1094,82 @@ impl ASREngine {
         dictionary: Option<&std::collections::HashMap<String, String>>,
         custom_prompt: Option<&str>,
     ) -> Result<crate::PostProcessResult> {
-        let request = serde_json::json!({
-            "command": "postprocess_text",
-            "id": self.next_id(),
-            "text": text,
-            "app_name": app_name,
-            "app_bundle_id": app_bundle_id,
-            "dictionary": dictionary,
-            "custom_prompt": custom_prompt,
-        });
-        let result = self.send_json_command(&request, "Post-processing failed")?;
-
-        Ok(crate::PostProcessResult {
-            success: result
-                .get("success")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            processed_text: result
-                .get("processed_text")
-                .and_then(|v| v.as_str())
-                .unwrap_or(text)
-                .to_string(),
-            processing_time_ms: result.get("processing_time_ms").and_then(|v| v.as_f64()),
-            error: result
-                .get("error")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-        })
+        if text.trim().is_empty() {
+            return Ok(crate::PostProcessResult {
+                success: true,
+                processed_text: String::new(),
+                processing_time_ms: Some(0.0),
+                error: None,
+            });
+        }
+        if !self.postproc_loaded || self.postproc.is_none() {
+            self.load_postprocess_model()?;
+        }
+        let pp = self
+            .postproc
+            .as_ref()
+            .ok_or_else(|| anyhow!("Post-processor not loaded"))?;
+        let start = std::time::Instant::now();
+        match pp.process(text, app_name, app_bundle_id, dictionary, custom_prompt) {
+            Ok(out) => Ok(crate::PostProcessResult {
+                success: true,
+                processed_text: out,
+                processing_time_ms: Some(start.elapsed().as_secs_f64() * 1000.0),
+                error: None,
+            }),
+            Err(e) => Ok(crate::PostProcessResult {
+                success: false,
+                processed_text: text.to_string(), // fallback to raw text
+                processing_time_ms: None,
+                error: Some(e.to_string()),
+            }),
+        }
     }
 
-    /// Summarize a list of transcription entries using the LLM
+    /// Summarize a list of transcription entries with the in-process LLM.
     pub fn summarize_transcriptions(
         &mut self,
         texts: &[crate::SummarizeEntry],
         language_hint: Option<&str>,
         custom_prompt: Option<&str>,
     ) -> Result<crate::SummarizeResult> {
-        let request = serde_json::json!({
-            "command": "summarize_transcriptions",
-            "id": self.next_id(),
-            "texts": texts,
-            "language_hint": language_hint,
-            "custom_prompt": custom_prompt,
-        });
-        let result = self.send_json_command(&request, "Summarization failed")?;
-
-        Ok(crate::SummarizeResult {
-            success: result
-                .get("success")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            summary: result
-                .get("summary")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            processing_time_ms: result.get("processing_time_ms").and_then(|v| v.as_f64()),
-            error: result
-                .get("error")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            entry_count: 0, // Set by caller
-        })
+        if texts.is_empty() {
+            return Ok(crate::SummarizeResult {
+                success: true,
+                summary: String::new(),
+                processing_time_ms: Some(0.0),
+                error: None,
+                entry_count: 0,
+            });
+        }
+        if !self.postproc_loaded || self.postproc.is_none() {
+            self.load_postprocess_model()?;
+        }
+        let pp = self
+            .postproc
+            .as_ref()
+            .ok_or_else(|| anyhow!("Post-processor not loaded"))?;
+        let entries: Vec<(String, String)> = texts
+            .iter()
+            .map(|e| (e.created_at.clone(), e.text.clone()))
+            .collect();
+        let start = std::time::Instant::now();
+        match pp.summarize(&entries, language_hint, custom_prompt) {
+            Ok(summary) => Ok(crate::SummarizeResult {
+                success: true,
+                summary,
+                processing_time_ms: Some(start.elapsed().as_secs_f64() * 1000.0),
+                error: None,
+                entry_count: texts.len(),
+            }),
+            Err(e) => Ok(crate::SummarizeResult {
+                success: false,
+                summary: String::new(),
+                processing_time_ms: None,
+                error: Some(e.to_string()),
+                entry_count: texts.len(),
+            }),
+        }
     }
 }
 
@@ -1333,6 +1302,37 @@ mod cohere_inprocess_tests {
         let result = engine.transcribe(wav, Some("ja")).expect("transcribe");
         assert!(result.success);
         eprintln!("in-process parakeet text: {:?}", result.text);
+    }
+
+    /// Post-processing runs in-process via the Qwen3 LLM, no Python sidecar.
+    /// Uses the small 1.7B model; skips if it isn't cached.
+    #[test]
+    fn postprocess_in_process() {
+        let home = match std::env::var("HOME") {
+            Ok(h) => h,
+            Err(_) => return,
+        };
+        let hub = PathBuf::from(&home).join("Library/Caches/io.qluto.echo/huggingface/hub");
+        if !hub.join("models--mlx-community--Qwen3-1.7B-4bit").exists() {
+            eprintln!("skipping: Qwen3-1.7B-4bit not cached");
+            return;
+        }
+
+        let mut engine = ASREngine::new();
+        engine.cohere_hub_dir = Some(hub);
+        engine
+            .set_postprocess_model("mlx-community/Qwen3-1.7B-4bit")
+            .expect("set postproc model");
+
+        let status = engine.load_postprocess_model().expect("load postproc");
+        assert!(status.loaded, "postproc error: {:?}", status.error);
+
+        let r = engine
+            .postprocess_text("えーと、3時に、いや4時に会議があります。", None, None, None, None)
+            .expect("postprocess");
+        assert!(r.success);
+        assert!(!r.processed_text.trim().is_empty());
+        eprintln!("postprocessed: {:?}", r.processed_text);
     }
 }
 

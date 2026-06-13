@@ -128,6 +128,24 @@ fn main() -> Result<()> {
             println!("text: {:?} in {:?}", out.text, t.elapsed());
             Ok(())
         }
+        "pp" => {
+            // Post-process cleanup: pp "<text>" [model_id]
+            let text = args.get(2).ok_or_else(|| anyhow!("usage: pp <text> [model]"))?;
+            let model = args
+                .get(3)
+                .map(String::as_str)
+                .unwrap_or("mlx-community/Qwen3-1.7B-4bit");
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let t = std::time::Instant::now();
+            let pp = rust_asr::PostProcessor::load(std::path::Path::new(&hub), model)?;
+            println!("postproc loaded in {:?}", t.elapsed());
+            let t = std::time::Instant::now();
+            let out = pp.process(text, None, None, None, None)?;
+            println!("in:  {text:?}");
+            println!("out: {out:?} ({:?})", t.elapsed());
+            Ok(())
+        }
         "whisper" => {
             // CLI check for the Whisper engine: whisper <wav> <lang> [model_id]
             let wav = args.get(2).ok_or_else(|| anyhow!("usage: whisper <wav> <lang> [model]"))?;
