@@ -13,7 +13,7 @@ use std::time::Duration;
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager};
 
-use rust_asr::{CohereEngine, WhisperEngine};
+use rust_asr::{CohereEngine, ParakeetEngine, WhisperEngine};
 
 use crate::{TranscriptionResult, TranscriptionSegment};
 
@@ -176,6 +176,9 @@ pub struct ASREngine {
     /// In-process Whisper engine (whisper.cpp), the non-gated default path.
     whisper: Option<WhisperEngine>,
     whisper_loaded: bool,
+    /// In-process Parakeet engine (full-Rust MLX), Japanese-specialized.
+    parakeet: Option<ParakeetEngine>,
+    parakeet_loaded: bool,
     /// Currently selected ASR model id (drives the in-process vs sidecar dispatch).
     active_model: String,
     /// HF hub cache root (`<appcache>/huggingface/hub`), captured at start().
@@ -193,6 +196,8 @@ impl ASREngine {
             cohere_loaded: false,
             whisper: None,
             whisper_loaded: false,
+            parakeet: None,
+            parakeet_loaded: false,
             active_model: String::new(),
             cohere_hub_dir: None,
             hf_token: None,
@@ -508,6 +513,24 @@ impl ASREngine {
             return Ok(self.in_process_status(true));
         }
 
+        // Parakeet → load the in-process full-Rust MLX engine (JA-specialized).
+        if rust_asr::is_parakeet_model(&self.active_model) {
+            if self.parakeet_loaded && self.parakeet.is_some() {
+                return Ok(self.in_process_status(true));
+            }
+            let hub = self
+                .cohere_hub_dir
+                .clone()
+                .ok_or_else(|| anyhow!("Cache dir not set; start the engine first"))?;
+            log::info!("Loading Parakeet model in-process (full Rust / MLX)...");
+            let engine = ParakeetEngine::load(&hub)
+                .map_err(|e| anyhow!("Failed to load Parakeet engine: {}", e))?;
+            self.parakeet = Some(engine);
+            self.parakeet_loaded = true;
+            log::info!("Parakeet in-process engine loaded");
+            return Ok(self.in_process_status(true));
+        }
+
         // Any other model needs the Python sidecar. Fail fast with a clear
         // message if it isn't running (rather than hanging the load screen).
         if self.process.is_none() {
@@ -598,6 +621,25 @@ impl ASREngine {
                 error: Some("Whisper engine not loaded".to_string()),
             });
         }
+
+        // Parakeet → warm up the in-process engine.
+        if rust_asr::is_parakeet_model(&self.active_model) {
+            if let Some(engine) = self.parakeet.as_ref() {
+                let start = std::time::Instant::now();
+                let result = engine.warmup();
+                let ms = start.elapsed().as_secs_f64() * 1000.0;
+                return Ok(WarmupResult {
+                    success: result.is_ok(),
+                    warmup_time_ms: Some(ms),
+                    error: result.err().map(|e| e.to_string()),
+                });
+            }
+            return Ok(WarmupResult {
+                success: false,
+                warmup_time_ms: None,
+                error: Some("Parakeet engine not loaded".to_string()),
+            });
+        }
         // Non-in-process models without a sidecar: nothing to warm up.
         if self.process.is_none() {
             return Ok(WarmupResult { success: false, warmup_time_ms: None, error: None });
@@ -672,13 +714,17 @@ impl ASREngine {
 
     /// Whether the given model id is served by an in-process Rust engine.
     fn is_in_process(name: &str) -> bool {
-        rust_asr::is_cohere_model(name) || rust_asr::is_whisper_model(name)
+        rust_asr::is_cohere_model(name)
+            || rust_asr::is_whisper_model(name)
+            || rust_asr::is_parakeet_model(name)
     }
 
     /// Loaded state of the currently-active in-process engine.
     fn in_process_loaded(&self) -> bool {
         if rust_asr::is_whisper_model(&self.active_model) {
             self.whisper_loaded
+        } else if rust_asr::is_parakeet_model(&self.active_model) {
+            self.parakeet_loaded
         } else {
             self.cohere_loaded
         }
@@ -690,34 +736,34 @@ impl ASREngine {
             Some("models--CohereLabs--cohere-transcribe-03-2026")
         } else if rust_asr::is_whisper_model(name) {
             Some("models--ggerganov--whisper.cpp")
+        } else if rust_asr::is_parakeet_model(name) {
+            Some("models--mlx-community--parakeet-tdt_ctc-0.6b-ja")
         } else {
             None
         }
     }
 
-    /// Set the model (requires reload). In-process models (Cohere, Whisper) are
-    /// tracked locally with no Python involvement; others forward to the sidecar.
-    pub fn set_model(&mut self, model_name: &str) -> Result<ModelStatus> {
-        self.active_model = model_name.to_string();
-        if Self::is_in_process(model_name) {
-            // Drop the *other* in-process engine to free memory; force a reload
-            // of the selected one on the next load_model.
-            if rust_asr::is_cohere_model(model_name) {
-                self.whisper = None;
-                self.whisper_loaded = false;
-                self.cohere_loaded = false;
-            } else {
-                self.cohere = None;
-                self.cohere_loaded = false;
-                self.whisper_loaded = false;
-            }
-            return Ok(self.in_process_status(false));
-        }
-        // Non-in-process model: drop both engines and forward to the sidecar.
+    /// Drop all in-process engines and reset their loaded flags.
+    fn drop_in_process_engines(&mut self) {
         self.cohere = None;
         self.cohere_loaded = false;
         self.whisper = None;
         self.whisper_loaded = false;
+        self.parakeet = None;
+        self.parakeet_loaded = false;
+    }
+
+    /// Set the model (requires reload). In-process models (Cohere, Whisper,
+    /// Parakeet) are tracked locally with no Python involvement; others forward
+    /// to the sidecar.
+    pub fn set_model(&mut self, model_name: &str) -> Result<ModelStatus> {
+        self.active_model = model_name.to_string();
+        // Free any previously-loaded in-process engine; the selected one loads
+        // fresh on the next load_model.
+        self.drop_in_process_engines();
+        if Self::is_in_process(model_name) {
+            return Ok(self.in_process_status(false));
+        }
 
         if self.process.is_none() {
             return Err(anyhow!(
@@ -830,6 +876,36 @@ impl ASREngine {
             };
             log::info!(
                 "Whisper (in-process) transcription complete: {} chars",
+                out.text.len()
+            );
+            return Ok(TranscriptionResult {
+                success: true,
+                text: out.text,
+                segments: vec![],
+                language: out.language,
+                no_speech,
+            });
+        }
+
+        // Parakeet → transcribe in-process (full-Rust MLX, Japanese).
+        if rust_asr::is_parakeet_model(&self.active_model) {
+            if !self.parakeet_loaded || self.parakeet.is_none() {
+                self.load_model()?;
+            }
+            let engine = self
+                .parakeet
+                .as_ref()
+                .ok_or_else(|| anyhow!("Parakeet engine not loaded"))?;
+            let out = engine
+                .transcribe_wav(audio_path, language.unwrap_or("ja"))
+                .map_err(|e| anyhow!("Parakeet transcription failed: {}", e))?;
+            let no_speech = if out.text.trim().is_empty() {
+                Some(true)
+            } else {
+                None
+            };
+            log::info!(
+                "Parakeet (in-process) transcription complete: {} chars",
                 out.text.len()
             );
             return Ok(TranscriptionResult {
@@ -1221,6 +1297,42 @@ mod cohere_inprocess_tests {
         let result = engine.transcribe(wav, Some("en")).expect("transcribe");
         assert!(result.success);
         eprintln!("in-process whisper text: {:?}", result.text);
+    }
+
+    /// Parakeet (JA) routes through the in-process full-Rust MLX engine.
+    /// Skips if the model isn't cached locally.
+    #[test]
+    fn parakeet_routes_in_process() {
+        let home = match std::env::var("HOME") {
+            Ok(h) => h,
+            Err(_) => return,
+        };
+        let hub = PathBuf::from(&home).join("Library/Caches/io.qluto.echo/huggingface/hub");
+        if !hub
+            .join("models--mlx-community--parakeet-tdt_ctc-0.6b-ja")
+            .exists()
+        {
+            eprintln!("skipping: parakeet model not cached");
+            return;
+        }
+
+        let mut engine = ASREngine::new();
+        engine.cohere_hub_dir = Some(hub);
+
+        let set = engine
+            .set_model("mlx-community/parakeet-tdt_ctc-0.6b-ja")
+            .expect("set_model");
+        assert!(rust_asr::is_parakeet_model(&set.model_name));
+
+        let status = engine.load_model().expect("load parakeet");
+        assert!(status.loaded);
+        let after = engine.get_model_status().expect("status");
+        assert!(after.loaded);
+
+        let wav = concat!(env!("CARGO_MANIFEST_DIR"), "/resources/start_v1.wav");
+        let result = engine.transcribe(wav, Some("ja")).expect("transcribe");
+        assert!(result.success);
+        eprintln!("in-process parakeet text: {:?}", result.text);
     }
 }
 

@@ -200,14 +200,25 @@ This ensures models are removed when the app is uninstalled. The following envir
 
 ### In-Process Rust ASR Engines (`rust-asr/`)
 
-Two ASR models run **fully in Rust in-process** (no Python sidecar) via the
+Three ASR models run **fully in Rust in-process** (no Python sidecar) via the
 `rust-asr` crate:
 - **Whisper** (the non-gated **default**) → `WhisperEngine`, backed by
   whisper.cpp through `whisper-rs` on Metal. Downloads a ggml model from
   `ggerganov/whisper.cpp` (mapped from the `mlx-community/whisper-*` id) into the
   shared HF cache. `whisper-large-v3-turbo` is the default.
+- **Parakeet TDT (JA)** → `ParakeetEngine`, a full-Rust MLX port of
+  `mlx-community/parakeet-tdt_ctc-0.6b-ja` (NVIDIA FastConformer encoder + TDT
+  transducer decoder; CC-BY-4.0, non-gated). Japanese-specialized (CER 6.4% on
+  JSUT), ~160 ms inference. The FastConformer encoder shares the Cohere port's
+  building blocks; the TDT decoder is a hand-rolled 2-layer LSTM prediction net
+  + joint net + greedy transducer loop. f32 weights, no quantization.
 - **Cohere Transcribe** (gated, opt-in) → `CohereEngine`, a full-Rust MLX port
   (`mlx-rs` / Apple MLX). Gated checkpoint fetched via `hf-hub` with the HF token.
+
+Note: Whisper uses whisper.cpp's Metal backend while Parakeet/Cohere use MLX's;
+both coexist in-process, serialized by the `ASREngine` mutex (concurrent Metal
+command encoding across the two backends is unsafe, so never run them in
+parallel — cargo tests for these must use `--test-threads=1`).
 
 `ASREngine` in `transcription.rs` dispatches internally: for Whisper/Cohere it
 routes `load_model`/`transcribe`/`warmup`/status/cache to the in-process engine;

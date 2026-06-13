@@ -9,10 +9,12 @@ pub mod audio;
 pub mod decoder;
 pub mod encoder;
 pub mod nn;
+pub mod parakeet;
 pub mod tokenizer;
 pub mod weights;
 pub mod whisper;
 
+pub use parakeet::{is_parakeet_model, ParakeetEngine};
 pub use whisper::{is_whisper_model, WhisperEngine};
 
 use anyhow::{anyhow, Result};

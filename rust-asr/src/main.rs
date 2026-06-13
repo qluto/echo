@@ -29,6 +29,17 @@ fn safetensors_path() -> String {
     format!("{}/model.safetensors", model_snapshot())
 }
 
+/// Find the (single) snapshot hash dir for the cached parakeet model.
+fn parakeet_snapshot(hub: &str) -> Result<String> {
+    let dir = format!("{hub}/models--mlx-community--parakeet-tdt_ctc-0.6b-ja/snapshots");
+    let entry = std::fs::read_dir(&dir)
+        .map_err(|e| anyhow!("read {dir}: {e}"))?
+        .filter_map(|e| e.ok())
+        .next()
+        .ok_or_else(|| anyhow!("no snapshot in {dir}"))?;
+    Ok(entry.file_name().to_string_lossy().to_string())
+}
+
 /// max |a-b| and mean |a-b| between two f32 arrays.
 fn diff(a: &Array, b: &Array) -> Result<(f32, f32)> {
     let d = abs(&(a - b))?;
@@ -74,6 +85,48 @@ fn main() -> Result<()> {
             let wav = args.get(2).ok_or_else(|| anyhow!("usage: run <wav> <lang>"))?;
             let lang = args.get(3).map(String::as_str).unwrap_or("en");
             run_wav(wav, lang)
+        }
+        "pk-mel" => {
+            // Compare parakeet mel against /tmp/pk_gt/mel.npy + mel_fb.npy.
+            let gt = args.get(2).map(String::as_str).unwrap_or("/tmp/pk_gt");
+            let wf = Array::load_numpy(format!("{gt}/waveform.npy"))?.as_dtype(Dtype::Float32)?;
+            let fb = rust_asr::parakeet::audio::mel_filterbank();
+            let gt_fb = Array::load_numpy(format!("{gt}/mel_fb.npy"))?.as_dtype(Dtype::Float32)?;
+            let (fbmx, fbmn) = diff(&fb, &gt_fb)?;
+            println!("mel_fb diff: max={fbmx:.4e} mean={fbmn:.4e}");
+            let mel = rust_asr::parakeet::audio::extract_features(&wf, &fb)?;
+            let gt_mel = Array::load_numpy(format!("{gt}/mel.npy"))?.as_dtype(Dtype::Float32)?;
+            println!("rust mel {:?} gt {:?}", mel.shape(), gt_mel.shape());
+            let (mx, mn) = diff(&mel, &gt_mel)?;
+            println!("mel diff: max={mx:.4e} mean={mn:.4e} -> {}", if mx < 5e-2 { "PASS" } else { "FAIL" });
+            Ok(())
+        }
+        "pk-enc" => {
+            let gt = args.get(2).map(String::as_str).unwrap_or("/tmp/pk_gt");
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let w = Weights::load(&format!("{hub}/models--mlx-community--parakeet-tdt_ctc-0.6b-ja/snapshots/{}/model.safetensors", parakeet_snapshot(&hub)?))?;
+            let enc = rust_asr::parakeet::encoder::Encoder::load(&w)?;
+            let mel = Array::load_numpy(format!("{gt}/mel.npy"))?.as_dtype(Dtype::Float32)?;
+            let out = enc.forward(&mel)?;
+            out.eval()?;
+            let gt_enc = Array::load_numpy(format!("{gt}/encoder.npy"))?.as_dtype(Dtype::Float32)?;
+            println!("rust enc {:?} gt {:?}", out.shape(), gt_enc.shape());
+            let (mx, mn) = diff(&out, &gt_enc)?;
+            println!("encoder diff: max={mx:.4e} mean={mn:.4e} -> {}", if mx < 5e-1 { "PASS" } else { "FAIL" });
+            Ok(())
+        }
+        "pk-run" => {
+            let wav = args.get(2).ok_or_else(|| anyhow!("usage: pk-run <wav>"))?;
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let t = std::time::Instant::now();
+            let eng = rust_asr::ParakeetEngine::load(std::path::Path::new(&hub))?;
+            println!("parakeet loaded in {:?}", t.elapsed());
+            let t = std::time::Instant::now();
+            let out = eng.transcribe_wav(wav, "ja")?;
+            println!("text: {:?} in {:?}", out.text, t.elapsed());
+            Ok(())
         }
         "whisper" => {
             // CLI check for the Whisper engine: whisper <wav> <lang> [model_id]

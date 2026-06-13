@@ -16,6 +16,8 @@ export const MODEL_SIZES: Record<string, string> = {
   "mlx-community/whisper-small": "244M",
   "mlx-community/whisper-base": "74M",
   "mlx-community/whisper-tiny": "39M",
+  // Parakeet TDT (NVIDIA, Japanese-specialized; non-gated)
+  "mlx-community/parakeet-tdt_ctc-0.6b-ja": "0.6B",
   // Cohere Transcribe (gated; BF16 ~4GB)
   "CohereLabs/cohere-transcribe-03-2026": "2B",
 };
@@ -27,6 +29,7 @@ export const MODEL_ORDER = [
   "mlx-community/whisper-small",
   "mlx-community/whisper-base",
   "mlx-community/whisper-tiny",
+  "mlx-community/parakeet-tdt_ctc-0.6b-ja",
   "CohereLabs/cohere-transcribe-03-2026",
 ];
 
@@ -66,6 +69,10 @@ export const getModelDisplayName = (name: string): string => {
     return "Cohere Transcribe 2B";
   }
 
+  if (modelPart.toLowerCase().includes("parakeet")) {
+    return "Parakeet TDT (JA) 0.6B";
+  }
+
   return modelPart
     .replace("whisper-", "Whisper ")
     .split("-")
@@ -80,6 +87,7 @@ export const getModelSize = (name: string): string => {
 export const getModelFamily = (name: string): string => {
   if (name.includes("Qwen3-ASR")) return "Qwen3";
   if (name.toLowerCase().includes("cohere-transcribe")) return "Cohere";
+  if (name.toLowerCase().includes("parakeet")) return "Parakeet";
   if (name.includes("whisper")) return "Whisper";
   return "Unknown";
 };
