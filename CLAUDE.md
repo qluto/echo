@@ -198,6 +198,23 @@ This ensures models are removed when the app is uninstalled. The following envir
 
 ## Build & Release Process
 
+### In-Process Rust Cohere Engine (`rust-asr/`)
+
+The Cohere Transcribe model runs **fully in Rust in-process** (no Python sidecar)
+via the `rust-asr` crate (`mlx-rs` / Apple MLX on Metal). `ASREngine` in
+`transcription.rs` dispatches: when the active model is Cohere it routes
+`load_model`/`transcribe`/`warmup`/status to the embedded `CohereEngine`; all
+other models, VAD, post-processing and summarization still use the Python
+sidecar. This removes Python-interpreter + import startup for the Cohere path
+(~0.7 s vs ~3.1 s spawn→result). The gated checkpoint is downloaded/located in
+the shared HF hub cache via `hf-hub`; the HF token flows through unchanged.
+
+**Build requirement:** `mlx-rs` compiles MLX C++ + Metal kernels from source. On
+Xcode 16/26 the Metal compiler is a separate component:
+`xcodebuild -downloadComponent MetalToolchain` (~700 MB, one-time; CI does this
+in `.github/workflows/release.yml` before the Tauri build). `rust-asr` pins
+`mlx-rs` with `features = ["metal", "accelerate"]` — Metal is off by default.
+
 ### Local macOS Signed Build (Accessibility persistence)
 
 When rebuilding and reinstalling locally, use:

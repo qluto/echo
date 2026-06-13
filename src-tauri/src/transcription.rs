@@ -6,11 +6,14 @@
 use anyhow::{anyhow, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager};
+
+use rust_asr::CohereEngine;
 
 use crate::{TranscriptionResult, TranscriptionSegment};
 
@@ -158,10 +161,24 @@ impl ASRProcess {
     }
 }
 
-/// ASR Engine manager
+/// ASR Engine manager.
+///
+/// Routes ASR work for the Cohere model to an in-process full-Rust engine
+/// ([`CohereEngine`]) and everything else (other models, VAD, post-processing,
+/// summarization) to the Python sidecar. The dispatch is internal so all call
+/// sites (hotkey, commands, always-on pipeline) are unchanged.
 pub struct ASREngine {
     process: Option<ASRProcess>,
     request_id: AtomicU64,
+    /// In-process Cohere engine, loaded on demand when the Cohere model is active.
+    cohere: Option<CohereEngine>,
+    cohere_loaded: bool,
+    /// Currently selected ASR model id (drives the Cohere vs sidecar dispatch).
+    active_model: String,
+    /// HF hub cache root (`<appcache>/huggingface/hub`), captured at start().
+    cohere_hub_dir: Option<PathBuf>,
+    /// HF token for gated download, captured at start() / set_hf_token().
+    hf_token: Option<String>,
 }
 
 impl ASREngine {
@@ -169,6 +186,11 @@ impl ASREngine {
         Self {
             process: None,
             request_id: AtomicU64::new(1),
+            cohere: None,
+            cohere_loaded: false,
+            active_model: String::new(),
+            cohere_hub_dir: None,
+            hf_token: None,
         }
     }
 
@@ -282,6 +304,11 @@ impl ASREngine {
         }
 
         log::info!("Using model cache directory: {:?}", cache_dir);
+
+        // Capture the HF hub cache root + token for the in-process Cohere engine.
+        // hf-hub stores `models--*` under `<cache>/hub`.
+        self.cohere_hub_dir = Some(cache_dir.join("hub"));
+        self.hf_token = hf_token.filter(|t| !t.is_empty()).map(|t| t.to_string());
 
         // Build command with cache environment variables
         let mut cmd = Command::new(&program);
@@ -402,12 +429,26 @@ impl ASREngine {
         let response: EngineResponse<ModelOperationResult> = process.send_command(&request)?;
         let result = response.into_result("Failed to get status")?;
 
+        let available_models = result.available_models.unwrap_or_default();
+
+        // When Cohere is active, report the in-process engine's state but keep
+        // the sidecar's available_models so the model picker still works.
+        if rust_asr::is_cohere_model(&self.active_model) {
+            return Ok(ModelStatus {
+                model_name: self.active_model.clone(),
+                loaded: self.cohere_loaded,
+                loading: false,
+                error: None,
+                available_models,
+            });
+        }
+
         Ok(ModelStatus {
             model_name: result.model_name.unwrap_or_else(|| "unknown".to_string()),
             loaded: result.loaded.unwrap_or(false),
             loading: result.loading.unwrap_or(false),
             error: result.error,
-            available_models: result.available_models.unwrap_or_default(),
+            available_models,
         })
     }
 
@@ -430,6 +471,25 @@ impl ASREngine {
 
     /// Load the model
     pub fn load_model(&mut self) -> Result<ModelStatus> {
+        // Cohere → load the in-process full-Rust engine (no Python, fast start).
+        if rust_asr::is_cohere_model(&self.active_model) {
+            if self.cohere_loaded && self.cohere.is_some() {
+                return Ok(self.cohere_status(true));
+            }
+            let hub = self
+                .cohere_hub_dir
+                .clone()
+                .ok_or_else(|| anyhow!("Cohere cache dir not set; start the engine first"))?;
+            let token = self.hf_token.clone();
+            log::info!("Loading Cohere model in-process (full Rust / MLX)...");
+            let engine = CohereEngine::load(&hub, token.as_deref())
+                .map_err(|e| anyhow!("Failed to load Cohere engine: {}", e))?;
+            self.cohere = Some(engine);
+            self.cohere_loaded = true;
+            log::info!("Cohere in-process engine loaded");
+            return Ok(self.cohere_status(true));
+        }
+
         let request = ASRRequest::new("load_model", self.next_id());
         let response: EngineResponse<ModelOperationResult> =
             self.get_process()?.send_command(&request)?;
@@ -473,6 +533,25 @@ impl ASREngine {
 
     /// Warm up the ASR model by running inference on dummy audio
     pub fn warmup_model(&mut self) -> Result<WarmupResult> {
+        // Cohere → warm up the in-process engine (compiles Metal kernels).
+        if rust_asr::is_cohere_model(&self.active_model) {
+            if let Some(engine) = self.cohere.as_ref() {
+                let start = std::time::Instant::now();
+                let result = engine.warmup();
+                let ms = start.elapsed().as_secs_f64() * 1000.0;
+                return Ok(WarmupResult {
+                    success: result.is_ok(),
+                    warmup_time_ms: Some(ms),
+                    error: result.err().map(|e| e.to_string()),
+                });
+            }
+            return Ok(WarmupResult {
+                success: false,
+                warmup_time_ms: None,
+                error: Some("Cohere engine not loaded".to_string()),
+            });
+        }
+
         let request = ASRRequest::new("warmup_model", self.next_id());
         let response: EngineResponse<WarmupResponseResult> =
             self.get_process()?.send_command(&request)?;
@@ -514,6 +593,8 @@ impl ASREngine {
     /// Update the HuggingFace token in the running sidecar.
     /// Pass None to unset. Takes effect for subsequent model downloads.
     pub fn set_hf_token(&mut self, token: Option<&str>) -> Result<()> {
+        // Keep the token for the in-process Cohere engine's gated download too.
+        self.hf_token = token.filter(|t| !t.is_empty()).map(|t| t.to_string());
         // If the sidecar is not yet running there is nothing to update —
         // the token will be picked up via env var at spawn time.
         if self.process.is_none() {
@@ -527,8 +608,30 @@ impl ASREngine {
         Ok(())
     }
 
+    /// Status for the in-process Cohere engine.
+    fn cohere_status(&self, loaded: bool) -> ModelStatus {
+        ModelStatus {
+            model_name: self.active_model.clone(),
+            loaded,
+            loading: false,
+            error: None,
+            available_models: vec![],
+        }
+    }
+
     /// Set the model (requires reload)
     pub fn set_model(&mut self, model_name: &str) -> Result<ModelStatus> {
+        // Track the active model so transcribe/load/warmup can dispatch. When
+        // leaving Cohere, drop the in-process engine to free its memory.
+        self.active_model = model_name.to_string();
+        if !rust_asr::is_cohere_model(model_name) {
+            self.cohere = None;
+            self.cohere_loaded = false;
+        } else {
+            // Force a reload of the Rust engine on next load_model.
+            self.cohere_loaded = false;
+        }
+
         let mut request = ASRRequest::new("set_model", self.next_id());
         request.model_name = Some(model_name.to_string());
 
@@ -583,6 +686,37 @@ impl ASREngine {
         audio_path: &str,
         language: Option<&str>,
     ) -> Result<TranscriptionResult> {
+        // Cohere → transcribe in-process with the full-Rust engine.
+        if rust_asr::is_cohere_model(&self.active_model) {
+            if !self.cohere_loaded || self.cohere.is_none() {
+                self.load_model()?;
+            }
+            let engine = self
+                .cohere
+                .as_ref()
+                .ok_or_else(|| anyhow!("Cohere engine not loaded"))?;
+            let lang = language.unwrap_or("auto");
+            let out = engine
+                .transcribe_wav(audio_path, lang)
+                .map_err(|e| anyhow!("Cohere transcription failed: {}", e))?;
+            let no_speech = if out.text.trim().is_empty() {
+                Some(true)
+            } else {
+                None
+            };
+            log::info!(
+                "Cohere (in-process) transcription complete: {} chars",
+                out.text.len()
+            );
+            return Ok(TranscriptionResult {
+                success: true,
+                text: out.text,
+                segments: vec![],
+                language: out.language,
+                no_speech,
+            });
+        }
+
         let process = self.get_process().map_err(|_| {
             anyhow!("ASR engine not running. Call start_asr_engine first.")
         })?;
@@ -873,6 +1007,43 @@ impl ASREngine {
 impl Default for ASREngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod cohere_inprocess_tests {
+    use super::*;
+
+    /// End-to-end check of the in-process Cohere routing without the Python
+    /// sidecar: set the private fields directly, load the Rust engine, and
+    /// transcribe a bundled WAV. Skips if the gated model isn't cached locally.
+    #[test]
+    fn cohere_routes_in_process() {
+        let home = match std::env::var("HOME") {
+            Ok(h) => h,
+            Err(_) => return,
+        };
+        let hub = PathBuf::from(&home)
+            .join("Library/Caches/io.qluto.echo/huggingface/hub");
+        let cached = hub.join("models--CohereLabs--cohere-transcribe-03-2026");
+        if !cached.exists() {
+            eprintln!("skipping: Cohere model not cached at {cached:?}");
+            return;
+        }
+
+        let mut engine = ASREngine::new();
+        engine.active_model = rust_asr::COHERE_MODEL_ID.to_string();
+        engine.cohere_hub_dir = Some(hub);
+
+        let status = engine.load_model().expect("load cohere");
+        assert!(status.loaded, "cohere engine should report loaded");
+        assert!(rust_asr::is_cohere_model(&status.model_name));
+
+        let wav = concat!(env!("CARGO_MANIFEST_DIR"), "/resources/start_v1.wav");
+        let result = engine.transcribe(wav, Some("en")).expect("transcribe");
+        assert!(result.success);
+        // Routed in-process: segments are empty (the Rust engine returns text only).
+        eprintln!("in-process cohere text: {:?}", result.text);
     }
 }
 

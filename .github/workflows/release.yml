@@ -100,6 +100,15 @@ jobs:
 
           rm $RUNNER_TEMP/certificate.p12
 
+      # mlx-rs (the in-process Cohere ASR engine) compiles MLX C++ + Metal
+      # kernels from source. On Xcode 16+ the Metal compiler is a separately
+      # installed component; download it idempotently (no-op on older Xcode).
+      - name: Ensure Metal toolchain
+        run: |
+          xcodebuild -downloadComponent MetalToolchain 2>/dev/null \
+            || echo "Metal toolchain already present or not required for this Xcode"
+          xcrun metal --version 2>&1 || true
+
       - name: Build Tauri app
         run: npm run tauri:build -- --target aarch64-apple-darwin
         env:

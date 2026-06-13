@@ -42,6 +42,10 @@ rusqlite = { version = "0.32", features = ["bundled-full"] }
 # スレッド間通信
 crossbeam-channel = "0.5"
 
+# Full-Rust in-process Cohere ASR engine (replaces the Python sidecar for the
+# Cohere model — eliminates Python-interpreter + import startup for that path).
+rust-asr = { path = "../rust-asr" }
+
 # ユーティリティ
 anyhow = "1"
 log = "0.4"

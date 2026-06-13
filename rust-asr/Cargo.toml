@@ -1,0 +1,30 @@
+[package]
+name = "rust-asr"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rust_asr"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rust-asr"
+path = "src/main.rs"
+
+[dependencies]
+# Apple MLX bindings. Metal must be explicitly enabled or the build is CPU-only.
+mlx-rs = { version = "0.25", features = ["metal", "accelerate"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Pure-Rust HF tokenizer; loads the model's tokenizer.json (BPE + SP-style
+# decoder) directly — no cmake/C++ build needed.
+tokenizers = "0.20"
+half = "2"
+# WAV decoding for the real end-to-end pipeline.
+hound = "3"
+# Gated-model download (blocking sync API; uses system TLS via native-tls).
+hf-hub = "0.3"
+
+[profile.release]
+opt-level = 3
