@@ -224,150 +224,123 @@ impl ASREngine {
         }
     }
 
-    /// Start the ASR engine sidecar
+    /// Start the ASR engine.
+    ///
+    /// The Python sidecar is **optional**: the in-process Cohere engine needs
+    /// only the HF cache dir + token (captured here up front). If the sidecar
+    /// binary is missing/empty or fails to come up, we log a warning and return
+    /// Ok with no process — Cohere still works fully in-process; other models,
+    /// VAD and post-processing report errors only when actually used.
     pub fn start(&mut self, app: &AppHandle, hf_token: Option<&str>) -> Result<()> {
         if self.process.is_some() {
             log::info!("ASR engine already running");
             return Ok(());
         }
 
-        // Binary name with platform suffix (for development builds)
+        // Resolve the app cache dir and capture what the in-process Cohere engine
+        // needs FIRST, so it works regardless of the sidecar's fate.
+        let cache_dir = app
+            .path()
+            .resolve("huggingface", BaseDirectory::AppCache)
+            .map_err(|e| anyhow!("Failed to resolve cache directory: {}", e))?;
+        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+            log::warn!("Failed to create cache directory {:?}: {}", cache_dir, e);
+        }
+        log::info!("Using model cache directory: {:?}", cache_dir);
+        // hf-hub stores `models--*` under `<cache>/hub`.
+        self.cohere_hub_dir = Some(cache_dir.join("hub"));
+        self.hf_token = hf_token.filter(|t| !t.is_empty()).map(|t| t.to_string());
+
+        // Locate a usable (existing, non-empty) sidecar binary.
         let binary_name_with_suffix = format!("mlx-asr-engine-{}", Self::get_target_triple());
-        // Binary name without suffix (Tauri strips the suffix when bundling externalBin)
         let binary_name_no_suffix = "mlx-asr-engine";
-
-        // Priority 1: Check for bundled binary in app's MacOS directory (production mode)
-        // Tauri 2.x places externalBin in Contents/MacOS/ with the platform suffix stripped
-        let bundled_binary = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            .map(|p| p.join(binary_name_no_suffix));
-
-        // Priority 2: Check for development binary in src-tauri/binaries
-        let dev_binary_paths = [
-            // When running from src-tauri directory
+        let candidates = [
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                .map(|p| p.join(binary_name_no_suffix)),
             std::env::current_dir()
                 .ok()
                 .map(|p| p.join("binaries").join(&binary_name_with_suffix)),
-            // When running from project root
             std::env::current_dir()
                 .ok()
                 .and_then(|p| p.parent().map(|p| p.to_path_buf()))
                 .map(|p| p.join("src-tauri").join("binaries").join(&binary_name_with_suffix)),
         ];
-
-        let program = if let Some(ref bundled) = bundled_binary {
-            if bundled.exists() {
-                log::info!("Using bundled ASR binary: {:?}", bundled);
-                bundled.to_string_lossy().to_string()
-            } else if let Some(dev_binary) = dev_binary_paths
-                .into_iter()
-                .flatten()
-                .find(|p| p.exists())
-            {
-                log::info!("Using development ASR binary: {:?}", dev_binary);
-                dev_binary.to_string_lossy().to_string()
-            } else {
-                return Err(anyhow!(
-                    "ASR engine binary not found. Expected '{}' in {:?} or '{}' in src-tauri/binaries/. \
-                    Run 'cd python-engine && ./build.sh' to build the binary.",
-                    binary_name_no_suffix,
-                    bundled,
-                    binary_name_with_suffix
-                ));
+        let non_empty = |p: &std::path::Path| {
+            std::fs::metadata(p).map(|m| m.is_file() && m.len() > 0).unwrap_or(false)
+        };
+        let program = match candidates.into_iter().flatten().find(|p| non_empty(p)) {
+            Some(p) => {
+                log::info!("Using ASR sidecar binary: {:?}", p);
+                p.to_string_lossy().to_string()
             }
-        } else if let Some(dev_binary) = dev_binary_paths
-            .into_iter()
-            .flatten()
-            .find(|p| p.exists())
-        {
-            log::info!("Using development ASR binary: {:?}", dev_binary);
-            dev_binary.to_string_lossy().to_string()
-        } else {
-            return Err(anyhow!(
-                "ASR engine binary not found. Run 'cd python-engine && ./build.sh' to build the binary."
-            ));
+            None => {
+                log::warn!(
+                    "Python ASR sidecar binary not found or empty. Cohere runs in-process \
+                     (full Rust); other models, VAD and post-processing are unavailable until \
+                     you build it via 'cd python-engine && ./build.sh'."
+                );
+                return Ok(());
+            }
         };
 
-        let args = vec!["daemon".to_string()];
-
-        log::info!("Starting ASR engine: {} {:?}", program, args);
-
-        // Get app cache directory for model storage
-        let cache_dir = app
-            .path()
-            .resolve("huggingface", BaseDirectory::AppCache)
-            .map_err(|e| anyhow!("Failed to resolve cache directory: {}", e))?;
-
-        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-            log::warn!("Failed to create cache directory {:?}: {}", cache_dir, e);
-        }
-
-        log::info!("Using model cache directory: {:?}", cache_dir);
-
-        // Capture the HF hub cache root + token for the in-process Cohere engine.
-        // hf-hub stores `models--*` under `<cache>/hub`.
-        self.cohere_hub_dir = Some(cache_dir.join("hub"));
-        self.hf_token = hf_token.filter(|t| !t.is_empty()).map(|t| t.to_string());
-
-        // Build command with cache environment variables
+        log::info!("Starting ASR engine: {} [\"daemon\"]", program);
         let mut cmd = Command::new(&program);
-        cmd.args(&args)
+        cmd.arg("daemon")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .env("HF_HOME", &cache_dir)
             .env("TORCH_HOME", &cache_dir);
-
-        // Inject HuggingFace token if user opted into gated models.
-        // Never log the token itself; only whether one is set.
         if let Some(token) = hf_token.filter(|t| !t.is_empty()) {
             cmd.env("HF_TOKEN", token);
             log::info!("HF_TOKEN configured for ASR engine (length={})", token.len());
         }
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| anyhow!("Failed to start ASR engine: {}", e))?;
-
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow!("Failed to get stdin handle"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow!("Failed to get stdout handle"))?;
-
+        // Any sidecar failure below is non-fatal: log and continue without it.
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("Failed to start ASR sidecar ({}); continuing without it", e);
+                return Ok(());
+            }
+        };
+        let (stdin, stdout) = match (child.stdin.take(), child.stdout.take()) {
+            (Some(i), Some(o)) => (i, o),
+            _ => {
+                log::warn!("Failed to get ASR sidecar I/O handles; continuing without it");
+                child.kill().ok();
+                return Ok(());
+            }
+        };
         let stdin_writer = BufWriter::new(stdin);
         let mut stdout_reader = BufReader::new(stdout);
 
-        // Wait for ready signal with timeout
         log::info!("Waiting for ASR engine ready signal...");
         let mut line = String::new();
         let start = std::time::Instant::now();
         let timeout = Duration::from_secs(60);
-
-        loop {
+        let ready = loop {
             if start.elapsed() > timeout {
+                log::warn!("Timeout waiting for ASR sidecar; continuing without it");
                 child.kill().ok();
-                return Err(anyhow!("Timeout waiting for ASR engine to start"));
+                break false;
             }
-
             line.clear();
             match stdout_reader.read_line(&mut line) {
                 Ok(0) => {
+                    log::warn!("ASR sidecar closed stdout; continuing without it");
                     child.kill().ok();
-                    return Err(anyhow!("ASR engine closed stdout unexpectedly"));
+                    break false;
                 }
                 Ok(_) => {
                     let trimmed = line.trim();
                     log::debug!("ASR engine output: {}", trimmed);
-
                     if let Ok(status) = serde_json::from_str::<StatusResponse>(trimmed) {
                         if status.status.as_deref() == Some("ready") {
                             log::info!("ASR engine ready");
-                            break;
+                            break true;
                         }
                     }
                 }
@@ -376,18 +349,20 @@ impl ASREngine {
                     continue;
                 }
                 Err(e) => {
+                    log::warn!("Error reading from ASR sidecar ({}); continuing without it", e);
                     child.kill().ok();
-                    return Err(anyhow!("Error reading from ASR engine: {}", e));
+                    break false;
                 }
             }
+        };
+
+        if ready {
+            self.process = Some(ASRProcess {
+                child,
+                stdin: stdin_writer,
+                stdout: stdout_reader,
+            });
         }
-
-        self.process = Some(ASRProcess {
-            child,
-            stdin: stdin_writer,
-            stdout: stdout_reader,
-        });
-
         Ok(())
     }
 
@@ -412,6 +387,10 @@ impl ASREngine {
 
     /// Get model status from the engine
     pub fn get_model_status(&mut self) -> Result<ModelStatus> {
+        // Cohere is served in-process and may be active without a Python sidecar.
+        if rust_asr::is_cohere_model(&self.active_model) && self.process.is_none() {
+            return Ok(self.cohere_status(self.cohere_loaded));
+        }
         let process = match self.process.as_mut() {
             Some(p) => p,
             None => {
@@ -454,6 +433,25 @@ impl ASREngine {
 
     /// Check if a model is cached locally
     pub fn is_model_cached(&mut self, model_name: Option<&str>) -> Result<ModelCacheStatus> {
+        let target = model_name.unwrap_or(&self.active_model);
+
+        // Cohere: check the shared HF hub cache directly (no Python needed).
+        if rust_asr::is_cohere_model(target) {
+            let cached = self
+                .cohere_hub_dir
+                .as_ref()
+                .map(|hub| {
+                    hub.join("models--CohereLabs--cohere-transcribe-03-2026")
+                        .join("snapshots")
+                        .exists()
+                })
+                .unwrap_or(false);
+            return Ok(ModelCacheStatus {
+                cached,
+                model_name: target.to_string(),
+            });
+        }
+
         let mut request = ASRRequest::new("is_model_cached", self.next_id());
         request.model_name = model_name.map(|s| s.to_string());
 
@@ -624,13 +622,15 @@ impl ASREngine {
         // Track the active model so transcribe/load/warmup can dispatch. When
         // leaving Cohere, drop the in-process engine to free its memory.
         self.active_model = model_name.to_string();
-        if !rust_asr::is_cohere_model(model_name) {
-            self.cohere = None;
+        if rust_asr::is_cohere_model(model_name) {
+            // Cohere is served in-process; no Python sidecar involvement. Force a
+            // reload of the Rust engine on the next load_model.
             self.cohere_loaded = false;
-        } else {
-            // Force a reload of the Rust engine on next load_model.
-            self.cohere_loaded = false;
+            return Ok(self.cohere_status(false));
         }
+        // Leaving Cohere: drop the in-process engine to free its memory.
+        self.cohere = None;
+        self.cohere_loaded = false;
 
         let mut request = ASRRequest::new("set_model", self.next_id());
         request.model_name = Some(model_name.to_string());
@@ -1031,13 +1031,29 @@ mod cohere_inprocess_tests {
             return;
         }
 
+        // Mirror the app startup flow with NO Python sidecar (process == None):
+        // set_model -> is_model_cached -> get_model_status -> load -> warmup ->
+        // transcribe must all work in-process for Cohere.
         let mut engine = ASREngine::new();
-        engine.active_model = rust_asr::COHERE_MODEL_ID.to_string();
-        engine.cohere_hub_dir = Some(hub);
+        engine.cohere_hub_dir = Some(hub); // normally captured in start()
+
+        let set = engine.set_model(rust_asr::COHERE_MODEL_ID).expect("set_model");
+        assert!(rust_asr::is_cohere_model(&set.model_name));
+
+        let cache = engine.is_model_cached(None).expect("is_model_cached");
+        assert!(cache.cached, "Cohere model should be reported cached");
+
+        let before = engine.get_model_status().expect("status");
+        assert!(!before.loaded);
 
         let status = engine.load_model().expect("load cohere");
         assert!(status.loaded, "cohere engine should report loaded");
-        assert!(rust_asr::is_cohere_model(&status.model_name));
+
+        let after = engine.get_model_status().expect("status");
+        assert!(after.loaded, "status should reflect loaded engine");
+
+        let warm = engine.warmup_model().expect("warmup");
+        assert!(warm.success, "warmup should succeed: {:?}", warm.error);
 
         let wav = concat!(env!("CARGO_MANIFEST_DIR"), "/resources/start_v1.wav");
         let result = engine.transcribe(wav, Some("en")).expect("transcribe");
