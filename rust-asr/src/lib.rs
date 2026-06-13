@@ -11,6 +11,9 @@ pub mod encoder;
 pub mod nn;
 pub mod tokenizer;
 pub mod weights;
+pub mod whisper;
+
+pub use whisper::{is_whisper_model, WhisperEngine};
 
 use anyhow::{anyhow, Result};
 use std::path::Path;

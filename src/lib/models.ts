@@ -3,12 +3,12 @@
  * Shared between App.tsx and SettingsPanel.tsx.
  */
 
+// Models served by the in-process Rust engines:
+//  - Whisper family → whisper.cpp (Metal), the non-gated default
+//  - Cohere Transcribe → full-Rust MLX engine (gated, opt-in)
+// Whisper is the default. (Qwen3-ASR is not yet implemented in Rust and is
+// intentionally omitted to avoid a non-functional, sidecar-only option.)
 export const MODEL_SIZES: Record<string, string> = {
-  // Qwen3-ASR models
-  "mlx-community/Qwen3-ASR-1.7B-8bit": "1.7B",
-  "mlx-community/Qwen3-ASR-0.6B-8bit": "0.6B",
-  // Cohere Transcribe (gated; BF16 ~4GB)
-  "CohereLabs/cohere-transcribe-03-2026": "2B",
   // Whisper models
   "mlx-community/whisper-large-v3-turbo": "Turbo",
   "mlx-community/whisper-large-v3": "1.5B",
@@ -16,19 +16,22 @@ export const MODEL_SIZES: Record<string, string> = {
   "mlx-community/whisper-small": "244M",
   "mlx-community/whisper-base": "74M",
   "mlx-community/whisper-tiny": "39M",
+  // Cohere Transcribe (gated; BF16 ~4GB)
+  "CohereLabs/cohere-transcribe-03-2026": "2B",
 };
 
 export const MODEL_ORDER = [
-  "mlx-community/Qwen3-ASR-0.6B-8bit",
-  "mlx-community/Qwen3-ASR-1.7B-8bit",
-  "CohereLabs/cohere-transcribe-03-2026",
   "mlx-community/whisper-large-v3-turbo",
   "mlx-community/whisper-large-v3",
   "mlx-community/whisper-medium",
   "mlx-community/whisper-small",
   "mlx-community/whisper-base",
   "mlx-community/whisper-tiny",
+  "CohereLabs/cohere-transcribe-03-2026",
 ];
+
+/// The default model used when no valid selection is stored.
+export const DEFAULT_MODEL = "mlx-community/whisper-large-v3-turbo";
 
 /// Models that require user-provided HF authentication and license acceptance.
 /// Hidden from the model picker unless the user opts in via Advanced Settings.

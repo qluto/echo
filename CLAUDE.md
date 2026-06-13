@@ -198,22 +198,36 @@ This ensures models are removed when the app is uninstalled. The following envir
 
 ## Build & Release Process
 
-### In-Process Rust Cohere Engine (`rust-asr/`)
+### In-Process Rust ASR Engines (`rust-asr/`)
 
-The Cohere Transcribe model runs **fully in Rust in-process** (no Python sidecar)
-via the `rust-asr` crate (`mlx-rs` / Apple MLX on Metal). `ASREngine` in
-`transcription.rs` dispatches: when the active model is Cohere it routes
-`load_model`/`transcribe`/`warmup`/status to the embedded `CohereEngine`; all
-other models, VAD, post-processing and summarization still use the Python
-sidecar. This removes Python-interpreter + import startup for the Cohere path
-(~0.7 s vs ~3.1 s spawn→result). The gated checkpoint is downloaded/located in
-the shared HF hub cache via `hf-hub`; the HF token flows through unchanged.
+Two ASR models run **fully in Rust in-process** (no Python sidecar) via the
+`rust-asr` crate:
+- **Whisper** (the non-gated **default**) → `WhisperEngine`, backed by
+  whisper.cpp through `whisper-rs` on Metal. Downloads a ggml model from
+  `ggerganov/whisper.cpp` (mapped from the `mlx-community/whisper-*` id) into the
+  shared HF cache. `whisper-large-v3-turbo` is the default.
+- **Cohere Transcribe** (gated, opt-in) → `CohereEngine`, a full-Rust MLX port
+  (`mlx-rs` / Apple MLX). Gated checkpoint fetched via `hf-hub` with the HF token.
 
-**Build requirement:** `mlx-rs` compiles MLX C++ + Metal kernels from source. On
-Xcode 16/26 the Metal compiler is a separate component:
-`xcodebuild -downloadComponent MetalToolchain` (~700 MB, one-time; CI does this
-in `.github/workflows/release.yml` before the Tauri build). `rust-asr` pins
-`mlx-rs` with `features = ["metal", "accelerate"]` — Metal is off by default.
+`ASREngine` in `transcription.rs` dispatches internally: for Whisper/Cohere it
+routes `load_model`/`transcribe`/`warmup`/status/cache to the in-process engine;
+everything else (VAD, post-processing, summarization — and any other ASR model)
+still uses the Python sidecar. All call sites (hotkey, commands, always-on
+pipeline) are unchanged. The Python sidecar is **optional**: if its binary is
+missing/empty, `start()` logs a warning and continues — the in-process models
+still work. Removes Python-interpreter + import startup for these paths
+(~0.7 s vs ~3.1 s spawn→result for Cohere). Qwen3-ASR is **not** ported (it would
+need a quantized 28-layer Qwen3 LLM); it's omitted from the picker.
+
+Audio handling: hotkey recordings are at the device's native rate (e.g. 48 kHz);
+`read_wav_16k_mono` downmixes + resamples to 16 kHz (rubato) before either engine.
+
+**Build requirement:** both `mlx-rs` (MLX C++ + Metal kernels) and `whisper-rs`
+(whisper.cpp + ggml + Metal) compile native code from source. On Xcode 16/26 the
+Metal compiler is a separate component: `xcodebuild -downloadComponent
+MetalToolchain` (~700 MB, one-time; CI does this in
+`.github/workflows/release.yml` before the Tauri build). `mlx-rs` uses
+`features = ["metal", "accelerate"]`, `whisper-rs` uses `features = ["metal"]`.
 
 ### Local macOS Signed Build (Accessibility persistence)
 

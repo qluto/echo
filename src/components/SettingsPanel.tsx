@@ -44,7 +44,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     gated_access: { enabled: false, hf_token: null },
   });
   const [devices, setDevices] = useState<AudioDevice[]>([]);
-  const [modelName, setModelName] = useState<string>("mlx-community/Qwen3-ASR-0.6B-8bit");
+  const [modelName, setModelName] = useState<string>("mlx-community/whisper-large-v3-turbo");
   const [availableModels, setAvailableModels] = useState<string[]>(MODEL_ORDER);
   const [isLoading, setIsLoading] = useState(true);
   const [isModelChanging, setIsModelChanging] = useState(false);

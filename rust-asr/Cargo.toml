@@ -28,6 +28,9 @@ rubato = "0.16"
 log = "0.4"
 # Gated-model download (blocking sync API; uses system TLS via native-tls).
 hf-hub = "0.3"
+# Whisper via whisper.cpp (Metal). Full pipeline: mel, encoder/decoder,
+# multilingual tokenizer, language detection — used as the non-gated default.
+whisper-rs = { version = "0.14", features = ["metal"] }
 
 [profile.release]
 opt-level = 3

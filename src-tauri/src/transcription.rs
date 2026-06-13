@@ -13,7 +13,7 @@ use std::time::Duration;
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager};
 
-use rust_asr::CohereEngine;
+use rust_asr::{CohereEngine, WhisperEngine};
 
 use crate::{TranscriptionResult, TranscriptionSegment};
 
@@ -173,7 +173,10 @@ pub struct ASREngine {
     /// In-process Cohere engine, loaded on demand when the Cohere model is active.
     cohere: Option<CohereEngine>,
     cohere_loaded: bool,
-    /// Currently selected ASR model id (drives the Cohere vs sidecar dispatch).
+    /// In-process Whisper engine (whisper.cpp), the non-gated default path.
+    whisper: Option<WhisperEngine>,
+    whisper_loaded: bool,
+    /// Currently selected ASR model id (drives the in-process vs sidecar dispatch).
     active_model: String,
     /// HF hub cache root (`<appcache>/huggingface/hub`), captured at start().
     cohere_hub_dir: Option<PathBuf>,
@@ -188,6 +191,8 @@ impl ASREngine {
             request_id: AtomicU64::new(1),
             cohere: None,
             cohere_loaded: false,
+            whisper: None,
+            whisper_loaded: false,
             active_model: String::new(),
             cohere_hub_dir: None,
             hf_token: None,
@@ -387,9 +392,9 @@ impl ASREngine {
 
     /// Get model status from the engine
     pub fn get_model_status(&mut self) -> Result<ModelStatus> {
-        // Cohere is served in-process and may be active without a Python sidecar.
-        if rust_asr::is_cohere_model(&self.active_model) && self.process.is_none() {
-            return Ok(self.cohere_status(self.cohere_loaded));
+        // In-process models (Cohere, Whisper) may be active without a sidecar.
+        if Self::is_in_process(&self.active_model) && self.process.is_none() {
+            return Ok(self.in_process_status(self.in_process_loaded()));
         }
         let process = match self.process.as_mut() {
             Some(p) => p,
@@ -410,12 +415,12 @@ impl ASREngine {
 
         let available_models = result.available_models.unwrap_or_default();
 
-        // When Cohere is active, report the in-process engine's state but keep
-        // the sidecar's available_models so the model picker still works.
-        if rust_asr::is_cohere_model(&self.active_model) {
+        // When an in-process model is active, report its state but keep the
+        // sidecar's available_models so the model picker still works.
+        if Self::is_in_process(&self.active_model) {
             return Ok(ModelStatus {
                 model_name: self.active_model.clone(),
-                loaded: self.cohere_loaded,
+                loaded: self.in_process_loaded(),
                 loading: false,
                 error: None,
                 available_models,
@@ -435,16 +440,12 @@ impl ASREngine {
     pub fn is_model_cached(&mut self, model_name: Option<&str>) -> Result<ModelCacheStatus> {
         let target = model_name.unwrap_or(&self.active_model);
 
-        // Cohere: check the shared HF hub cache directly (no Python needed).
-        if rust_asr::is_cohere_model(target) {
+        // In-process models: check the shared HF hub cache directly (no Python).
+        if let Some(repo_dir) = Self::in_process_cache_repo(target) {
             let cached = self
                 .cohere_hub_dir
                 .as_ref()
-                .map(|hub| {
-                    hub.join("models--CohereLabs--cohere-transcribe-03-2026")
-                        .join("snapshots")
-                        .exists()
-                })
+                .map(|hub| hub.join(repo_dir).join("snapshots").exists())
                 .unwrap_or(false);
             return Ok(ModelCacheStatus {
                 cached,
@@ -472,7 +473,7 @@ impl ASREngine {
         // Cohere → load the in-process full-Rust engine (no Python, fast start).
         if rust_asr::is_cohere_model(&self.active_model) {
             if self.cohere_loaded && self.cohere.is_some() {
-                return Ok(self.cohere_status(true));
+                return Ok(self.in_process_status(true));
             }
             let hub = self
                 .cohere_hub_dir
@@ -485,7 +486,36 @@ impl ASREngine {
             self.cohere = Some(engine);
             self.cohere_loaded = true;
             log::info!("Cohere in-process engine loaded");
-            return Ok(self.cohere_status(true));
+            return Ok(self.in_process_status(true));
+        }
+
+        // Whisper → load the in-process whisper.cpp engine (downloads the ggml
+        // model on first use). Non-gated default path.
+        if rust_asr::is_whisper_model(&self.active_model) {
+            if self.whisper_loaded && self.whisper.is_some() {
+                return Ok(self.in_process_status(true));
+            }
+            let hub = self
+                .cohere_hub_dir
+                .clone()
+                .ok_or_else(|| anyhow!("Cache dir not set; start the engine first"))?;
+            log::info!("Loading Whisper model in-process (whisper.cpp / Metal)...");
+            let engine = WhisperEngine::load(&hub, &self.active_model)
+                .map_err(|e| anyhow!("Failed to load Whisper engine: {}", e))?;
+            self.whisper = Some(engine);
+            self.whisper_loaded = true;
+            log::info!("Whisper in-process engine loaded");
+            return Ok(self.in_process_status(true));
+        }
+
+        // Any other model needs the Python sidecar. Fail fast with a clear
+        // message if it isn't running (rather than hanging the load screen).
+        if self.process.is_none() {
+            return Err(anyhow!(
+                "Model '{}' is not supported by the in-process engine. Choose Whisper \
+                 or Cohere, or build the Python sidecar (cd python-engine && ./build.sh).",
+                self.active_model
+            ));
         }
 
         let request = ASRRequest::new("load_model", self.next_id());
@@ -550,6 +580,29 @@ impl ASREngine {
             });
         }
 
+        // Whisper → warm up the in-process engine.
+        if rust_asr::is_whisper_model(&self.active_model) {
+            if let Some(engine) = self.whisper.as_ref() {
+                let start = std::time::Instant::now();
+                let result = engine.warmup();
+                let ms = start.elapsed().as_secs_f64() * 1000.0;
+                return Ok(WarmupResult {
+                    success: result.is_ok(),
+                    warmup_time_ms: Some(ms),
+                    error: result.err().map(|e| e.to_string()),
+                });
+            }
+            return Ok(WarmupResult {
+                success: false,
+                warmup_time_ms: None,
+                error: Some("Whisper engine not loaded".to_string()),
+            });
+        }
+        // Non-in-process models without a sidecar: nothing to warm up.
+        if self.process.is_none() {
+            return Ok(WarmupResult { success: false, warmup_time_ms: None, error: None });
+        }
+
         let request = ASRRequest::new("warmup_model", self.next_id());
         let response: EngineResponse<WarmupResponseResult> =
             self.get_process()?.send_command(&request)?;
@@ -607,7 +660,7 @@ impl ASREngine {
     }
 
     /// Status for the in-process Cohere engine.
-    fn cohere_status(&self, loaded: bool) -> ModelStatus {
+    fn in_process_status(&self, loaded: bool) -> ModelStatus {
         ModelStatus {
             model_name: self.active_model.clone(),
             loaded,
@@ -617,20 +670,61 @@ impl ASREngine {
         }
     }
 
-    /// Set the model (requires reload)
-    pub fn set_model(&mut self, model_name: &str) -> Result<ModelStatus> {
-        // Track the active model so transcribe/load/warmup can dispatch. When
-        // leaving Cohere, drop the in-process engine to free its memory.
-        self.active_model = model_name.to_string();
-        if rust_asr::is_cohere_model(model_name) {
-            // Cohere is served in-process; no Python sidecar involvement. Force a
-            // reload of the Rust engine on the next load_model.
-            self.cohere_loaded = false;
-            return Ok(self.cohere_status(false));
+    /// Whether the given model id is served by an in-process Rust engine.
+    fn is_in_process(name: &str) -> bool {
+        rust_asr::is_cohere_model(name) || rust_asr::is_whisper_model(name)
+    }
+
+    /// Loaded state of the currently-active in-process engine.
+    fn in_process_loaded(&self) -> bool {
+        if rust_asr::is_whisper_model(&self.active_model) {
+            self.whisper_loaded
+        } else {
+            self.cohere_loaded
         }
-        // Leaving Cohere: drop the in-process engine to free its memory.
+    }
+
+    /// HF hub cache repo dir name for an in-process model (for cache checks).
+    fn in_process_cache_repo(name: &str) -> Option<&'static str> {
+        if rust_asr::is_cohere_model(name) {
+            Some("models--CohereLabs--cohere-transcribe-03-2026")
+        } else if rust_asr::is_whisper_model(name) {
+            Some("models--ggerganov--whisper.cpp")
+        } else {
+            None
+        }
+    }
+
+    /// Set the model (requires reload). In-process models (Cohere, Whisper) are
+    /// tracked locally with no Python involvement; others forward to the sidecar.
+    pub fn set_model(&mut self, model_name: &str) -> Result<ModelStatus> {
+        self.active_model = model_name.to_string();
+        if Self::is_in_process(model_name) {
+            // Drop the *other* in-process engine to free memory; force a reload
+            // of the selected one on the next load_model.
+            if rust_asr::is_cohere_model(model_name) {
+                self.whisper = None;
+                self.whisper_loaded = false;
+                self.cohere_loaded = false;
+            } else {
+                self.cohere = None;
+                self.cohere_loaded = false;
+                self.whisper_loaded = false;
+            }
+            return Ok(self.in_process_status(false));
+        }
+        // Non-in-process model: drop both engines and forward to the sidecar.
         self.cohere = None;
         self.cohere_loaded = false;
+        self.whisper = None;
+        self.whisper_loaded = false;
+
+        if self.process.is_none() {
+            return Err(anyhow!(
+                "Model '{}' is not supported in-process. Choose Whisper or Cohere.",
+                model_name
+            ));
+        }
 
         let mut request = ASRRequest::new("set_model", self.next_id());
         request.model_name = Some(model_name.to_string());
@@ -706,6 +800,36 @@ impl ASREngine {
             };
             log::info!(
                 "Cohere (in-process) transcription complete: {} chars",
+                out.text.len()
+            );
+            return Ok(TranscriptionResult {
+                success: true,
+                text: out.text,
+                segments: vec![],
+                language: out.language,
+                no_speech,
+            });
+        }
+
+        // Whisper → transcribe in-process with whisper.cpp.
+        if rust_asr::is_whisper_model(&self.active_model) {
+            if !self.whisper_loaded || self.whisper.is_none() {
+                self.load_model()?;
+            }
+            let engine = self
+                .whisper
+                .as_ref()
+                .ok_or_else(|| anyhow!("Whisper engine not loaded"))?;
+            let out = engine
+                .transcribe_wav(audio_path, language.unwrap_or("auto"))
+                .map_err(|e| anyhow!("Whisper transcription failed: {}", e))?;
+            let no_speech = if out.text.trim().is_empty() {
+                Some(true)
+            } else {
+                None
+            };
+            log::info!(
+                "Whisper (in-process) transcription complete: {} chars",
                 out.text.len()
             );
             return Ok(TranscriptionResult {
@@ -1060,6 +1184,43 @@ mod cohere_inprocess_tests {
         assert!(result.success);
         // Routed in-process: segments are empty (the Rust engine returns text only).
         eprintln!("in-process cohere text: {:?}", result.text);
+    }
+
+    /// Whisper routes through the in-process whisper.cpp engine with no sidecar.
+    /// Uses whisper-tiny (small, fast). Skips if the ggml model can't be fetched.
+    #[test]
+    fn whisper_routes_in_process() {
+        let home = match std::env::var("HOME") {
+            Ok(h) => h,
+            Err(_) => return,
+        };
+        let hub = PathBuf::from(&home).join("Library/Caches/io.qluto.echo/huggingface/hub");
+
+        let mut engine = ASREngine::new();
+        engine.cohere_hub_dir = Some(hub);
+
+        let set = engine
+            .set_model("mlx-community/whisper-tiny")
+            .expect("set_model");
+        assert!(rust_asr::is_whisper_model(&set.model_name));
+
+        // load (downloads ggml-tiny.bin if missing — small)
+        let status = match engine.load_model() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("skipping: could not load whisper-tiny ({e})");
+                return;
+            }
+        };
+        assert!(status.loaded);
+
+        let after = engine.get_model_status().expect("status");
+        assert!(after.loaded);
+
+        let wav = concat!(env!("CARGO_MANIFEST_DIR"), "/resources/start_v1.wav");
+        let result = engine.transcribe(wav, Some("en")).expect("transcribe");
+        assert!(result.success);
+        eprintln!("in-process whisper text: {:?}", result.text);
     }
 }
 

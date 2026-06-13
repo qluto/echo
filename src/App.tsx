@@ -68,7 +68,7 @@ function App() {
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [loadingPhase, setLoadingPhase] = useState<LoadingPhase>("idle");
-  const [modelName, setModelName] = useState<string>("mlx-community/Qwen3-ASR-0.6B-8bit");
+  const [modelName, setModelName] = useState<string>("mlx-community/whisper-large-v3-turbo");
   const [hotkey, setHotkey] = useState<string>("command+shift+space");
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
   const [showRestartPrompt, setShowRestartPrompt] = useState(false);
@@ -258,7 +258,7 @@ function App() {
       }
 
       const status = await getModelStatus();
-      setModelName(status.model_name || "mlx-community/Qwen3-ASR-0.6B-8bit");
+      setModelName(status.model_name || "mlx-community/whisper-large-v3-turbo");
 
       if (status.loaded) {
         setLoadingPhase("ready");
@@ -297,7 +297,7 @@ function App() {
       }
 
       const status = await loadAsrModel();
-      setModelName(status.model_name || "mlx-community/Qwen3-ASR-0.6B-8bit");
+      setModelName(status.model_name || "mlx-community/whisper-large-v3-turbo");
 
       // Warmup the model to trigger JIT compilation
       setLoadingPhase("warming_up");

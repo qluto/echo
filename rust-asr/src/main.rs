@@ -75,6 +75,24 @@ fn main() -> Result<()> {
             let lang = args.get(3).map(String::as_str).unwrap_or("en");
             run_wav(wav, lang)
         }
+        "whisper" => {
+            // CLI check for the Whisper engine: whisper <wav> <lang> [model_id]
+            let wav = args.get(2).ok_or_else(|| anyhow!("usage: whisper <wav> <lang> [model]"))?;
+            let lang = args.get(3).map(String::as_str).unwrap_or("auto");
+            let model = args
+                .get(4)
+                .map(String::as_str)
+                .unwrap_or("mlx-community/whisper-large-v3-turbo");
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let t = std::time::Instant::now();
+            let eng = rust_asr::WhisperEngine::load(std::path::Path::new(&hub), model)?;
+            println!("whisper loaded in {:?}", t.elapsed());
+            let t = std::time::Instant::now();
+            let out = eng.transcribe_wav(wav, lang)?;
+            println!("text: {:?} (lang={}) in {:?}", out.text, out.language, t.elapsed());
+            Ok(())
+        }
         "engine" => {
             // Exercise the high-level CohereEngine API (hub-cache resolution +
             // load + transcribe), the same path the Tauri app uses.
