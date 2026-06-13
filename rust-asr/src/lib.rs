@@ -75,6 +75,14 @@ impl CohereEngine {
                 language: lang,
             });
         }
+        let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+        log::info!(
+            "Cohere transcribe: {} samples (~{:.2}s @16k), rms={:.5}, lang={}",
+            samples.len(),
+            samples.len() as f32 / 16000.0,
+            rms,
+            lang
+        );
         let waveform = Array::from_slice(samples, &[samples.len() as i32]);
         let (mel, seq_len) = audio::extract_features(&self.weights, &waveform)?;
         let enc = self.encoder.forward(&mel, seq_len)?;
@@ -141,7 +149,10 @@ fn ensure_model_files(
     Ok((safetensors, tokenizer_json))
 }
 
-/// Read a WAV as mono 16 kHz f32 in [-1, 1] (Echo always feeds 16 kHz mono).
+/// Read a WAV as mono 16 kHz f32 in [-1, 1]. Hotkey recordings are written at
+/// the input device's native rate (often 48 kHz) and channel count, so we
+/// downmix to mono and resample to 16 kHz — mirroring the Python engine's
+/// `load_audio(path, sr=16000)`.
 pub fn read_wav_16k_mono(path: &str) -> Result<Vec<f32>> {
     let mut reader = hound::WavReader::open(path).map_err(|e| anyhow!("open wav: {e}"))?;
     let spec = reader.spec();
@@ -165,5 +176,50 @@ pub fn read_wav_16k_mono(path: &str) -> Result<Vec<f32>> {
     } else {
         raw
     };
-    Ok(mono)
+    log::info!(
+        "read wav: {} Hz, {} ch, {} frames -> resample to 16k",
+        spec.sample_rate,
+        spec.channels,
+        mono.len()
+    );
+    resample_to_16k(&mono, spec.sample_rate)
+}
+
+/// High-quality sinc resample of a mono signal to 16 kHz (no-op at 16 kHz).
+fn resample_to_16k(input: &[f32], from_rate: u32) -> Result<Vec<f32>> {
+    use rubato::Resampler;
+    if from_rate == 16000 || input.is_empty() {
+        return Ok(input.to_vec());
+    }
+    let params = rubato::SincInterpolationParameters {
+        sinc_len: 256,
+        f_cutoff: 0.95,
+        oversampling_factor: 128,
+        interpolation: rubato::SincInterpolationType::Cubic,
+        window: rubato::WindowFunction::BlackmanHarris2,
+    };
+    let chunk = 1024usize;
+    let mut resampler =
+        rubato::SincFixedIn::<f32>::new(16000.0 / from_rate as f64, 1.0, params, chunk, 1)
+            .map_err(|e| anyhow!("resampler init: {e}"))?;
+
+    let need = resampler.input_frames_next();
+    let mut out: Vec<f32> = Vec::with_capacity(input.len() * 16000 / from_rate as usize + chunk);
+    let mut pos = 0usize;
+    while pos < input.len() {
+        let take = need.min(input.len() - pos);
+        let mut buf = input[pos..pos + take].to_vec();
+        if buf.len() < need {
+            buf.resize(need, 0.0); // pad the final chunk with silence
+        }
+        let res = resampler
+            .process(&[buf], None)
+            .map_err(|e| anyhow!("resample: {e}"))?;
+        out.extend_from_slice(&res[0]);
+        pos += take;
+    }
+    // Drop output beyond the expected duration (trailing padding artifacts).
+    let expected = (input.len() as f64 * 16000.0 / from_rate as f64).round() as usize;
+    out.truncate(expected.min(out.len()));
+    Ok(out)
 }

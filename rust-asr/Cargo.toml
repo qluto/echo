@@ -21,8 +21,11 @@ serde_json = "1"
 # decoder) directly — no cmake/C++ build needed.
 tokenizers = "0.20"
 half = "2"
-# WAV decoding for the real end-to-end pipeline.
+# WAV decoding + resampling to 16 kHz (hotkey recordings are at the device's
+# native rate, e.g. 48 kHz). rubato matches the version the Tauri app uses.
 hound = "3"
+rubato = "0.16"
+log = "0.4"
 # Gated-model download (blocking sync API; uses system TLS via native-tls).
 hf-hub = "0.3"
 
