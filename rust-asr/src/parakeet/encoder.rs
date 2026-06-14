@@ -17,7 +17,6 @@ use crate::weights::Weights;
 const D_MODEL: i32 = 1024;
 const N_HEADS: i32 = 8;
 const HEAD_DIM: i32 = D_MODEL / N_HEADS; // 128
-const FF_DIM: i32 = D_MODEL * 4; // ff_expansion_factor 4
 const N_LAYERS: usize = 24;
 const LN_EPS: f32 = 1e-5;
 const BN_EPS: f32 = 1e-5;
