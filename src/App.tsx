@@ -528,12 +528,9 @@ function App() {
         {/* Mode Cards */}
         <div className="flex gap-3">
           {/* Quick Input Card */}
-          <div className="flex-1 flex items-center gap-2.5 rounded-xl bg-surface px-3 py-2.5 border shadow-sm" style={{ borderColor: "#E8E4DF" }}>
-            <svg className="w-4 h-4 shrink-0" fill="none" stroke="var(--text-secondary)" strokeWidth={1.5} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z" />
-            </svg>
+          <div className="flex-1 min-w-0 flex items-center gap-2 rounded-xl bg-surface px-3 py-2.5 border shadow-sm" style={{ borderColor: "#E8E4DF" }}>
             <div className="flex flex-col min-w-0 flex-1">
-              <span className="text-[13px] font-semibold leading-tight" style={{ color: "var(--text-primary)" }}>
+              <span className="text-[13px] font-semibold leading-tight truncate" style={{ color: "var(--text-primary)" }}>
                 Quick Input
               </span>
               <span
@@ -552,12 +549,9 @@ function App() {
           </div>
 
           {/* Always-on Card */}
-          <div className="flex-1 flex items-center gap-2.5 rounded-xl bg-surface px-3 py-2.5 border shadow-sm" style={{ borderColor: "#E8E4DF" }}>
-            <svg className="w-4 h-4 shrink-0" fill="none" stroke="var(--text-secondary)" strokeWidth={1.5} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
-            </svg>
+          <div className="flex-1 min-w-0 flex items-center gap-2 rounded-xl bg-surface px-3 py-2.5 border shadow-sm" style={{ borderColor: "#E8E4DF" }}>
             <div className="flex flex-col min-w-0 flex-1">
-              <span className="text-[13px] font-semibold leading-tight" style={{ color: "var(--text-primary)" }}>
+              <span className="text-[13px] font-semibold leading-tight truncate" style={{ color: "var(--text-primary)" }}>
                 Always-on
               </span>
               <span
