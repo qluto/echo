@@ -78,6 +78,9 @@ pub struct ASREngine {
     hub_dir: Option<PathBuf>,
     /// HF token for gated downloads (Cohere).
     hf_token: Option<String>,
+    /// Silero VAD, lazily created, to gate out silent recordings before ASR
+    /// (otherwise a "pressed hotkey, said nothing" clip hallucinates).
+    vad: Option<crate::vad::VadProcessor>,
 }
 
 impl ASREngine {
@@ -95,6 +98,7 @@ impl ASREngine {
             active_model: String::new(),
             hub_dir: None,
             hf_token: None,
+            vad: None,
         }
     }
 
@@ -252,9 +256,15 @@ impl ASREngine {
         Ok(self.status(true))
     }
 
-    /// VAD for the always-on pipeline runs natively in `vad.rs`; these are
-    /// no-ops kept for command compatibility.
+    /// Pre-create the Silero VAD used to gate silent recordings (called from
+    /// load_asr_model so the first transcription isn't slowed by VAD init).
     pub fn load_vad(&mut self) -> Result<()> {
+        if self.vad.is_none() {
+            match crate::vad::VadProcessor::new(0.5) {
+                Ok(v) => self.vad = Some(v),
+                Err(e) => log::warn!("VAD init failed: {e}"),
+            }
+        }
         Ok(())
     }
     pub fn warmup_vad(&mut self) -> Result<WarmupResult> {
@@ -303,13 +313,29 @@ impl ASREngine {
         if !self.active_loaded() {
             self.load_model()?;
         }
+
+        // Read once at 16 kHz mono (also what the engines need) and gate on VAD:
+        // if there's no speech, skip ASR so silence doesn't hallucinate.
+        let samples =
+            rust_asr::read_wav_16k_mono(audio_path).map_err(|e| anyhow!("read audio: {e}"))?;
+        if !self.has_speech(&samples) {
+            log::info!("No speech detected (VAD); skipping transcription");
+            return Ok(TranscriptionResult {
+                success: true,
+                text: String::new(),
+                segments: Vec::new(),
+                language: language.unwrap_or("auto").to_string(),
+                no_speech: Some(true),
+            });
+        }
+
         let lang = language.unwrap_or("auto");
         let out = if let Some(e) = self.whisper.as_ref() {
-            e.transcribe_wav(audio_path, lang)
+            e.transcribe_samples(&samples, lang)
         } else if let Some(e) = self.parakeet.as_ref() {
-            e.transcribe_wav(audio_path, lang)
+            e.transcribe_samples(&samples, lang)
         } else if let Some(e) = self.cohere.as_ref() {
-            e.transcribe_wav(audio_path, lang)
+            e.transcribe_samples(&samples, lang)
         } else {
             return Err(anyhow!("No ASR model loaded"));
         }
@@ -328,6 +354,46 @@ impl ASREngine {
             language: out.language,
             no_speech,
         })
+    }
+
+    /// Run Silero VAD over the whole 16 kHz clip; speech if enough frames clear
+    /// the threshold. Always-on segments (already speech) pass; silent hotkey
+    /// recordings are rejected.
+    fn has_speech(&mut self, samples: &[f32]) -> bool {
+        use crate::vad::{VadEvent, VadProcessor, VAD_FRAME_SIZE};
+        const MIN_SPEECH_FRAMES: usize = 3; // ~96 ms of speech
+
+        if self.vad.is_none() {
+            match VadProcessor::new(0.5) {
+                Ok(v) => self.vad = Some(v),
+                Err(e) => {
+                    log::warn!("VAD init failed ({e}); skipping speech gate");
+                    return true; // fail open — better to transcribe than to drop speech
+                }
+            }
+        }
+        let vad = self.vad.as_mut().unwrap();
+        vad.reset();
+
+        let mut speech_frames = 0usize;
+        let mut max_prob = 0.0f32;
+        for frame in samples.chunks_exact(VAD_FRAME_SIZE) {
+            if let VadEvent::Speech { probability } = vad.process_frame(frame) {
+                speech_frames += 1;
+                if probability > max_prob {
+                    max_prob = probability;
+                }
+                if speech_frames >= MIN_SPEECH_FRAMES {
+                    return true;
+                }
+            }
+        }
+        log::debug!(
+            "VAD: {} speech frames (max prob {:.2}) — below gate",
+            speech_frames,
+            max_prob
+        );
+        false
     }
 
     // ===== Post-processing (in-process Qwen3) =====
@@ -561,6 +627,19 @@ mod in_process_tests {
             .expect("set");
         assert!(engine.load_model().expect("load").loaded);
         assert!(engine.transcribe(WAV, Some("ja")).expect("transcribe").success);
+    }
+
+    #[test]
+    fn vad_gates_silence_but_passes_speech() {
+        let mut e = ASREngine::new();
+        // 1s of pure silence -> not speech
+        assert!(!e.has_speech(&vec![0.0f32; 16000]));
+        // a real speech clip (synthesized earlier this session) -> speech
+        if let Ok(samples) = rust_asr::read_wav_16k_mono("/tmp/ja.wav") {
+            assert!(e.has_speech(&samples), "ja.wav should be detected as speech");
+        } else {
+            eprintln!("skipping speech half: /tmp/ja.wav not present");
+        }
     }
 
     #[test]
