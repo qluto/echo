@@ -548,8 +548,12 @@ function App() {
               <span className="text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
                 Quick Input
               </span>
-              <span className="text-[11px] leading-snug" style={{ color: "var(--text-tertiary)" }}>
-                Hold to transcribe and insert into active app
+              <span
+                className="text-[11px] leading-snug"
+                style={{ color: "var(--text-tertiary)" }}
+                title="Hold the hotkey to transcribe and insert into the active app"
+              >
+                Hold to dictate
               </span>
             </div>
           </div>
@@ -581,8 +585,12 @@ function App() {
               <span className="text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
                 Always-on
               </span>
-              <span className="text-[11px] leading-snug" style={{ color: "var(--text-tertiary)" }}>
-                Continuously transcribe and save to log
+              <span
+                className="text-[11px] leading-snug"
+                style={{ color: "var(--text-tertiary)" }}
+                title="Continuously transcribe and save to the log"
+              >
+                Continuous logging
               </span>
             </div>
           </div>
