@@ -357,12 +357,6 @@ function App() {
   }, [result]);
 
   // Calculate duration from segments
-  const getDuration = () => {
-    if (!result?.segments || result.segments.length === 0) return null;
-    const lastSegment = result.segments[result.segments.length - 1];
-    return lastSegment.end;
-  };
-
   // Show loading overlay during initial startup
   // Only check loadingPhase - engineStatus check was causing early dismissal
   const isInitializing = loadingPhase !== "ready" && loadingPhase !== "error";
@@ -675,27 +669,21 @@ function App() {
               <p className="text-sm" style={{ color: "var(--glow-recording)" }}>{error}</p>
             ) : result?.text ? (
               <>
-                <div className="flex items-center justify-between">
-                  <span className="font-mono text-[10px]" style={{ color: "var(--text-tertiary)" }}>
-                    {getDuration() ? `${getDuration()!.toFixed(1)}s` : ""}
-                  </span>
-                  {result.language && (
-                    <span
-                      className="font-mono text-[10px] capitalize px-1.5 py-0.5 rounded-md"
-                      style={{ color: "var(--text-tertiary)", backgroundColor: "var(--surface-muted)" }}
-                    >
-                      {result.language}
-                    </span>
-                  )}
-                </div>
                 {result.raw_text ? (
-                  <div className="flex flex-col gap-2">
+                  <div className="flex flex-col gap-2.5">
                     <div className="flex flex-col gap-1">
                       <div className="flex items-center justify-between">
                         <span className="text-[10px] font-semibold tracking-wide" style={{ color: "var(--text-tertiary)" }}>
                           元の書き起こし
                         </span>
-                        {copyButton(result.raw_text, "raw")}
+                        <div className="flex items-center gap-2">
+                          {result.language && (
+                            <span className="font-mono text-[10px] capitalize px-1.5 py-0.5 rounded-md" style={{ color: "var(--text-tertiary)", backgroundColor: "var(--surface-muted)" }}>
+                              {result.language}
+                            </span>
+                          )}
+                          {copyButton(result.raw_text, "raw")}
+                        </div>
                       </div>
                       <p className="text-sm leading-relaxed" style={{ color: "var(--text-tertiary)" }}>
                         {result.raw_text}
@@ -714,11 +702,18 @@ function App() {
                     </div>
                   </div>
                 ) : (
-                  <div className="flex items-start justify-between gap-2">
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center justify-end gap-2">
+                      {result.language && (
+                        <span className="font-mono text-[10px] capitalize px-1.5 py-0.5 rounded-md" style={{ color: "var(--text-tertiary)", backgroundColor: "var(--surface-muted)" }}>
+                          {result.language}
+                        </span>
+                      )}
+                      {copyButton(result.text, "single")}
+                    </div>
                     <p className="text-sm leading-relaxed" style={{ color: "var(--text-primary)" }}>
                       {result.text}
                     </p>
-                    {copyButton(result.text, "single")}
                   </div>
                 )}
               </>
