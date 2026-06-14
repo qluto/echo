@@ -128,6 +128,75 @@ fn main() -> Result<()> {
             println!("text: {:?} in {:?}", out.text, t.elapsed());
             Ok(())
         }
+        "switchmem" => {
+            // Simulate the app switch path: load a big MLX model, drop+release,
+            // load whisper-tiny, drop+release. Watch RSS + MLX memory.
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let hubp = std::path::Path::new(&hub);
+            let rss = || {
+                let pid = std::process::id().to_string();
+                std::process::Command::new("ps")
+                    .args(["-o", "rss=", "-p", &pid])
+                    .output()
+                    .ok()
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+                    .map(|kb| kb / 1024)
+                    .unwrap_or(0)
+            };
+            let mb = |b: usize| b / (1024 * 1024);
+            let report = |tag: &str| {
+                let (a, c) = rust_asr::mlx_memory();
+                println!("{tag}: rss={}MB  mlx_active={}MB mlx_cache={}MB", rss(), mb(a), mb(c));
+            };
+            report("baseline    ");
+            {
+                let pk = rust_asr::ParakeetEngine::load(hubp)?;
+                pk.warmup()?;
+                report("parakeet load");
+            }
+            rust_asr::release_unused_memory();
+            report("parakeet drop");
+            {
+                let w = rust_asr::WhisperEngine::load(hubp, "mlx-community/whisper-tiny")?;
+                w.warmup()?;
+                report("whisper load ");
+            }
+            rust_asr::release_unused_memory();
+            report("whisper drop ");
+            Ok(())
+        }
+        "whispermem" => {
+            // Measure process RSS around a Whisper load + drop (whisper.cpp
+            // memory is NOT MLX cache, so we watch RSS directly).
+            let model = args
+                .get(2)
+                .map(String::as_str)
+                .unwrap_or("mlx-community/whisper-large-v3-turbo");
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let rss = || {
+                let pid = std::process::id().to_string();
+                let out = std::process::Command::new("ps")
+                    .args(["-o", "rss=", "-p", &pid])
+                    .output()
+                    .ok();
+                out.and_then(|o| String::from_utf8(o.stdout).ok())
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+                    .map(|kb| kb / 1024)
+                    .unwrap_or(0)
+            };
+            println!("before load:  rss={}MB", rss());
+            {
+                let eng = rust_asr::WhisperEngine::load(std::path::Path::new(&hub), model)?;
+                eng.warmup()?;
+                println!("after load:   rss={}MB", rss());
+            } // dropped here -> whisper_free
+            rust_asr::release_unused_memory();
+            println!("after drop:   rss={}MB", rss());
+            Ok(())
+        }
         "memtest" => {
             // Prove that dropping a model + release_unused_memory frees GPU RAM.
             let mb = |b: usize| b / (1024 * 1024);
