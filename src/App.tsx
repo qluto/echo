@@ -316,15 +316,37 @@ function App() {
     }
   };
 
-  const handleCopy = useCallback(async () => {
-    if (result?.text) {
-      try {
-        await writeText(result.text);
-      } catch (e) {
-        console.error("Failed to copy:", e);
-      }
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const copyText = useCallback(async (text: string, key: string) => {
+    try {
+      await writeText(text);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey((k) => (k === key ? null : k)), 1200);
+    } catch (e) {
+      console.error("Failed to copy:", e);
     }
-  }, [result]);
+  }, []);
+
+  // Small icon-only copy button used per text block.
+  const copyButton = (text: string, key: string) => (
+    <button
+      onClick={() => copyText(text, key)}
+      title="コピー"
+      aria-label="コピー"
+      className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center border transition-colors hover:bg-surface-elevated"
+      style={{ color: "var(--text-tertiary)", borderColor: "#E0DDD8" }}
+    >
+      {copiedKey === key ? (
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+        </svg>
+      ) : (
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75" />
+        </svg>
+      )}
+    </button>
+  );
 
   // Auto-insert is now handled by the backend (hotkey.rs)
   // Frontend only shows success state when result arrives
@@ -669,42 +691,36 @@ function App() {
                 {result.raw_text ? (
                   <div className="flex flex-col gap-2">
                     <div className="flex flex-col gap-1">
-                      <span className="text-[10px] font-semibold tracking-wide" style={{ color: "var(--text-tertiary)" }}>
-                        元の書き起こし
-                      </span>
-                      <p
-                        className="text-sm leading-relaxed"
-                        style={{ color: "var(--text-tertiary)" }}
-                      >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-semibold tracking-wide" style={{ color: "var(--text-tertiary)" }}>
+                          元の書き起こし
+                        </span>
+                        {copyButton(result.raw_text, "raw")}
+                      </div>
+                      <p className="text-sm leading-relaxed" style={{ color: "var(--text-tertiary)" }}>
                         {result.raw_text}
                       </p>
                     </div>
                     <div className="flex flex-col gap-1">
-                      <span className="text-[10px] font-semibold tracking-wide" style={{ color: "var(--text-tertiary)" }}>
-                        AI 整形後（コピー対象）
-                      </span>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-semibold tracking-wide" style={{ color: "var(--text-tertiary)" }}>
+                          AI 整形後（コピー対象）
+                        </span>
+                        {copyButton(result.text, "proc")}
+                      </div>
                       <p className="text-sm leading-relaxed" style={{ color: "var(--text-primary)" }}>
                         {result.text}
                       </p>
                     </div>
                   </div>
                 ) : (
-                  <p className="text-sm leading-relaxed" style={{ color: "var(--text-primary)" }}>
-                    {result.text}
-                  </p>
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm leading-relaxed" style={{ color: "var(--text-primary)" }}>
+                      {result.text}
+                    </p>
+                    {copyButton(result.text, "single")}
+                  </div>
                 )}
-                <div className="flex items-center justify-end">
-                  <button
-                    onClick={handleCopy}
-                    className="h-8 px-3.5 rounded-full text-xs font-medium flex items-center gap-1.5 transition-colors border hover:bg-surface-elevated"
-                    style={{ color: "var(--text-primary)", borderColor: "#E0DDD8" }}
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75" />
-                    </svg>
-                    Copy
-                  </button>
-                </div>
               </>
             ) : (
               <p className="text-xs text-center py-2" style={{ color: "var(--text-tertiary)" }}>
