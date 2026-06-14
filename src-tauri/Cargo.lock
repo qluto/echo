@@ -4433,6 +4433,7 @@ dependencies = [
  "hound",
  "log",
  "mlx-rs",
+ "mlx-sys",
  "rubato",
  "serde",
  "serde_json",

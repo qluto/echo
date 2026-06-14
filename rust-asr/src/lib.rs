@@ -30,6 +30,36 @@ use weights::Weights;
 
 pub const COHERE_MODEL_ID: &str = "CohereLabs/cohere-transcribe-03-2026";
 
+/// (active, cache) MLX GPU memory in bytes — for diagnostics.
+pub fn mlx_memory() -> (usize, usize) {
+    unsafe {
+        let (mut active, mut cache) = (0usize, 0usize);
+        mlx_sys::mlx_get_active_memory(&mut active as *mut usize);
+        mlx_sys::mlx_get_cache_memory(&mut cache as *mut usize);
+        (active, cache)
+    }
+}
+
+/// Release MLX's cached (unused) GPU buffers back to the OS.
+///
+/// MLX keeps freed buffers in an allocator pool for reuse, so simply dropping a
+/// loaded engine's arrays does not lower OS-visible memory. Call this *after*
+/// dropping an engine (when switching models) to actually free that memory.
+/// Only affects the MLX cache; in-use arrays and other backends are untouched.
+pub fn release_unused_memory() {
+    unsafe {
+        let mut cache: usize = 0;
+        mlx_sys::mlx_get_cache_memory(&mut cache as *mut usize);
+        mlx_sys::mlx_clear_cache();
+        if cache > 1024 * 1024 {
+            log::info!(
+                "Released ~{} MB of cached MLX GPU memory",
+                cache / (1024 * 1024)
+            );
+        }
+    }
+}
+
 /// Languages Cohere Transcribe supports (ISO codes). Used to validate input.
 pub const SUPPORTED_LANGUAGES: [&str; 14] = [
     "en", "fr", "de", "es", "it", "pt", "nl", "pl", "el", "ar", "ja", "zh", "vi", "ko",

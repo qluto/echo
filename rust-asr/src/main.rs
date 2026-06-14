@@ -128,6 +128,29 @@ fn main() -> Result<()> {
             println!("text: {:?} in {:?}", out.text, t.elapsed());
             Ok(())
         }
+        "memtest" => {
+            // Prove that dropping a model + release_unused_memory frees GPU RAM.
+            let mb = |b: usize| b / (1024 * 1024);
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let (a0, c0) = rust_asr::mlx_memory();
+            println!("before load:  active={}MB cache={}MB", mb(a0), mb(c0));
+            {
+                let pp = rust_asr::PostProcessor::load(
+                    std::path::Path::new(&hub),
+                    "mlx-community/Qwen3-1.7B-4bit",
+                )?;
+                let _ = pp.process("テスト", None, None, None, None)?;
+                let (a1, c1) = rust_asr::mlx_memory();
+                println!("after load:   active={}MB cache={}MB", mb(a1), mb(c1));
+            } // pp dropped here
+            let (a2, c2) = rust_asr::mlx_memory();
+            println!("after drop:   active={}MB cache={}MB", mb(a2), mb(c2));
+            rust_asr::release_unused_memory();
+            let (a3, c3) = rust_asr::mlx_memory();
+            println!("after release: active={}MB cache={}MB", mb(a3), mb(c3));
+            Ok(())
+        }
         "pp" => {
             // Post-process cleanup: pp "<text>" [model_id]
             let text = args.get(2).ok_or_else(|| anyhow!("usage: pp <text> [model]"))?;

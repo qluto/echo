@@ -114,7 +114,7 @@ impl ASREngine {
         Ok(())
     }
 
-    /// Free all loaded engines.
+    /// Free all loaded engines and release their GPU memory.
     pub fn stop(&mut self) -> Result<()> {
         self.cohere = None;
         self.cohere_loaded = false;
@@ -124,6 +124,7 @@ impl ASREngine {
         self.parakeet_loaded = false;
         self.postproc = None;
         self.postproc_loaded = false;
+        rust_asr::release_unused_memory();
         Ok(())
     }
 
@@ -208,6 +209,8 @@ impl ASREngine {
         self.whisper_loaded = false;
         self.parakeet = None;
         self.parakeet_loaded = false;
+        // Return the freed model's GPU buffers to the OS (MLX caches them).
+        rust_asr::release_unused_memory();
         Ok(self.status(false))
     }
 
@@ -363,6 +366,7 @@ impl ASREngine {
     pub fn unload_postprocess_model(&mut self) -> Result<()> {
         self.postproc = None;
         self.postproc_loaded = false;
+        rust_asr::release_unused_memory();
         Ok(())
     }
 
@@ -386,6 +390,7 @@ impl ASREngine {
         self.postproc_model = model_name.to_string();
         self.postproc = None;
         self.postproc_loaded = false;
+        rust_asr::release_unused_memory();
         Ok(self.postproc_status(false, None))
     }
 

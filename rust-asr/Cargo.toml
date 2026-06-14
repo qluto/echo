@@ -14,6 +14,9 @@ path = "src/main.rs"
 [dependencies]
 # Apple MLX bindings. Metal must be explicitly enabled or the build is CPU-only.
 mlx-rs = { version = "0.25", features = ["metal", "accelerate"] }
+# Raw MLX C API (same version mlx-rs wraps) — for releasing the GPU memory cache
+# on model switch, which mlx-rs doesn't yet expose safely.
+mlx-sys = "0.2"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
