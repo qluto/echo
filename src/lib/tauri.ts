@@ -13,6 +13,9 @@ export interface TranscriptionResult {
   text: string;
   segments: TranscriptionSegment[];
   language: string;
+  no_speech?: boolean | null;
+  /** Raw transcription before AI post-processing (present only when it changed). */
+  raw_text?: string | null;
 }
 
 export interface AudioDevice {

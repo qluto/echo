@@ -97,6 +97,10 @@ pub struct TranscriptionResult {
     pub language: String,
     /// True if VAD detected no speech in the audio
     pub no_speech: Option<bool>,
+    /// Raw transcription before AI post-processing. Set only when post-processing
+    /// changed the text, so the UI can show both (a fallback if the LLM misbehaves).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_text: Option<String>,
 }
 
 /// Transcription segment with timestamps

@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Echo is an offline voice input desktop application optimized for Apple Silicon. It uses Tauri 2.x for the desktop framework with a React frontend and Rust backend, combined with a Python sidecar process running MLX-Audio for speech recognition.
+Echo is an offline voice input desktop application optimized for Apple Silicon. It uses Tauri 2.x for the desktop framework with a React frontend and Rust backend. Speech recognition and LLM post-processing run **fully in-process in Rust** (Apple MLX via `mlx-rs` + whisper.cpp via `whisper-rs`) — there is no Python sidecar.
 
 ## Tech Stack
 
 - **Frontend**: React 18, TypeScript, Vite, Tailwind CSS
 - **Backend**: Tauri 2.x, Rust
-- **ASR Engine**: Python 3.11+, MLX-Audio, Whisper/Qwen3-ASR (runs as sidecar process)
+- **ASR Engine**: fully in-process Rust — Whisper (whisper.cpp via `whisper-rs`), Parakeet-JA + Cohere (Apple MLX via `mlx-rs`). No Python sidecar.
 - **VAD**: Silero VAD v5 via ONNX Runtime (`voice_activity_detector` crate), rubato for audio resampling
 - **Post-Processing**: MLX LLM (Qwen3-1.7B-4bit) for cleaning up transcription results
 - **Database**: SQLite with FTS5 full-text search (`rusqlite` crate) for transcription history
@@ -29,15 +29,11 @@ npm run tauri:build       # Build full desktop app
 # Frontend only
 npm run dev               # Start Vite dev server (no Tauri)
 
-# Python engine binary build (PyInstaller)
-cd python-engine
-./build.sh                # Creates mlx-asr-engine-aarch64-apple-darwin in src-tauri/binaries/
-
-# Python engine (manual testing - requires venv)
-cd python-engine
-source venv/bin/activate
-python engine.py single <audio_path> [language]  # Single transcription
-python engine.py daemon                           # JSON-RPC mode
+# Rust ASR engine (standalone CLI / parity harness in rust-asr/)
+cd rust-asr && cargo build --release
+./target/release/rust-asr run <audio_16k.wav> <lang>      # Whisper
+./target/release/rust-asr pk-run <audio.wav>              # Parakeet-JA
+./target/release/rust-asr pp "<text>" [qwen3-model]       # Post-processing
 
 # Release (creates tag and triggers GitHub Actions)
 git tag -a v0.x.x -m "Release v0.x.x - description"
@@ -51,8 +47,8 @@ git push origin v0.x.x
 1. **Hotkey pressed** → `hotkey.rs` receives event, detects active app via `active_app.rs`
 2. **Start recording** → `audio_capture.rs` captures audio to temp file
 3. **Hotkey released** → `hotkey.rs` stops recording, triggers transcription
-4. **Transcription** → `transcription.rs` sends JSON-RPC to Python sidecar with app context
-5. **ASR Engine** → `engine.py` uses MLX-Audio (Whisper or Qwen3-ASR) for speech-to-text
+4. **Transcription** → `transcription.rs` calls the in-process engine with app context
+5. **ASR Engine** → the active in-process Rust engine (Whisper / Parakeet / Cohere) does speech-to-text
 6. **Post-Processing** (optional) → LLM cleans up filler words, self-corrections using custom prompt
 7. **Result** → Emitted via Tauri events to React frontend
 8. **Auto-insert** → Text inserted via clipboard + simulated paste
@@ -64,13 +60,13 @@ git push origin v0.x.x
 3. **VAD** → `vad.rs` runs Silero VAD v5 (ONNX Runtime) per frame on a dedicated thread, classifying speech vs silence
 4. **Segment detection** → `VadStateMachine` in `continuous.rs` manages speech onset/offset with 0.3s pre-buffer, 1.5s silence timeout, 60s max segment duration
 5. **WAV save** → Completed segments saved to temp WAV files (16kHz mono 16-bit PCM)
-6. **ASR** → Transcription worker thread sends WAV to Python sidecar via JSON-RPC (same as hotkey mode)
+6. **ASR** → Transcription worker thread calls the in-process engine (same as hotkey mode)
 7. **Storage** → Results saved to SQLite via `database.rs` (FTS5 full-text search enabled)
 8. **Frontend** → `continuous-transcription` Tauri event emitted, rendered in `TranscriptionHistory.tsx`
 
 ### Key Patterns
 
-- **Python Sidecar (PyInstaller Bundled)**: The ASR engine runs as a standalone PyInstaller binary (`mlx-asr-engine-*`), communicating via JSON-RPC over stdin/stdout. Managed by `transcription.rs`. The binary is built by `python-engine/build.sh` and placed in `src-tauri/binaries/`. Requires Python 3.11 (not 3.13 - PyInstaller compatibility issues).
+- **In-Process Engines (no sidecar)**: ASR and post-processing run natively in Rust via the `rust-asr` crate. `transcription.rs`'s `ASREngine` owns the loaded engines and dispatches by active model id. See "In-Process Rust ASR Engines" under Build & Release for details.
 - **Lazy Model Loading**: Models are loaded on first use, not at startup. Status tracked via `ModelStatus`. Post-processor LLM auto-loads on app startup if enabled.
 - **Global Hotkey**: Press-and-hold recording via tauri-plugin-global-shortcut. Logic in `hotkey.rs` handles both pressed and released states.
 - **Dual Transcription Paths**: Transcription can be triggered via hotkey (handled entirely in Rust) or manual stop (via frontend hook).
@@ -125,7 +121,7 @@ Optional LLM-based cleanup using Qwen3-1.7B-4bit:
 
 - `src-tauri/src/lib.rs` - Tauri commands, app state (Settings, RecordingState, ASREngine, PostProcessSettings)
 - `src-tauri/src/hotkey.rs` - Hotkey press/release handling, coordinates recording + transcription
-- `src-tauri/src/transcription.rs` - JSON-RPC communication with Python engine
+- `src-tauri/src/transcription.rs` - `ASREngine`: owns + dispatches the in-process Rust engines (ASR + post-processing)
 - `src-tauri/src/active_app.rs` - Active application detection via NSWorkspace API
 - `src-tauri/src/continuous.rs` - Always-on pipeline: VAD state machine, segment detection, transcription worker
 - `src-tauri/src/vad.rs` - Silero VAD v5 wrapper (ONNX Runtime via `voice_activity_detector` crate)
@@ -136,7 +132,7 @@ Optional LLM-based cleanup using Qwen3-1.7B-4bit:
 - `src/hooks/useTranscriptionHistory.ts` - React hook for history queries (pagination, search)
 - `src/components/TranscriptionHistory.tsx` - History UI with search and infinite scroll
 - `src/lib/tauri.ts` - TypeScript bindings for Tauri commands
-- `python-engine/engine.py` - MLX-Audio wrapper (Whisper/Qwen3-ASR) + PostProcessor class for LLM cleanup
+- `rust-asr/` - in-process Rust ASR engines (Whisper, Parakeet-JA, Cohere) + Qwen3 post-processor; consumed by `transcription.rs`
 
 ## Configuration
 
@@ -198,6 +194,61 @@ This ensures models are removed when the app is uninstalled. The following envir
 
 ## Build & Release Process
 
+### In-Process Rust ASR Engines (`rust-asr/`)
+
+Three ASR models run **fully in Rust in-process** (no Python sidecar) via the
+`rust-asr` crate:
+- **Whisper** (the non-gated **default**) → `WhisperEngine`, backed by
+  whisper.cpp through `whisper-rs` on Metal. Downloads a ggml model from
+  `ggerganov/whisper.cpp` (mapped from the `mlx-community/whisper-*` id) into the
+  shared HF cache. `whisper-large-v3-turbo` is the default.
+- **Parakeet TDT (JA)** → `ParakeetEngine`, a full-Rust MLX port of
+  `mlx-community/parakeet-tdt_ctc-0.6b-ja` (NVIDIA FastConformer encoder + TDT
+  transducer decoder; CC-BY-4.0, non-gated). Japanese-specialized (CER 6.4% on
+  JSUT), ~160 ms inference. The FastConformer encoder shares the Cohere port's
+  building blocks; the TDT decoder is a hand-rolled 2-layer LSTM prediction net
+  + joint net + greedy transducer loop. f32 weights, no quantization.
+- **Cohere Transcribe** (gated, opt-in) → `CohereEngine`, a full-Rust MLX port
+  (`mlx-rs` / Apple MLX). Gated checkpoint fetched via `hf-hub` with the HF token.
+
+**Post-processing** also runs in-process: `rust_asr::PostProcessor` is a full-Rust
+mlx-rs port of Qwen3 (4-bit quantized: quantized_matmul + dequantize, GQA, RoPE,
+per-head q/k RMSNorm, SwiGLU, tied lm_head). It runs in **BF16** to match mlx-lm
+bit-for-bit (validated: identical cleaned output vs the Python postprocessor on
+the same model). `ASREngine.postprocess_text` / `summarize_transcriptions` /
+`*_postprocess_model` route to it; the Qwen3 chat template is applied manually
+with the `enable_thinking=False` empty-`<think>` priming for cleanup and thinking
+mode for summaries. Models: Qwen3-8B/4B/1.7B-4bit (default 4B).
+
+With ASR (Whisper/Parakeet/Cohere) and post-processing (Qwen3) all in-process,
+the **Python sidecar is no longer needed** for the default experience — it stays
+only as an optional fallback for unported ASR models (e.g. Qwen3-ASR).
+
+Note: Whisper uses whisper.cpp's Metal backend while Parakeet/Cohere/Qwen3 use
+MLX's; both coexist in-process, serialized by the `ASREngine` mutex (concurrent
+Metal command encoding across the two backends is unsafe, so never run them in
+parallel — cargo tests for these must use `--test-threads=1`).
+
+`ASREngine` in `transcription.rs` dispatches internally: for Whisper/Cohere it
+routes `load_model`/`transcribe`/`warmup`/status/cache to the in-process engine;
+everything else (VAD, post-processing, summarization — and any other ASR model)
+still uses the Python sidecar. All call sites (hotkey, commands, always-on
+pipeline) are unchanged. The Python sidecar is **optional**: if its binary is
+missing/empty, `start()` logs a warning and continues — the in-process models
+still work. Removes Python-interpreter + import startup for these paths
+(~0.7 s vs ~3.1 s spawn→result for Cohere). Qwen3-ASR is **not** ported (it would
+need a quantized 28-layer Qwen3 LLM); it's omitted from the picker.
+
+Audio handling: hotkey recordings are at the device's native rate (e.g. 48 kHz);
+`read_wav_16k_mono` downmixes + resamples to 16 kHz (rubato) before either engine.
+
+**Build requirement:** both `mlx-rs` (MLX C++ + Metal kernels) and `whisper-rs`
+(whisper.cpp + ggml + Metal) compile native code from source. On Xcode 16/26 the
+Metal compiler is a separate component: `xcodebuild -downloadComponent
+MetalToolchain` (~700 MB, one-time; CI does this in
+`.github/workflows/release.yml` before the Tauri build). `mlx-rs` uses
+`features = ["metal", "accelerate"]`, `whisper-rs` uses `features = ["metal"]`.
+
 ### Local macOS Signed Build (Accessibility persistence)
 
 When rebuilding and reinstalling locally, use:
@@ -209,30 +260,19 @@ npm run tauri:build:signed
 
 `tauri:build:signed` fails if the output is ad-hoc signed (`Signature=adhoc`) or uses a cdhash-only designated requirement, because that breaks macOS Accessibility permission continuity across app updates.
 
-### Python Engine Binary Build
-
-The Python ASR engine is bundled using PyInstaller:
-- Script: `python-engine/build.sh`
-- Requirements: Python 3.11 (ARM native) - **NOT 3.13** (PyInstaller compatibility issues)
-- Output: `src-tauri/binaries/mlx-asr-engine-aarch64-apple-darwin`
-- Local: Uses/creates venv automatically
-- CI: Uses system Python (GitHub Actions on macos-14)
-
-Key dependencies bundled:
-- MLX framework (mlx.metallib, libmlx.dylib)
-- mlx-audio for speech recognition
-- Whisper/Qwen3-ASR model loaders
-
 ### GitHub Actions Release Workflow
 
 Triggered by: `git push origin v*.*.*` tags
 
 Workflow steps (`.github/workflows/release.yml`):
-1. **Build Python Binary**: Runs `python-engine/build.sh` on macos-14 (Apple Silicon)
+1. **Ensure Metal toolchain**: `xcodebuild -downloadComponent MetalToolchain` (for the `mlx-rs` / `whisper-rs` native builds)
 2. **Version Update**: Syncs version in `package.json`, `tauri.conf.json`, `Cargo.toml`
 3. **Code Signing**: Imports Apple Developer certificate, signs app
 4. **Notarization**: Submits to Apple for notarization
 5. **Release Upload**: Uploads signed DMG and app bundle to GitHub Release
+
+There is no Python build step — the ASR + post-processing engines are compiled
+into the app binary (native MLX/whisper.cpp via `rust-asr`).
 
 Required secrets:
 - `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD`
@@ -242,11 +282,10 @@ Required secrets:
 ## Development Notes
 
 - When modifying transcription flow, check both `hotkey.rs` (for hotkey-triggered) and `useTranscription.ts` (for manual)
-- Python engine logs to stderr (stdout reserved for JSON-RPC)
 - Temporary audio files are created in system temp directory and cleaned up after transcription
-- When adding new ASR models, update: `engine.py` (AVAILABLE_MODELS, load/transcribe logic), `SettingsPanel.tsx` (MODEL_SIZES, MODEL_ORDER), `App.tsx` (MODEL_SIZES)
-- Qwen3-ASR returns `null` for language field - Python must provide default value for Rust JSON parsing
-- Python binary must be rebuilt after `engine.py` changes: `cd python-engine && ./build.sh`
+- ASR/post-processing engines live in `rust-asr/` (a path dependency of `src-tauri`); `transcription.rs` dispatches to them by model id
+- When adding an ASR model, implement it in `rust-asr/` + route it in `transcription.rs`, then update `src/lib/models.ts` (MODEL_ORDER/MODEL_SIZES)
+- After changing `rust-asr/` engine code, rebuild the app (`npm run tauri:dev`); the crate is a path dependency compiled into the binary
 - Post-processor uses Qwen3-1.7B-4bit with `/no_think` mode for fast cleanup (~100-300ms)
 - Custom prompts are stored as `null` when they match the default to simplify version upgrades
 - Active app detection happens on hotkey press, providing context for both ASR and post-processing

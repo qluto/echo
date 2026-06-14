@@ -240,14 +240,24 @@ pub fn start_asr_engine(
         .start(&app, hf_token.as_deref())
         .map_err(|e| e.to_string())?;
 
-    // Apply saved model after engine is running.
-    // setup() cannot apply it because the sidecar process does not exist yet.
-    if let Some(model_name) = saved_model {
-        if let Err(e) = asr_engine.set_model(&model_name) {
-            log::warn!("Failed to apply saved model '{}' on engine start: {}", model_name, e);
-        } else {
-            log::info!("Applied saved model '{}' on engine start", model_name);
+    // Apply saved model after engine is running. If the saved model is not
+    // supported by the in-process engines and there is no Python sidecar
+    // (e.g. a stale Qwen3 selection), fall back to the default Whisper model so
+    // the app doesn't get stuck on a non-functional model.
+    const DEFAULT_MODEL: &str = "mlx-community/whisper-large-v3-turbo";
+    let model_name = saved_model.unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    if let Err(e) = asr_engine.set_model(&model_name) {
+        log::warn!(
+            "Saved model '{}' unavailable ({}); falling back to '{}'",
+            model_name,
+            e,
+            DEFAULT_MODEL
+        );
+        if let Err(e2) = asr_engine.set_model(DEFAULT_MODEL) {
+            log::error!("Failed to set default model '{}': {}", DEFAULT_MODEL, e2);
         }
+    } else {
+        log::info!("Applied model '{}' on engine start", model_name);
     }
 
     Ok(())

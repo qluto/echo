@@ -68,7 +68,7 @@ function App() {
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [loadingPhase, setLoadingPhase] = useState<LoadingPhase>("idle");
-  const [modelName, setModelName] = useState<string>("mlx-community/Qwen3-ASR-0.6B-8bit");
+  const [modelName, setModelName] = useState<string>("mlx-community/whisper-large-v3-turbo");
   const [hotkey, setHotkey] = useState<string>("command+shift+space");
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
   const [showRestartPrompt, setShowRestartPrompt] = useState(false);
@@ -258,7 +258,7 @@ function App() {
       }
 
       const status = await getModelStatus();
-      setModelName(status.model_name || "mlx-community/Qwen3-ASR-0.6B-8bit");
+      setModelName(status.model_name || "mlx-community/whisper-large-v3-turbo");
 
       if (status.loaded) {
         setLoadingPhase("ready");
@@ -297,7 +297,7 @@ function App() {
       }
 
       const status = await loadAsrModel();
-      setModelName(status.model_name || "mlx-community/Qwen3-ASR-0.6B-8bit");
+      setModelName(status.model_name || "mlx-community/whisper-large-v3-turbo");
 
       // Warmup the model to trigger JIT compilation
       setLoadingPhase("warming_up");
@@ -316,15 +316,37 @@ function App() {
     }
   };
 
-  const handleCopy = useCallback(async () => {
-    if (result?.text) {
-      try {
-        await writeText(result.text);
-      } catch (e) {
-        console.error("Failed to copy:", e);
-      }
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const copyText = useCallback(async (text: string, key: string) => {
+    try {
+      await writeText(text);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey((k) => (k === key ? null : k)), 1200);
+    } catch (e) {
+      console.error("Failed to copy:", e);
     }
-  }, [result]);
+  }, []);
+
+  // Small icon-only copy button used per text block.
+  const copyButton = (text: string, key: string) => (
+    <button
+      onClick={() => copyText(text, key)}
+      title="コピー"
+      aria-label="コピー"
+      className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center border transition-colors hover:bg-surface-elevated"
+      style={{ color: "var(--text-tertiary)", borderColor: "#E0DDD8" }}
+    >
+      {copiedKey === key ? (
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+        </svg>
+      ) : (
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75" />
+        </svg>
+      )}
+    </button>
+  );
 
   // Auto-insert is now handled by the backend (hotkey.rs)
   // Frontend only shows success state when result arrives
@@ -335,12 +357,6 @@ function App() {
   }, [result]);
 
   // Calculate duration from segments
-  const getDuration = () => {
-    if (!result?.segments || result.segments.length === 0) return null;
-    const lastSegment = result.segments[result.segments.length - 1];
-    return lastSegment.end;
-  };
-
   // Show loading overlay during initial startup
   // Only check loadingPhase - engineStatus check was causing early dismissal
   const isInitializing = loadingPhase !== "ready" && loadingPhase !== "error";
@@ -512,63 +528,56 @@ function App() {
         {/* Mode Cards */}
         <div className="flex gap-3">
           {/* Quick Input Card */}
-          <div className="flex-1 flex flex-col gap-3 rounded-xl bg-surface p-4 border shadow-sm" style={{ borderColor: "#E8E4DF" }}>
-            <div className="flex items-center justify-between">
-              <svg className="w-4 h-4" fill="none" stroke="var(--text-secondary)" strokeWidth={1.5} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z" />
-              </svg>
-              <div
-                className="h-5 px-1.5 rounded flex items-center bg-surface-muted border border-subtle"
-              >
-                <span
-                  className="font-mono text-[10px] font-medium"
-                  style={{ color: "var(--text-primary)" }}
-                >
-                  {formatHotkey(hotkey)}
-                </span>
-              </div>
-            </div>
-            <div className="flex flex-col gap-1">
-              <span className="text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
+          <div className="flex-1 min-w-0 flex items-center gap-2 rounded-xl bg-surface px-3 py-2.5 border shadow-sm" style={{ borderColor: "#E8E4DF" }}>
+            <div className="flex flex-col min-w-0 flex-1">
+              <span className="text-[13px] font-semibold leading-tight truncate" style={{ color: "var(--text-primary)" }}>
                 Quick Input
               </span>
-              <span className="text-[11px] leading-snug" style={{ color: "var(--text-tertiary)" }}>
-                Hold to transcribe and insert into active app
+              <span
+                className="text-[10px] leading-tight truncate"
+                style={{ color: "var(--text-tertiary)" }}
+                title="Hold the hotkey to transcribe and insert into the active app"
+              >
+                Hold to dictate
+              </span>
+            </div>
+            <div className="h-5 px-1.5 rounded flex items-center bg-surface-muted border border-subtle shrink-0">
+              <span className="font-mono text-[10px] font-medium" style={{ color: "var(--text-primary)" }}>
+                {formatHotkey(hotkey)}
               </span>
             </div>
           </div>
 
           {/* Always-on Card */}
-          <div className="flex-1 flex flex-col gap-3 rounded-xl bg-surface p-4 border shadow-sm" style={{ borderColor: "#E8E4DF" }}>
-            <div className="flex items-center justify-between">
-              <svg className="w-4 h-4" fill="none" stroke="var(--text-secondary)" strokeWidth={1.5} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
-              </svg>
-              <button
-                onClick={toggleListening}
-                className="w-10 h-[22px] rounded-full flex items-center transition-all duration-200"
-                style={{
-                  backgroundColor: isListening ? "var(--glow-idle)" : "var(--border-subtle)",
-                  padding: "2px",
-                }}
-              >
-                <div
-                  className="w-[18px] h-[18px] rounded-full bg-white transition-transform duration-200"
-                  style={{
-                    boxShadow: "0 1px 3px rgba(0, 0, 0, 0.15)",
-                    transform: isListening ? "translateX(18px)" : "translateX(0)",
-                  }}
-                />
-              </button>
-            </div>
-            <div className="flex flex-col gap-1">
-              <span className="text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
+          <div className="flex-1 min-w-0 flex items-center gap-2 rounded-xl bg-surface px-3 py-2.5 border shadow-sm" style={{ borderColor: "#E8E4DF" }}>
+            <div className="flex flex-col min-w-0 flex-1">
+              <span className="text-[13px] font-semibold leading-tight truncate" style={{ color: "var(--text-primary)" }}>
                 Always-on
               </span>
-              <span className="text-[11px] leading-snug" style={{ color: "var(--text-tertiary)" }}>
-                Continuously transcribe and save to log
+              <span
+                className="text-[10px] leading-tight truncate"
+                style={{ color: "var(--text-tertiary)" }}
+                title="Continuously transcribe and save to the log"
+              >
+                Continuous logging
               </span>
             </div>
+            <button
+              onClick={toggleListening}
+              className="w-10 h-[22px] rounded-full flex items-center transition-all duration-200 shrink-0"
+              style={{
+                backgroundColor: isListening ? "var(--glow-idle)" : "var(--border-subtle)",
+                padding: "2px",
+              }}
+            >
+              <div
+                className="w-[18px] h-[18px] rounded-full bg-white transition-transform duration-200"
+                style={{
+                  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.15)",
+                  transform: isListening ? "translateX(18px)" : "translateX(0)",
+                }}
+              />
+            </button>
           </div>
         </div>
 
@@ -653,34 +662,53 @@ function App() {
               <p className="text-sm" style={{ color: "var(--glow-recording)" }}>{error}</p>
             ) : result?.text ? (
               <>
-                <div className="flex items-center justify-between">
-                  <span className="font-mono text-[10px]" style={{ color: "var(--text-tertiary)" }}>
-                    {getDuration() ? `${getDuration()!.toFixed(1)}s` : ""}
-                  </span>
-                  {result.language && (
-                    <span
-                      className="font-mono text-[10px] capitalize px-1.5 py-0.5 rounded-md"
-                      style={{ color: "var(--text-tertiary)", backgroundColor: "var(--surface-muted)" }}
-                    >
-                      {result.language}
-                    </span>
-                  )}
-                </div>
-                <p className="text-sm leading-relaxed" style={{ color: "var(--text-primary)" }}>
-                  {result.text}
-                </p>
-                <div className="flex items-center justify-end">
-                  <button
-                    onClick={handleCopy}
-                    className="h-8 px-3.5 rounded-full text-xs font-medium flex items-center gap-1.5 transition-colors border hover:bg-surface-elevated"
-                    style={{ color: "var(--text-primary)", borderColor: "#E0DDD8" }}
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75" />
-                    </svg>
-                    Copy
-                  </button>
-                </div>
+                {result.raw_text ? (
+                  <div className="flex flex-col gap-2.5">
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-semibold tracking-wide" style={{ color: "var(--text-tertiary)" }}>
+                          元の書き起こし
+                        </span>
+                        <div className="flex items-center gap-2">
+                          {result.language && (
+                            <span className="font-mono text-[10px] capitalize px-1.5 py-0.5 rounded-md" style={{ color: "var(--text-tertiary)", backgroundColor: "var(--surface-muted)" }}>
+                              {result.language}
+                            </span>
+                          )}
+                          {copyButton(result.raw_text, "raw")}
+                        </div>
+                      </div>
+                      <p className="text-sm leading-relaxed" style={{ color: "var(--text-tertiary)" }}>
+                        {result.raw_text}
+                      </p>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-semibold tracking-wide" style={{ color: "var(--text-tertiary)" }}>
+                          AI 整形後（コピー対象）
+                        </span>
+                        {copyButton(result.text, "proc")}
+                      </div>
+                      <p className="text-sm leading-relaxed" style={{ color: "var(--text-primary)" }}>
+                        {result.text}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center justify-end gap-2">
+                      {result.language && (
+                        <span className="font-mono text-[10px] capitalize px-1.5 py-0.5 rounded-md" style={{ color: "var(--text-tertiary)", backgroundColor: "var(--surface-muted)" }}>
+                          {result.language}
+                        </span>
+                      )}
+                      {copyButton(result.text, "single")}
+                    </div>
+                    <p className="text-sm leading-relaxed" style={{ color: "var(--text-primary)" }}>
+                      {result.text}
+                    </p>
+                  </div>
+                )}
               </>
             ) : (
               <p className="text-xs text-center py-2" style={{ color: "var(--text-tertiary)" }}>

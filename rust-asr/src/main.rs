@@ -1,0 +1,504 @@
+//! Full-Rust Cohere Transcribe (cohere-transcribe-03-2026) POC.
+//!
+//! Replaces the Python/MLX sidecar with a native Rust binary linking Apple MLX
+//! directly, eliminating Python-interpreter + heavy-import startup cost.
+//!
+//! Subcommands:
+//!   smoke               load checkpoint, run a Metal matmul (toolchain check)
+//!   audio  <gt_dir>     run the audio frontend on <gt_dir>/waveform.npy and
+//!                       compare against <gt_dir>/mel.npy
+
+use anyhow::{anyhow, Result};
+use mlx_rs::ops::{abs, max, mean};
+use mlx_rs::{Array, Dtype};
+use rust_asr::weights::Weights;
+use rust_asr::{audio, decoder, encoder, tokenizer};
+
+fn model_snapshot() -> String {
+    std::env::var("COHERE_SNAPSHOT").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_default();
+        format!(
+            "{home}/Library/Caches/io.qluto.echo/huggingface/hub/\
+             models--CohereLabs--cohere-transcribe-03-2026/snapshots/\
+             32d9e4ba6271d78168c095c2f90bc173eaad97d2"
+        )
+    })
+}
+
+fn safetensors_path() -> String {
+    format!("{}/model.safetensors", model_snapshot())
+}
+
+/// Find the (single) snapshot hash dir for the cached parakeet model.
+fn parakeet_snapshot(hub: &str) -> Result<String> {
+    let dir = format!("{hub}/models--mlx-community--parakeet-tdt_ctc-0.6b-ja/snapshots");
+    let entry = std::fs::read_dir(&dir)
+        .map_err(|e| anyhow!("read {dir}: {e}"))?
+        .filter_map(|e| e.ok())
+        .next()
+        .ok_or_else(|| anyhow!("no snapshot in {dir}"))?;
+    Ok(entry.file_name().to_string_lossy().to_string())
+}
+
+/// max |a-b| and mean |a-b| between two f32 arrays.
+fn diff(a: &Array, b: &Array) -> Result<(f32, f32)> {
+    let d = abs(&(a - b))?;
+    let mx = max(&d, None)?.item::<f32>();
+    let mn = mean(&d, None)?.item::<f32>();
+    Ok((mx, mn))
+}
+
+fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let cmd = args.get(1).map(String::as_str).unwrap_or("smoke");
+
+    match cmd {
+        "smoke" => smoke(),
+        "audio" => {
+            let gt = args.get(2).ok_or_else(|| anyhow!("usage: audio <gt_dir>"))?;
+            validate_audio(gt)
+        }
+        "encoder" => {
+            let gt = args.get(2).ok_or_else(|| anyhow!("usage: encoder <gt_dir>"))?;
+            validate_encoder(gt)
+        }
+        "dbg" => {
+            let gt = args.get(2).ok_or_else(|| anyhow!("usage: dbg <gt_dir>"))?;
+            debug_stages(gt)
+        }
+        "decode" => {
+            // Decode directly from a saved encoder output, isolating the decoder
+            // from encoder numerics. usage: decode <gt_dir> <lang> [enc_npy]
+            let gt = args.get(2).ok_or_else(|| anyhow!("usage: decode <gt_dir> <lang> [enc]"))?;
+            let lang = args.get(3).map(String::as_str).unwrap_or("en");
+            let enc_file = args.get(4).map(String::as_str).unwrap_or("encoder_f32.npy");
+            decode_from_encoder(gt, lang, enc_file)
+        }
+        "transcribe" => {
+            let gt = args
+                .get(2)
+                .ok_or_else(|| anyhow!("usage: transcribe <gt_dir> <lang>"))?;
+            let lang = args.get(3).map(String::as_str).unwrap_or("en");
+            transcribe_from_gt(gt, lang)
+        }
+        "run" => {
+            let wav = args.get(2).ok_or_else(|| anyhow!("usage: run <wav> <lang>"))?;
+            let lang = args.get(3).map(String::as_str).unwrap_or("en");
+            run_wav(wav, lang)
+        }
+        "pk-mel" => {
+            // Compare parakeet mel against /tmp/pk_gt/mel.npy + mel_fb.npy.
+            let gt = args.get(2).map(String::as_str).unwrap_or("/tmp/pk_gt");
+            let wf = Array::load_numpy(format!("{gt}/waveform.npy"))?.as_dtype(Dtype::Float32)?;
+            let fb = rust_asr::parakeet::audio::mel_filterbank();
+            let gt_fb = Array::load_numpy(format!("{gt}/mel_fb.npy"))?.as_dtype(Dtype::Float32)?;
+            let (fbmx, fbmn) = diff(&fb, &gt_fb)?;
+            println!("mel_fb diff: max={fbmx:.4e} mean={fbmn:.4e}");
+            let mel = rust_asr::parakeet::audio::extract_features(&wf, &fb)?;
+            let gt_mel = Array::load_numpy(format!("{gt}/mel.npy"))?.as_dtype(Dtype::Float32)?;
+            println!("rust mel {:?} gt {:?}", mel.shape(), gt_mel.shape());
+            let (mx, mn) = diff(&mel, &gt_mel)?;
+            println!("mel diff: max={mx:.4e} mean={mn:.4e} -> {}", if mx < 5e-2 { "PASS" } else { "FAIL" });
+            Ok(())
+        }
+        "pk-enc" => {
+            let gt = args.get(2).map(String::as_str).unwrap_or("/tmp/pk_gt");
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let w = Weights::load(&format!("{hub}/models--mlx-community--parakeet-tdt_ctc-0.6b-ja/snapshots/{}/model.safetensors", parakeet_snapshot(&hub)?))?;
+            let enc = rust_asr::parakeet::encoder::Encoder::load(&w)?;
+            let mel = Array::load_numpy(format!("{gt}/mel.npy"))?.as_dtype(Dtype::Float32)?;
+            let out = enc.forward(&mel)?;
+            out.eval()?;
+            let gt_enc = Array::load_numpy(format!("{gt}/encoder.npy"))?.as_dtype(Dtype::Float32)?;
+            println!("rust enc {:?} gt {:?}", out.shape(), gt_enc.shape());
+            let (mx, mn) = diff(&out, &gt_enc)?;
+            println!("encoder diff: max={mx:.4e} mean={mn:.4e} -> {}", if mx < 5e-1 { "PASS" } else { "FAIL" });
+            Ok(())
+        }
+        "pk-run" => {
+            let wav = args.get(2).ok_or_else(|| anyhow!("usage: pk-run <wav>"))?;
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let t = std::time::Instant::now();
+            let eng = rust_asr::ParakeetEngine::load(std::path::Path::new(&hub))?;
+            println!("parakeet loaded in {:?}", t.elapsed());
+            let t = std::time::Instant::now();
+            let out = eng.transcribe_wav(wav, "ja")?;
+            println!("text: {:?} in {:?}", out.text, t.elapsed());
+            Ok(())
+        }
+        "switchmem" => {
+            // Simulate the app switch path: load a big MLX model, drop+release,
+            // load whisper-tiny, drop+release. Watch RSS + MLX memory.
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let hubp = std::path::Path::new(&hub);
+            let rss = || {
+                let pid = std::process::id().to_string();
+                std::process::Command::new("ps")
+                    .args(["-o", "rss=", "-p", &pid])
+                    .output()
+                    .ok()
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+                    .map(|kb| kb / 1024)
+                    .unwrap_or(0)
+            };
+            let mb = |b: usize| b / (1024 * 1024);
+            let report = |tag: &str| {
+                let (a, c) = rust_asr::mlx_memory();
+                println!("{tag}: rss={}MB  mlx_active={}MB mlx_cache={}MB", rss(), mb(a), mb(c));
+            };
+            report("baseline    ");
+            {
+                let pk = rust_asr::ParakeetEngine::load(hubp)?;
+                pk.warmup()?;
+                report("parakeet load");
+            }
+            rust_asr::release_unused_memory();
+            report("parakeet drop");
+            {
+                let w = rust_asr::WhisperEngine::load(hubp, "mlx-community/whisper-tiny")?;
+                w.warmup()?;
+                report("whisper load ");
+            }
+            rust_asr::release_unused_memory();
+            report("whisper drop ");
+            Ok(())
+        }
+        "whispermem" => {
+            // Measure process RSS around a Whisper load + drop (whisper.cpp
+            // memory is NOT MLX cache, so we watch RSS directly).
+            let model = args
+                .get(2)
+                .map(String::as_str)
+                .unwrap_or("mlx-community/whisper-large-v3-turbo");
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let rss = || {
+                let pid = std::process::id().to_string();
+                let out = std::process::Command::new("ps")
+                    .args(["-o", "rss=", "-p", &pid])
+                    .output()
+                    .ok();
+                out.and_then(|o| String::from_utf8(o.stdout).ok())
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+                    .map(|kb| kb / 1024)
+                    .unwrap_or(0)
+            };
+            println!("before load:  rss={}MB", rss());
+            {
+                let eng = rust_asr::WhisperEngine::load(std::path::Path::new(&hub), model)?;
+                eng.warmup()?;
+                println!("after load:   rss={}MB", rss());
+            } // dropped here -> whisper_free
+            rust_asr::release_unused_memory();
+            println!("after drop:   rss={}MB", rss());
+            Ok(())
+        }
+        "memtest" => {
+            // Prove that dropping a model + release_unused_memory frees GPU RAM.
+            let mb = |b: usize| b / (1024 * 1024);
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let (a0, c0) = rust_asr::mlx_memory();
+            println!("before load:  active={}MB cache={}MB", mb(a0), mb(c0));
+            {
+                let pp = rust_asr::PostProcessor::load(
+                    std::path::Path::new(&hub),
+                    "mlx-community/Qwen3-1.7B-4bit",
+                )?;
+                let _ = pp.process("テスト", None, None, None, None)?;
+                let (a1, c1) = rust_asr::mlx_memory();
+                println!("after load:   active={}MB cache={}MB", mb(a1), mb(c1));
+            } // pp dropped here
+            let (a2, c2) = rust_asr::mlx_memory();
+            println!("after drop:   active={}MB cache={}MB", mb(a2), mb(c2));
+            rust_asr::release_unused_memory();
+            let (a3, c3) = rust_asr::mlx_memory();
+            println!("after release: active={}MB cache={}MB", mb(a3), mb(c3));
+            Ok(())
+        }
+        "pp" => {
+            // Post-process cleanup: pp "<text>" [model_id]
+            let text = args.get(2).ok_or_else(|| anyhow!("usage: pp <text> [model]"))?;
+            let model = args
+                .get(3)
+                .map(String::as_str)
+                .unwrap_or("mlx-community/Qwen3-1.7B-4bit");
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let t = std::time::Instant::now();
+            let pp = rust_asr::PostProcessor::load(std::path::Path::new(&hub), model)?;
+            println!("postproc loaded in {:?}", t.elapsed());
+            let t = std::time::Instant::now();
+            let out = pp.process(text, None, None, None, None)?;
+            println!("in:  {text:?}");
+            println!("out: {out:?} ({:?})", t.elapsed());
+            Ok(())
+        }
+        "whisper" => {
+            // CLI check for the Whisper engine: whisper <wav> <lang> [model_id]
+            let wav = args.get(2).ok_or_else(|| anyhow!("usage: whisper <wav> <lang> [model]"))?;
+            let lang = args.get(3).map(String::as_str).unwrap_or("auto");
+            let model = args
+                .get(4)
+                .map(String::as_str)
+                .unwrap_or("mlx-community/whisper-large-v3-turbo");
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let t = std::time::Instant::now();
+            let eng = rust_asr::WhisperEngine::load(std::path::Path::new(&hub), model)?;
+            println!("whisper loaded in {:?}", t.elapsed());
+            let t = std::time::Instant::now();
+            let out = eng.transcribe_wav(wav, lang)?;
+            println!("text: {:?} (lang={}) in {:?}", out.text, out.language, t.elapsed());
+            Ok(())
+        }
+        "engine" => {
+            // Exercise the high-level CohereEngine API (hub-cache resolution +
+            // load + transcribe), the same path the Tauri app uses.
+            let wav = args.get(2).ok_or_else(|| anyhow!("usage: engine <wav> <lang>"))?;
+            let lang = args.get(3).map(String::as_str).unwrap_or("en");
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let t = std::time::Instant::now();
+            let eng = rust_asr::CohereEngine::load(std::path::Path::new(&hub), None)?;
+            println!("engine loaded in {:?}", t.elapsed());
+            let t = std::time::Instant::now();
+            let out = eng.transcribe_wav(wav, lang)?;
+            println!("text: {:?} (lang={}) in {:?}", out.text, out.language, t.elapsed());
+            Ok(())
+        }
+        other => Err(anyhow!("unknown subcommand: {other}")),
+    }
+}
+
+fn smoke() -> Result<()> {
+    println!("default device: {:?}", mlx_rs::Device::default());
+    let a = Array::from_slice(&[1.0f32, 2.0, 3.0, 4.0], &[2, 2]);
+    let b = Array::from_slice(&[1.0f32, 0.0, 0.0, 1.0], &[2, 2]);
+    println!("matmul: {:?}", a.matmul(&b)?);
+
+    let t = std::time::Instant::now();
+    let w = Weights::load(&safetensors_path())?;
+    println!("loaded weights in {:?}", t.elapsed());
+    for key in [
+        "encoder.pre_encode.out.weight",
+        "preprocessor.featurizer.fb",
+        "preprocessor.featurizer.window",
+    ] {
+        let a = w.raw(key)?;
+        println!("  {key}: shape={:?} dtype={:?}", a.shape(), a.dtype());
+    }
+    Ok(())
+}
+
+fn validate_audio(gt_dir: &str) -> Result<()> {
+    let w = Weights::load(&safetensors_path())?;
+
+    let waveform = Array::load_numpy(format!("{gt_dir}/waveform.npy"))
+        .map_err(|e| anyhow!("load waveform.npy: {e}"))?
+        .as_dtype(Dtype::Float32)?;
+    println!("waveform: shape={:?}", waveform.shape());
+
+    let t = std::time::Instant::now();
+    let (feats, seq_len) = audio::extract_features(&w, &waveform)?;
+    feats.eval()?;
+    println!(
+        "rust mel: shape={:?} seq_len={} ({:?})",
+        feats.shape(),
+        seq_len,
+        t.elapsed()
+    );
+
+    let gt = Array::load_numpy(format!("{gt_dir}/mel.npy"))
+        .map_err(|e| anyhow!("load mel.npy: {e}"))?
+        .as_dtype(Dtype::Float32)?;
+    println!("gt   mel: shape={:?}", gt.shape());
+
+    let (mx, mn) = diff(&feats, &gt)?;
+    println!("mel diff: max={mx:.4e} mean={mn:.4e}");
+    if mx < 5e-2 {
+        println!("AUDIO PARITY: PASS (max abs diff {mx:.4e})");
+    } else {
+        println!("AUDIO PARITY: FAIL (max abs diff {mx:.4e})");
+    }
+    Ok(())
+}
+
+fn validate_encoder(gt_dir: &str) -> Result<()> {
+    let w = Weights::load(&safetensors_path())?;
+    let t = std::time::Instant::now();
+    let enc = encoder::Encoder::load(&w)?;
+    println!("encoder loaded in {:?}", t.elapsed());
+
+    let mel = Array::load_numpy(format!("{gt_dir}/mel.npy"))
+        .map_err(|e| anyhow!("load mel.npy: {e}"))?
+        .as_dtype(Dtype::Float32)?;
+
+    let t = std::time::Instant::now();
+    let seq_len = mel.shape()[1] - 1;
+    let out = enc.forward(&mel, seq_len)?;
+    out.eval()?;
+    println!("rust encoder out: shape={:?} ({:?})", out.shape(), t.elapsed());
+
+    let gt = Array::load_numpy(format!("{gt_dir}/encoder.npy"))
+        .map_err(|e| anyhow!("load encoder.npy: {e}"))?
+        .as_dtype(Dtype::Float32)?;
+    println!("gt   encoder out: shape={:?}", gt.shape());
+
+    let (mx, mn) = diff(&out, &gt)?;
+    println!("encoder diff: max={mx:.4e} mean={mn:.4e}");
+    if mx < 5e-1 {
+        println!("ENCODER PARITY: PASS (max abs diff {mx:.4e})");
+    } else {
+        println!("ENCODER PARITY: FAIL (max abs diff {mx:.4e})");
+    }
+    Ok(())
+}
+
+fn debug_stages(gt_dir: &str) -> Result<()> {
+    let w = Weights::load(&safetensors_path())?;
+    let enc = encoder::Encoder::load(&w)?;
+    let mel = Array::load_numpy(format!("{gt_dir}/mel.npy"))
+        .map_err(|e| anyhow!("load mel.npy: {e}"))?
+        .as_dtype(Dtype::Float32)?;
+    let seq_len = mel.shape()[1] - 1;
+    let (sub, posemb, l0) = enc.debug_stages(&mel, seq_len)?;
+    for (name, arr) in [("sub", &sub), ("posemb", &posemb), ("layer0", &l0)] {
+        let gt = Array::load_numpy(format!("{gt_dir}/{name}.npy"))
+            .map_err(|e| anyhow!("load {name}.npy: {e}"))?
+            .as_dtype(Dtype::Float32)?;
+        let (mx, mn) = diff(arr, &gt)?;
+        println!(
+            "{name}: rust={:?} gt={:?} diff max={mx:.4e} mean={mn:.4e}",
+            arr.shape(),
+            gt.shape()
+        );
+    }
+    Ok(())
+}
+
+/// Load a 16kHz mono WAV as f32 samples in [-1, 1].
+fn load_wav(path: &str) -> Result<Array> {
+    let mut reader = hound::WavReader::open(path).map_err(|e| anyhow!("open wav: {e}"))?;
+    let spec = reader.spec();
+    let raw: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Int => {
+            let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .samples::<i32>()
+                .map(|s| s.map(|v| v as f32 / max))
+                .collect::<std::result::Result<_, _>>()
+                .map_err(|e| anyhow!("read samples: {e}"))?
+        }
+        hound::SampleFormat::Float => reader
+            .samples::<f32>()
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|e| anyhow!("read samples: {e}"))?,
+    };
+    // Downmix to mono if needed.
+    let mono: Vec<f32> = if spec.channels > 1 {
+        let ch = spec.channels as usize;
+        raw.chunks(ch).map(|f| f.iter().sum::<f32>() / ch as f32).collect()
+    } else {
+        raw
+    };
+    if spec.sample_rate != 16000 {
+        eprintln!(
+            "warning: wav sample_rate={} (expected 16000); resampling not implemented",
+            spec.sample_rate
+        );
+    }
+    Ok(Array::from_slice(&mono, &[mono.len() as i32]))
+}
+
+fn run_wav(wav: &str, lang: &str) -> Result<()> {
+    let t_proc = std::time::Instant::now();
+    let w = Weights::load(&safetensors_path())?;
+    let enc_model = encoder::Encoder::load(&w)?;
+    let dec_model = decoder::Decoder::load(&w)?;
+    let tok = tokenizer::Tok::load(&format!("{}/tokenizer.json", model_snapshot()))?;
+    let t_loaded = t_proc.elapsed();
+
+    let waveform = load_wav(wav)?;
+    let t_infer = std::time::Instant::now();
+    let (mel, seq_len) = audio::extract_features(&w, &waveform)?;
+    let enc = enc_model.forward(&mel, seq_len)?;
+    let prompt = tok.build_prompt(lang, true)?;
+    let ids = dec_model.generate(&enc, &prompt, 256)?;
+    let text = tok.decode(&ids)?;
+    let infer = t_infer.elapsed();
+
+    println!("text: {text:?}");
+    println!(
+        "timing: load={:?} infer={:?} total={:?}",
+        t_loaded,
+        infer,
+        t_proc.elapsed()
+    );
+    Ok(())
+}
+
+fn decode_from_encoder(gt_dir: &str, lang: &str, enc_file: &str) -> Result<()> {
+    let w = Weights::load(&safetensors_path())?;
+    let dec = decoder::Decoder::load(&w)?;
+    let tok = tokenizer::Tok::load(&format!("{}/tokenizer.json", model_snapshot()))?;
+
+    let enc = Array::load_numpy(format!("{gt_dir}/{enc_file}"))
+        .map_err(|e| anyhow!("load {enc_file}: {e}"))?
+        .as_dtype(Dtype::Float32)?;
+    let prompt = tok.build_prompt(lang, true)?;
+    let ids = dec.generate(&enc, &prompt, 256)?;
+    let ids_i32: Vec<i32> = ids.iter().map(|&i| i as i32).collect();
+    println!("RUST ids ({}): {ids_i32:?}", ids.len());
+    println!("RUST text: {:?}", tok.decode(&ids)?);
+
+    if let Ok(py) = Array::load_numpy(format!("{gt_dir}/py_ids.npy")) {
+        let py_ids: Vec<i32> = py.as_slice::<i32>().to_vec();
+        println!("PY   ids ({}): {py_ids:?}", py_ids.len());
+        println!("IDS MATCH: {}", if py_ids == ids_i32 { "EXACT" } else { "DIFFERENT" });
+    }
+    Ok(())
+}
+
+fn transcribe_from_gt(gt_dir: &str, lang: &str) -> Result<()> {
+    let t_all = std::time::Instant::now();
+    let w = Weights::load(&safetensors_path())?;
+    let enc_model = encoder::Encoder::load(&w)?;
+    let dec_model = decoder::Decoder::load(&w)?;
+    let tok = tokenizer::Tok::load(&format!("{}/tokenizer.json", model_snapshot()))?;
+    println!("models+tokenizer loaded in {:?}", t_all.elapsed());
+
+    // Use the audio frontend on the raw waveform (full pipeline minus wav I/O).
+    let waveform = Array::load_numpy(format!("{gt_dir}/waveform.npy"))
+        .map_err(|e| anyhow!("load waveform.npy: {e}"))?
+        .as_dtype(Dtype::Float32)?;
+
+    let t = std::time::Instant::now();
+    let (mel, seq_len) = audio::extract_features(&w, &waveform)?;
+    let enc = enc_model.forward(&mel, seq_len)?;
+    let prompt = tok.build_prompt(lang, true)?;
+    let ids = dec_model.generate(&enc, &prompt, 256)?;
+    let text = tok.decode(&ids)?;
+    println!("inference in {:?}", t.elapsed());
+    println!("prompt tokens: {prompt:?}");
+    println!("generated {} tokens", ids.len());
+    println!("RUST TEXT: {text:?}");
+
+    // Compare against the Python ground-truth text from meta.json.
+    if let Ok(meta) = std::fs::read_to_string(format!("{gt_dir}/meta.json")) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&meta) {
+            if let Some(gt) = v.get("text").and_then(|t| t.as_str()) {
+                println!("PY   TEXT: {gt:?}");
+                println!(
+                    "TEXT MATCH: {}",
+                    if gt == text { "EXACT" } else { "DIFFERENT" }
+                );
+            }
+        }
+    }
+    Ok(())
+}
