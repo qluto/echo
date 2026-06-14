@@ -326,6 +326,7 @@ impl ASREngine {
                 segments: Vec::new(),
                 language: language.unwrap_or("auto").to_string(),
                 no_speech: Some(true),
+                raw_text: None,
             });
         }
 
@@ -353,6 +354,7 @@ impl ASREngine {
             segments: Vec::<TranscriptionSegment>::new(),
             language: out.language,
             no_speech,
+            raw_text: None,
         })
     }
 

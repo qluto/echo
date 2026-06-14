@@ -277,13 +277,21 @@ fn handle_hotkey_released(app: &AppHandle) {
                     result.text.clone()
                 };
 
-                // Create result with possibly processed text for emission
+                // Create result with possibly processed text for emission.
+                // When post-processing changed the text, also carry the original
+                // so the UI can show both (a fallback if the LLM misbehaves).
+                let raw_text = if final_text != result.text {
+                    Some(result.text.clone())
+                } else {
+                    None
+                };
                 let emit_result = crate::TranscriptionResult {
                     success: result.success,
                     text: final_text.clone(),
                     segments: result.segments.clone(),
                     language: result.language.clone(),
                     no_speech: result.no_speech,
+                    raw_text,
                 };
 
                 // Emit transcription result

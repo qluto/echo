@@ -666,9 +666,33 @@ function App() {
                     </span>
                   )}
                 </div>
-                <p className="text-sm leading-relaxed" style={{ color: "var(--text-primary)" }}>
-                  {result.text}
-                </p>
+                {result.raw_text ? (
+                  <div className="flex flex-col gap-2">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-[10px] font-semibold tracking-wide" style={{ color: "var(--text-tertiary)" }}>
+                        元の書き起こし
+                      </span>
+                      <p
+                        className="text-sm leading-relaxed"
+                        style={{ color: "var(--text-tertiary)" }}
+                      >
+                        {result.raw_text}
+                      </p>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <span className="text-[10px] font-semibold tracking-wide" style={{ color: "var(--text-tertiary)" }}>
+                        AI 整形後（コピー対象）
+                      </span>
+                      <p className="text-sm leading-relaxed" style={{ color: "var(--text-primary)" }}>
+                        {result.text}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm leading-relaxed" style={{ color: "var(--text-primary)" }}>
+                    {result.text}
+                  </p>
+                )}
                 <div className="flex items-center justify-end">
                   <button
                     onClick={handleCopy}
