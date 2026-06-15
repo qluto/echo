@@ -58,8 +58,8 @@ src-tauri/binaries/mlx-asr-engine-*
 
 # MLX Metal shader library staged by scripts/stage-mlx-metallib.sh (a build
 # artifact bundled into Contents/MacOS via externalBin)
-src-tauri/binaries/mlx-*.metallib
-src-tauri/binaries/default-*.metallib
+src-tauri/binaries/mlx.metallib-*
+src-tauri/binaries/default.metallib-*
 
 # Model files
 *.safetensors

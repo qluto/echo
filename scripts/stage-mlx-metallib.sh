@@ -80,7 +80,7 @@ if [[ -z "${metallib}" || ! -f "${metallib}" ]]; then
     # so tauri-build's externalBin existence check passes; beforeBundleCommand
     # overwrites them with the real metallib before bundling.
     for name in mlx default; do
-      dest="${BIN_DIR}/${name}-${TRIPLE}.metallib"
+      dest="${BIN_DIR}/${name}.metallib-${TRIPLE}"
       [[ -f "${dest}" ]] || : > "${dest}"
       echo "stage-mlx-metallib: placeholder -> ${dest}"
     done
@@ -93,12 +93,14 @@ fi
 
 echo "stage-mlx-metallib: source ${metallib}"
 
-# externalBin entries resolve a config name "binaries/<name>.metallib" to the
-# on-disk file "binaries/<name>-<triple>.metallib" and bundle it as
-# "Contents/MacOS/<name>.metallib". Stage both names MLX may request
-# (C++ builds use "mlx", Swift-style builds use "default").
+# externalBin resolves a config name "binaries/<name>.metallib" to the on-disk
+# file "binaries/<name>.metallib-<triple>" (tauri appends "-<triple>" to the end
+# of the path; on non-Windows no extension is added — see tauri_utils
+# resources::external_binaries) and bundles it back as "Contents/MacOS/
+# <name>.metallib". Stage both names MLX may request (C++ builds use "mlx",
+# Swift-style builds use "default").
 for name in mlx default; do
-  dest="${BIN_DIR}/${name}-${TRIPLE}.metallib"
+  dest="${BIN_DIR}/${name}.metallib-${TRIPLE}"
   cp -f "${metallib}" "${dest}"
   echo "stage-mlx-metallib: staged -> ${dest}"
 done
