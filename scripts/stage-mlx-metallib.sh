@@ -16,15 +16,32 @@ set -euo pipefail
 #   Placing mlx.metallib next to the executable inside the bundle makes MLX find
 #   it everywhere.
 #
-# This runs as Tauri's `beforeBundleCommand`: the cargo build (which generates
-# the metallib via mlx-sys) has already completed, and the macOS .app bundle has
-# not been assembled/signed yet, so the staged file is picked up as an
-# externalBin and signed + notarized as part of the normal Tauri flow.
+# This script runs twice in a Tauri build:
+#
+#   1. `--placeholder` mode, as part of `beforeBuildCommand` (BEFORE cargo build):
+#      creates empty stand-in files so that tauri-build's `externalBin` existence
+#      check — which runs inside the cargo build script — passes. Without this the
+#      build aborts with `resource path 'binaries/mlx.metallib-...' doesn't exist`
+#      on a clean checkout (CI), because the real metallib does not exist yet.
+#      If a real metallib is already present (incremental local rebuild) it is
+#      staged instead of a placeholder.
+#
+#   2. default (real) mode, as `beforeBundleCommand` (AFTER cargo build, before
+#      bundling): the cargo build has now generated the metallib via mlx-sys, so
+#      the real file is copied over the placeholder. The .app bundle has not been
+#      assembled/signed yet, so the staged file is picked up as an externalBin and
+#      signed + notarized as part of the normal Tauri flow. In this mode a missing
+#      metallib is a hard error.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TARGET_DIR="${ROOT_DIR}/src-tauri/target"
 BIN_DIR="${ROOT_DIR}/src-tauri/binaries"
+
+PLACEHOLDER_MODE=0
+if [[ "${1:-}" == "--placeholder" ]]; then
+  PLACEHOLDER_MODE=1
+fi
 
 # Tauri exposes the resolved target triple to before* hooks. Default to Apple
 # Silicon, the only supported target.
@@ -55,14 +72,26 @@ if [[ -z "${metallib}" ]]; then
   metallib="$(find_metallib 0)"
 fi
 
+mkdir -p "${BIN_DIR}"
+
 if [[ -z "${metallib}" || ! -f "${metallib}" ]]; then
+  if [[ "${PLACEHOLDER_MODE}" == "1" ]]; then
+    # Pre-build: the metallib is generated later by cargo. Create empty stand-ins
+    # so tauri-build's externalBin existence check passes; beforeBundleCommand
+    # overwrites them with the real metallib before bundling.
+    for name in mlx default; do
+      dest="${BIN_DIR}/${name}-${TRIPLE}.metallib"
+      [[ -f "${dest}" ]] || : > "${dest}"
+      echo "stage-mlx-metallib: placeholder -> ${dest}"
+    done
+    exit 0
+  fi
   echo "stage-mlx-metallib: could not find mlx.metallib under ${TARGET_DIR}" >&2
   echo "stage-mlx-metallib: the app must be compiled (mlx-sys built) before bundling." >&2
   exit 1
 fi
 
 echo "stage-mlx-metallib: source ${metallib}"
-mkdir -p "${BIN_DIR}"
 
 # externalBin entries resolve a config name "binaries/<name>.metallib" to the
 # on-disk file "binaries/<name>-<triple>.metallib" and bundle it as

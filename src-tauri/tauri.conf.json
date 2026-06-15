@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build && bash scripts/stage-mlx-metallib.sh --placeholder",
     "beforeBundleCommand": "bash scripts/stage-mlx-metallib.sh",
     "frontendDist": "../dist"
   },
