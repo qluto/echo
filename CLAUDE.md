@@ -249,6 +249,20 @@ MetalToolchain` (~700 MB, one-time; CI does this in
 `.github/workflows/release.yml` before the Tauri build). `mlx-rs` uses
 `features = ["metal", "accelerate"]`, `whisper-rs` uses `features = ["metal"]`.
 
+**MLX metallib bundling:** mlx-sys compiles the Metal kernels into `mlx.metallib`
+and bakes the *build directory's* absolute path into the binary as the default
+`METAL_PATH`. That path exists on the build machine (so `tauri dev` and the CI
+runner work) but **not** on an installed/distributed app, where MLX would abort
+at engine init with `Failed to load the default metallib` — taking the whole app
+down on startup (the default model is MLX-backed). To fix this, MLX's runtime
+"colocated library" search looks next to the executable, so `mlx.metallib` is
+bundled into `Echo.app/Contents/MacOS/`: `scripts/stage-mlx-metallib.sh` runs as
+Tauri's `beforeBundleCommand` (after cargo build, before bundling) and copies the
+freshly-built metallib to `src-tauri/binaries/{mlx,default}-<triple>.metallib`,
+which `bundle.externalBin` in `tauri.conf.json` then places in `Contents/MacOS/`
+and signs + notarizes as part of the normal Tauri flow. Applies to both CI and
+`tauri:build:signed` since both go through `tauri build`.
+
 ### Local macOS Signed Build (Accessibility persistence)
 
 When rebuilding and reinstalling locally, use:
