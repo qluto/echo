@@ -8,6 +8,7 @@
 pub mod audio;
 pub mod decoder;
 pub mod encoder;
+pub mod hf;
 pub mod llm;
 pub mod nn;
 pub mod parakeet;
@@ -180,9 +181,12 @@ fn ensure_model_files(
     let safetensors = repo
         .get("model.safetensors")
         .map_err(|e| anyhow!("fetch model.safetensors ({COHERE_MODEL_ID}): {e}"))?;
-    let tokenizer_json = repo
-        .get("tokenizer.json")
-        .map_err(|e| anyhow!("fetch tokenizer.json ({COHERE_MODEL_ID}): {e}"))?;
+    // tokenizer.json is a small non-LFS file served via HF's relative
+    // resolve-cache redirect (hf-hub 0.3.2 can't follow it); fetch it directly,
+    // passing the token through for this gated repo.
+    let tokenizer_json =
+        hf::fetch_small_file(hub_cache_dir, COHERE_MODEL_ID, "tokenizer.json", hf_token)
+            .map_err(|e| anyhow!("fetch tokenizer.json ({COHERE_MODEL_ID}): {e}"))?;
     Ok((safetensors, tokenizer_json))
 }
 
