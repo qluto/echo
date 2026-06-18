@@ -39,9 +39,12 @@ impl ParakeetEngine {
             .build()
             .map_err(|e| anyhow!("hf-hub init: {e}"))?;
         let repo = api.model(PARAKEET_MODEL_ID.to_string());
-        let config_path = repo
-            .get("config.json")
-            .map_err(|e| anyhow!("fetch config.json: {e}"))?;
+        // config.json is a small non-LFS file: HF serves it via a relative
+        // resolve-cache redirect that hf-hub 0.3.2 can't follow, so fetch it
+        // directly. The LFS weights below still use hf-hub (absolute redirect).
+        let config_path =
+            crate::hf::fetch_small_file(hub_cache_dir, PARAKEET_MODEL_ID, "config.json", None)
+                .map_err(|e| anyhow!("fetch config.json: {e}"))?;
         let safetensors = repo
             .get("model.safetensors")
             .map_err(|e| anyhow!("fetch model.safetensors: {e}"))?;

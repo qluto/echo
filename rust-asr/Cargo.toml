@@ -31,6 +31,9 @@ rubato = "0.16"
 log = "0.4"
 # Gated-model download (blocking sync API; uses system TLS via native-tls).
 hf-hub = "0.3"
+# Direct small-file fetch that tolerates HF's relative resolve-cache redirects
+# (hf-hub 0.3.2 chokes on them). Same version hf-hub already pulls in.
+ureq = "2.12"
 # Whisper via whisper.cpp (Metal). Full pipeline: mel, encoder/decoder,
 # multilingual tokenizer, language detection — used as the non-gated default.
 whisper-rs = { version = "0.14", features = ["metal"] }

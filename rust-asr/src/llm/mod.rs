@@ -68,9 +68,12 @@ impl PostProcessor {
             .build()
             .map_err(|e| anyhow!("hf-hub init: {e}"))?;
         let repo = api.model(model_id.to_string());
-        let config_path = repo.get("config.json").map_err(|e| anyhow!("config: {e}"))?;
-        let tok_path = repo
-            .get("tokenizer.json")
+        // Small non-LFS files (config.json, tokenizer.json) come through HF's
+        // relative resolve-cache redirect, which hf-hub 0.3.2 can't follow;
+        // fetch them directly. The LFS weights below still use hf-hub.
+        let config_path = crate::hf::fetch_small_file(hub_cache_dir, model_id, "config.json", None)
+            .map_err(|e| anyhow!("config: {e}"))?;
+        let tok_path = crate::hf::fetch_small_file(hub_cache_dir, model_id, "tokenizer.json", None)
             .map_err(|e| anyhow!("tokenizer: {e}"))?;
         let st = repo
             .get("model.safetensors")
