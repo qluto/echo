@@ -1,5 +1,14 @@
 # Echo - 音声入力アプリケーション 設計ドキュメント
 
+> **⚠️ 注意: これは当初の設計ドキュメント(歴史的記録)です。**
+> 本書は Python サイドカー(PyInstaller + mlx-audio + Qwen3-ASR、JSON-RPC 通信)を
+> 前提とした初期設計を記述しています。現在の実装は **ASR・後処理ともに Rust の
+> `rust-asr` クレートで完全インプロセス実行**(Whisper は whisper.cpp/Metal、
+> Parakeet-JA・Cohere は Apple MLX/`mlx-rs`、後処理は Qwen3 の `mlx-rs` 移植)に
+> 移行しており、Python サイドカーは存在しません。デフォルト ASR モデルも
+> Whisper(`whisper-large-v3-turbo`)です。
+> 最新のアーキテクチャは [`README.md`](README.md) および [`CLAUDE.md`](CLAUDE.md) を参照してください。
+
 ## プロジェクト概要
 
 **プロジェクト名**: Echo
