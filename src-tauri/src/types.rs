@@ -111,6 +111,55 @@ pub struct TranscriptionSegment {
     pub text: String,
 }
 
+/// Structured status event ("transcription-status") shared by the hotkey and
+/// always-on paths, so silence and failures are visible in the UI instead of
+/// being indistinguishable from success.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TranscriptionStatusEvent {
+    pub kind: StatusKind,
+    pub source: StatusSource,
+    /// Raw error detail for debugging/tooltips. None for no_speech.
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusKind {
+    /// VAD gate or empty ASR text — normal outcome, not an error.
+    NoSpeech,
+    AsrError,
+    EngineBusy,
+    DbError,
+    AudioError,
+    /// Reserved for mic-permission detection (macOS denial currently
+    /// manifests as silent audio, i.e. NoSpeech); kept so the event
+    /// contract is forward-compatible.
+    #[allow(dead_code)]
+    PermissionDenied,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusSource {
+    Hotkey,
+    Continuous,
+}
+
+impl TranscriptionStatusEvent {
+    pub fn emit(
+        app: &tauri::AppHandle,
+        source: StatusSource,
+        kind: StatusKind,
+        message: Option<String>,
+    ) {
+        use tauri::Emitter;
+        let event = Self { kind, source, message };
+        if let Err(e) = app.emit("transcription-status", &event) {
+            log::warn!("Failed to emit transcription-status: {}", e);
+        }
+    }
+}
+
 /// Audio device info
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AudioDevice {

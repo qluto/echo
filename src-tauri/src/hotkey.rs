@@ -101,7 +101,12 @@ fn handle_hotkey_pressed(app: &AppHandle) {
         }
         Err(e) => {
             log::error!("Failed to start recording: {}", e);
-            app.emit("error", e.to_string()).ok();
+            crate::TranscriptionStatusEvent::emit(
+                app,
+                crate::StatusSource::Hotkey,
+                crate::StatusKind::AudioError,
+                Some(e.to_string()),
+            );
             app.emit(
                 "recording-state-change",
                 serde_json::json!({"state": "idle"}),
@@ -162,7 +167,12 @@ fn handle_hotkey_released(app: &AppHandle) {
         // Stop recording
         if let Err(e) = crate::audio_capture::stop_recording() {
             log::error!("Failed to stop recording: {}", e);
-            app_clone.emit("error", e.to_string()).ok();
+            crate::TranscriptionStatusEvent::emit(
+                &app_clone,
+                crate::StatusSource::Hotkey,
+                crate::StatusKind::AudioError,
+                Some(e.to_string()),
+            );
             app_clone
                 .emit(
                     "recording-state-change",
@@ -177,7 +187,12 @@ fn handle_hotkey_released(app: &AppHandle) {
             Some(path) => path,
             None => {
                 log::error!("No recording file path");
-                app_clone.emit("error", "No recording file path").ok();
+                crate::TranscriptionStatusEvent::emit(
+                    &app_clone,
+                    crate::StatusSource::Hotkey,
+                    crate::StatusKind::AudioError,
+                    Some("No recording file path".to_string()),
+                );
                 app_clone
                     .emit(
                         "recording-state-change",
@@ -215,6 +230,12 @@ fn handle_hotkey_released(app: &AppHandle) {
                 let is_no_speech = result.no_speech.unwrap_or(false);
                 if is_no_speech {
                     log::info!("No speech detected in recording, skipping transcription");
+                    crate::TranscriptionStatusEvent::emit(
+                        &app_clone,
+                        crate::StatusSource::Hotkey,
+                        crate::StatusKind::NoSpeech,
+                        None,
+                    );
                 } else {
                     log::info!("Transcription complete: {} chars", result.text.len());
                 }
@@ -352,12 +373,18 @@ fn handle_hotkey_released(app: &AppHandle) {
             }
             Err(e) => {
                 log::error!("Transcription failed: {}", e);
+                crate::TranscriptionStatusEvent::emit(
+                    &app_clone,
+                    crate::StatusSource::Hotkey,
+                    crate::StatusKind::AsrError,
+                    Some(e.to_string()),
+                );
                 app_clone
                     .emit(
                         "transcription-complete",
                         serde_json::json!({
                             "result": null,
-                            "error": e.to_string()
+                            "error": { "kind": "asr_error", "message": e.to_string() }
                         }),
                     )
                     .ok();

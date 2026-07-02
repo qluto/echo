@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import type { StatusKind, TranscriptionStatusEvent } from "./lib/tauri";
 import {
   getCurrentWindow,
   LogicalSize,
@@ -80,15 +81,22 @@ function formatTime(createdAt: string): string {
   return timePart.slice(0, 5);
 }
 
-function makeLocalTimestamp(): string {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  const hh = String(now.getHours()).padStart(2, "0");
-  const mm = String(now.getMinutes()).padStart(2, "0");
-  const ss = String(now.getSeconds()).padStart(2, "0");
-  return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
+/** Short user-facing label for a transcription status. */
+function statusLabel(kind: StatusKind): string {
+  switch (kind) {
+    case "no_speech":
+      return "No speech detected";
+    case "asr_error":
+      return "Transcription failed";
+    case "engine_busy":
+      return "Engine busy";
+    case "db_error":
+      return "Failed to save";
+    case "audio_error":
+      return "Audio error";
+    case "permission_denied":
+      return "Mic access denied";
+  }
 }
 
 function formatDuration(seconds: number): string {
@@ -243,7 +251,9 @@ function FloatApp() {
   const [morphPhase, setMorphPhase] = useState<MorphPhase>("ambient");
   const [audioLevel, setAudioLevel] = useState(0);
   const [showRipple, setShowRipple] = useState(false);
+  const [statusToast, setStatusToast] = useState<TranscriptionStatusEvent | null>(null);
 
+  const statusToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevModeRef = useRef<"ambient" | "normal" | "hidden">("hidden");
   const prevStateRef = useRef<IndicatorState>("idle");
   const morphTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -323,18 +333,34 @@ function FloatApp() {
     const unlisten = listen<RecentEntry>(
       "continuous-transcription",
       (event) => {
-        const payload = event.payload;
-        const normalized: RecentEntry = {
-          ...payload,
-          created_at: payload.created_at?.trim()
-            ? payload.created_at
-            : makeLocalTimestamp(),
-        };
-        setRecentEntries((prev) => [normalized, ...prev].slice(0, 10));
+        setRecentEntries((prev) => [event.payload, ...prev].slice(0, 10));
       },
     );
     return () => {
       unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // Transient status toast (no_speech / errors) from either pipeline
+  useEffect(() => {
+    const unlisten = listen<TranscriptionStatusEvent>(
+      "transcription-status",
+      (event) => {
+        setStatusToast(event.payload);
+        if (statusToastTimerRef.current) {
+          clearTimeout(statusToastTimerRef.current);
+        }
+        statusToastTimerRef.current = setTimeout(() => {
+          setStatusToast(null);
+          statusToastTimerRef.current = null;
+        }, 2500);
+      },
+    );
+    return () => {
+      unlisten.then((fn) => fn());
+      if (statusToastTimerRef.current) {
+        clearTimeout(statusToastTimerRef.current);
+      }
     };
   }, []);
 
@@ -619,6 +645,34 @@ function FloatApp() {
       className="h-screen w-screen relative flex items-end justify-center bg-transparent"
       style={{ paddingBottom: 15 }}
     >
+      {/* Transient status toast (no_speech = neutral, real errors = red) */}
+      {statusToast && (
+        <div
+          className="absolute inset-x-0 flex justify-center pointer-events-none"
+          style={{ bottom: 15 + pillHeight + 8 }}
+        >
+          <div
+            style={{
+              fontFamily: "'Plus Jakarta Sans', sans-serif",
+              fontSize: 12,
+              fontWeight: 500,
+              padding: "5px 12px",
+              borderRadius: 12,
+              whiteSpace: "nowrap",
+              backgroundColor:
+                statusToast.kind === "no_speech" ? "#1A1A1C" : "#C67D63",
+              color:
+                statusToast.kind === "no_speech"
+                  ? "rgba(255, 255, 255, 0.85)"
+                  : "#FFFFFF",
+              boxShadow: "0 2px 8px rgba(0, 0, 0, 0.15)",
+            }}
+          >
+            {statusLabel(statusToast.kind)}
+          </div>
+        </div>
+      )}
+
       {/* Hover panel — only in ambient phase while listening */}
       {isHoverPanelMounted && isAmbientState && morphPhase === "ambient" && (
           <div

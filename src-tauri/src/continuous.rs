@@ -1,7 +1,7 @@
 //! Continuous listening pipeline: streaming audio → VAD → segment detection → ASR → DB.
 //!
 //! Ports echo-cli's recorder.py + listener.py logic to Rust.
-//! Python is only used for ASR inference (via existing JSON-RPC sidecar).
+//! ASR runs fully in-process via `ASREngine` (no Python sidecar).
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -18,6 +18,7 @@ use tauri::{AppHandle, Emitter};
 use crate::audio_capture::StreamingCapture;
 use crate::database::{TranscriptionDb, TranscriptionEntry};
 use crate::transcription::ASREngine;
+use crate::types::{StatusKind, StatusSource, TranscriptionStatusEvent};
 use crate::vad::{VadEvent, VadProcessor, VAD_FRAME_SIZE, VAD_SAMPLE_RATE};
 
 /// A speech segment detected by VAD, ready for transcription.
@@ -53,7 +54,7 @@ pub struct ContinuousListeningStatus {
 ///   resamples to 16kHz                                detects speech segments
 ///                                                     saves WAV files
 ///                                                  →  channel<SpeechSegment>  →  [transcription worker]
-///                                                                                  calls Python ASR
+///                                                                                  calls in-process ASR
 ///                                                                                  saves to DB
 ///                                                                                  emits events
 /// ```
@@ -434,41 +435,53 @@ fn process_segment(
     let audio_path = segment.audio_path.to_string_lossy();
     log::info!("Processing segment: {:.1}s", segment.duration_seconds);
 
+    let emit_status = |kind: StatusKind, message: Option<String>| {
+        TranscriptionStatusEvent::emit(app, StatusSource::Continuous, kind, message);
+    };
+
     // Call ASR engine
-    let result = {
+    let (result, model_name) = {
         let mut engine = match asr_engine.lock() {
             Ok(e) => e,
             Err(e) => {
                 log::error!("Failed to lock ASR engine: {}", e);
+                emit_status(StatusKind::EngineBusy, Some(e.to_string()));
                 return;
             }
         };
-        engine.transcribe(&audio_path, language)
+        let model_name = match engine.active_model_name() {
+            "" => None,
+            m => Some(m.to_string()),
+        };
+        (engine.transcribe(&audio_path, language), model_name)
     };
 
     let result = match result {
         Ok(r) => r,
         Err(e) => {
             log::error!("Transcription failed: {}", e);
+            emit_status(StatusKind::AsrError, Some(e.to_string()));
             return;
         }
     };
 
     if !result.success {
         log::warn!("Transcription returned success=false");
+        emit_status(StatusKind::AsrError, None);
         return;
     }
 
     let text = result.text.trim().to_string();
     if text.is_empty() {
         log::info!("Empty transcription, skipping");
+        emit_status(StatusKind::NoSpeech, None);
         return;
     }
 
     // Save to database
     let entry = TranscriptionEntry {
         id: None,
-        created_at: String::new(), // DB default
+        created_at: String::new(), // DB generates the real value (returned by insert)
         duration_seconds: Some(segment.duration_seconds),
         text: text.clone(),
         raw_text: None,
@@ -477,7 +490,7 @@ fn process_segment(
         } else {
             Some(result.language.clone())
         },
-        model_name: None, // TODO: get from engine settings
+        model_name,
         segments_json: if result.segments.is_empty() {
             None
         } else {
@@ -485,16 +498,18 @@ fn process_segment(
         },
     };
 
-    let entry_id = match db.lock() {
+    let (entry_id, created_at) = match db.lock() {
         Ok(db) => match db.insert(&entry) {
-            Ok(id) => id,
+            Ok(v) => v,
             Err(e) => {
                 log::error!("Failed to save to DB: {}", e);
+                emit_status(StatusKind::DbError, Some(e.to_string()));
                 return;
             }
         },
         Err(e) => {
             log::error!("Failed to lock DB: {}", e);
+            emit_status(StatusKind::DbError, Some(e.to_string()));
             return;
         }
     };
@@ -514,14 +529,14 @@ fn process_segment(
     let event = ContinuousTranscriptionEvent {
         id: entry_id,
         text,
-        created_at: entry.created_at,
+        created_at,
         duration_seconds: Some(segment.duration_seconds),
         language: if result.language.is_empty() {
             None
         } else {
             Some(result.language)
         },
-        model_name: None,
+        model_name: entry.model_name,
     };
 
     if let Err(e) = app.emit("continuous-transcription", &event) {

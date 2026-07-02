@@ -204,9 +204,30 @@ export interface RecordingStateEvent {
   state: RecordingState;
 }
 
+export interface TranscriptionError {
+  kind: string;
+  message: string;
+}
+
 export interface TranscriptionEvent {
   result: TranscriptionResult | null;
-  error: string | null;
+  error: TranscriptionError | null;
+}
+
+// Structured status events ("transcription-status") from both the hotkey and
+// always-on paths. no_speech is a normal outcome, not an error.
+export type StatusKind =
+  | "no_speech"
+  | "asr_error"
+  | "engine_busy"
+  | "db_error"
+  | "audio_error"
+  | "permission_denied";
+
+export interface TranscriptionStatusEvent {
+  kind: StatusKind;
+  source: "hotkey" | "continuous";
+  message: string | null;
 }
 
 export function onRecordingStateChange(
@@ -225,10 +246,10 @@ export function onTranscriptionComplete(
   });
 }
 
-export function onError(
-  callback: (error: string) => void
+export function onTranscriptionStatus(
+  callback: (event: TranscriptionStatusEvent) => void
 ): Promise<UnlistenFn> {
-  return listen<string>("error", (event) => {
+  return listen<TranscriptionStatusEvent>("transcription-status", (event) => {
     callback(event.payload);
   });
 }

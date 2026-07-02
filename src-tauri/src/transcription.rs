@@ -105,6 +105,11 @@ impl ASREngine {
         }
     }
 
+    /// Currently selected ASR model id. Empty until set_model is called.
+    pub fn active_model_name(&self) -> &str {
+        &self.active_model
+    }
+
     /// Resolve the HF cache dir + token. Cheap and synchronous — there is no
     /// sidecar process to spawn. Idempotent.
     pub fn start(&mut self, app: &AppHandle, hf_token: Option<&str>) -> Result<()> {
