@@ -23,12 +23,20 @@ export interface AudioDevice {
   is_default: boolean;
 }
 
+export interface AppProfile {
+  bundle_id: string;
+  name: string;
+  prompt: string;
+  enabled: boolean;
+}
+
 export interface PostProcessSettings {
   enabled: boolean;
   dictionary: Record<string, string>;
   custom_prompt?: string | null;
   model_name?: string | null;
   custom_summary_prompt?: string | null;
+  app_profiles?: AppProfile[];
 }
 
 export interface GatedAccessSettings {

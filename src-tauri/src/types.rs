@@ -132,6 +132,9 @@ pub struct PostProcessSettings {
     /// Custom system prompt for summarization. If None, uses default.
     #[serde(default)]
     pub custom_summary_prompt: Option<String>,
+    /// Per-app post-processing profiles, matched by exact bundle_id.
+    #[serde(default)]
+    pub app_profiles: Vec<AppProfile>,
 }
 
 impl Default for PostProcessSettings {
@@ -142,7 +145,37 @@ impl Default for PostProcessSettings {
             custom_prompt: None,
             model_name: None,
             custom_summary_prompt: None,
+            app_profiles: Vec::new(),
         }
+    }
+}
+
+/// A per-app post-processing profile: when the frontmost app's bundle_id
+/// matches, `prompt` replaces the system prompt (e.g. Slack drafting mode).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AppProfile {
+    /// Exact bundle id, e.g. "com.tinyspeck.slackmacgap".
+    pub bundle_id: String,
+    /// Display label, e.g. "Slack".
+    pub name: String,
+    /// Full system prompt (always a concrete string, seeded by the UI).
+    pub prompt: String,
+    pub enabled: bool,
+}
+
+impl PostProcessSettings {
+    /// System prompt override for the given frontmost app. An enabled profile
+    /// with an exact bundle_id match takes precedence over the global
+    /// custom_prompt; None means "use the built-in default prompt".
+    pub fn resolve_prompt(&self, bundle_id: Option<&str>) -> Option<&str> {
+        bundle_id
+            .and_then(|bid| {
+                self.app_profiles
+                    .iter()
+                    .find(|p| p.enabled && p.bundle_id == bid)
+            })
+            .map(|p| p.prompt.as_str())
+            .or(self.custom_prompt.as_deref())
     }
 }
 
@@ -198,4 +231,65 @@ pub struct RecordingState {
     pub is_recording: bool,
     pub current_file: Option<String>,
     pub device_name: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings_with(profiles: Vec<AppProfile>, custom: Option<&str>) -> PostProcessSettings {
+        PostProcessSettings {
+            app_profiles: profiles,
+            custom_prompt: custom.map(String::from),
+            ..PostProcessSettings::default()
+        }
+    }
+
+    fn slack_profile(enabled: bool) -> AppProfile {
+        AppProfile {
+            bundle_id: "com.tinyspeck.slackmacgap".to_string(),
+            name: "Slack".to_string(),
+            prompt: "slack drafting prompt".to_string(),
+            enabled,
+        }
+    }
+
+    #[test]
+    fn resolve_prompt_matches_enabled_profile() {
+        let s = settings_with(vec![slack_profile(true)], Some("global"));
+        assert_eq!(
+            s.resolve_prompt(Some("com.tinyspeck.slackmacgap")),
+            Some("slack drafting prompt")
+        );
+    }
+
+    #[test]
+    fn resolve_prompt_skips_disabled_profile() {
+        let s = settings_with(vec![slack_profile(false)], Some("global"));
+        assert_eq!(
+            s.resolve_prompt(Some("com.tinyspeck.slackmacgap")),
+            Some("global")
+        );
+    }
+
+    #[test]
+    fn resolve_prompt_falls_back_to_global_custom_prompt() {
+        let s = settings_with(vec![slack_profile(true)], Some("global"));
+        assert_eq!(s.resolve_prompt(Some("com.apple.Notes")), Some("global"));
+        assert_eq!(s.resolve_prompt(None), Some("global"));
+    }
+
+    #[test]
+    fn resolve_prompt_none_means_builtin_default() {
+        let s = settings_with(vec![slack_profile(true)], None);
+        assert_eq!(s.resolve_prompt(Some("com.apple.Notes")), None);
+        assert_eq!(s.resolve_prompt(None), None);
+    }
+
+    #[test]
+    fn old_settings_json_without_profiles_still_loads() {
+        let json = r#"{"enabled":true,"dictionary":{}}"#;
+        let s: PostProcessSettings = serde_json::from_str(json).unwrap();
+        assert!(s.app_profiles.is_empty());
+    }
 }
