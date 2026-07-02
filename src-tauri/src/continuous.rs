@@ -501,6 +501,15 @@ fn process_segment(
 
     segment_count.fetch_add(1, Ordering::SeqCst);
 
+    // Visibility into MLX memory over long always-on sessions (cache is capped
+    // via set_cache_limit in ASREngine::start; active should stay flat).
+    let (active, cache) = rust_asr::mlx_memory();
+    log::info!(
+        "MLX memory after segment: active={} MB, cache={} MB",
+        active / (1024 * 1024),
+        cache / (1024 * 1024)
+    );
+
     // Emit event to frontend
     let event = ContinuousTranscriptionEvent {
         id: entry_id,

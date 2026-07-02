@@ -128,6 +128,34 @@ fn main() -> Result<()> {
             println!("text: {:?} in {:?}", out.text, t.elapsed());
             Ok(())
         }
+        "pk-loop" => {
+            // Reproduce the always-on memory growth: transcribe variable-length
+            // slices of <wav> repeatedly and watch MLX active/cache memory.
+            // usage: pk-loop <wav> [iters] [cache_limit_mb]  (0 = unlimited)
+            let wav = args.get(2).ok_or_else(|| anyhow!("usage: pk-loop <wav> [iters] [cache_limit_mb]"))?;
+            let iters: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(20);
+            let limit_mb: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
+            if limit_mb > 0 {
+                let prev = rust_asr::set_cache_limit(limit_mb * 1024 * 1024);
+                println!("cache limit: {limit_mb} MB (was {} MB)", prev / (1024 * 1024));
+            } else {
+                println!("cache limit: unlimited (default)");
+            }
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let eng = rust_asr::ParakeetEngine::load(std::path::Path::new(&hub))?;
+            let samples = rust_asr::read_wav_16k_mono(wav)?;
+            let mb = |b: usize| b / (1024 * 1024);
+            for i in 0..iters {
+                // Vary the segment length each iteration (like real VAD
+                // segments) so buffer shapes differ and the cache accumulates.
+                let len = (samples.len() * (i % 7 + 4) / 10).clamp(1, samples.len()); // 40%–100%
+                let _ = eng.transcribe_samples(&samples[..len], "ja")?;
+                let (a, c) = rust_asr::mlx_memory();
+                println!("iter {i:>3}: len={len:>7} active={}MB cache={}MB", mb(a), mb(c));
+            }
+            Ok(())
+        }
         "switchmem" => {
             // Simulate the app switch path: load a big MLX model, drop+release,
             // load whisper-tiny, drop+release. Watch RSS + MLX memory.
