@@ -37,6 +37,9 @@ const POSTPROCESS_MODELS: [&str; 3] = [
 ];
 const DEFAULT_POSTPROCESS_MODEL: &str = "mlx-community/Qwen3-4B-4bit";
 
+/// Cap for MLX's freed-buffer cache (see `ASREngine::start`).
+const MLX_CACHE_LIMIT_BYTES: usize = 512 * 1024 * 1024;
+
 // ===== Public status types (consumed by Tauri commands / the frontend) =====
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +118,17 @@ impl ASREngine {
         log::info!("ASR engine ready (in-process). Cache: {:?}", cache_dir);
         self.hub_dir = Some(cache_dir.join("hub"));
         self.hf_token = hf_token.filter(|t| !t.is_empty()).map(|t| t.to_string());
+        // Cap MLX's freed-buffer cache. Without a limit (default ≈ device
+        // memory), continuous transcription grows process memory unboundedly:
+        // every variable-length segment leaves differently-sized buffers in
+        // the cache. 512 MB keeps steady-state buffer reuse while returning
+        // the excess to the OS.
+        let prev = rust_asr::set_cache_limit(MLX_CACHE_LIMIT_BYTES);
+        log::info!(
+            "MLX cache limit set to {} MB (was {} MB)",
+            MLX_CACHE_LIMIT_BYTES / (1024 * 1024),
+            prev / (1024 * 1024)
+        );
         Ok(())
     }
 
