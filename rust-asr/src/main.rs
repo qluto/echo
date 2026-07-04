@@ -249,19 +249,23 @@ fn main() -> Result<()> {
             Ok(())
         }
         "pp" => {
-            // Post-process cleanup: pp "<text>" [model_id]
-            let text = args.get(2).ok_or_else(|| anyhow!("usage: pp <text> [model]"))?;
+            // Post-process cleanup: pp "<text>" [model_id] [system_prompt_file]
+            let text = args.get(2).ok_or_else(|| anyhow!("usage: pp <text> [model] [prompt_file]"))?;
             let model = args
                 .get(3)
                 .map(String::as_str)
                 .unwrap_or("mlx-community/Qwen3-1.7B-4bit");
+            let custom_prompt = match args.get(4) {
+                Some(path) => Some(std::fs::read_to_string(path)?),
+                None => None,
+            };
             let home = std::env::var("HOME").unwrap_or_default();
             let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
             let t = std::time::Instant::now();
             let pp = rust_asr::PostProcessor::load(std::path::Path::new(&hub), model)?;
             println!("postproc loaded in {:?}", t.elapsed());
             let t = std::time::Instant::now();
-            let out = pp.process(text, None, None, None, None)?;
+            let out = pp.process(text, None, None, None, custom_prompt.as_deref())?;
             println!("in:  {text:?}");
             println!("out: {out:?} ({:?})", t.elapsed());
             Ok(())

@@ -28,6 +28,49 @@ Remove verbal noise while keeping the speaker's message intact:
 ## Output
 Output ONLY the cleaned text. No explanations.`;
 
+/**
+ * Drafting prompt for Slack: turns rambling dictated speech into a polished
+ * message. Replaces the default cleanup prompt entirely, so it must also
+ * carry the cleanup directives (fillers, self-corrections, dictionary).
+ */
+export const SLACK_DRAFT_PROMPT = `/no_think
+You are an assistant that turns rambling dictated speech into a polished Slack message.
+
+## Your Task
+The input is raw speech-recognition text. Rewrite it as a concise, well-structured Slack message.
+
+1. **Keep the speaker's language**: Japanese input → Japanese output, English input → English output. Never translate.
+2. **Clean the speech first**:
+   - Remove filler words (English: um, uh, like, you know, well, so, I mean / Japanese: ええと, えーと, あの, まあ, なんか, その, うーん, ちょっと, やっぱ)
+   - When the speaker corrects themselves, keep ONLY the final version and drop the discarded one entirely — never mention or explain the correction ("3時に、いや4時に" → "4時に")
+   - Never add facts, reasons, or statements the speaker did not say
+3. **Restructure for Slack**:
+   - Lead with the main point or ask (conclusion first)
+   - Short paragraphs; use "- " bullet lists when listing items, options, or requests
+   - Cut repetition and rambling, but never drop concrete facts: names, numbers, dates, links, decisions, asks
+4. **Tone**:
+   - Japanese: natural Slack-style です・ます調 — friendly, not stiff business keigo
+   - English: friendly and professional
+5. **Apply the user dictionary** if provided.
+
+## Output
+Output ONLY the final Slack message. No explanations, no preamble, no surrounding quotes.`;
+
+/** Preset app profiles offered in Settings → App Profiles. */
+export interface AppProfilePreset {
+  bundle_id: string;
+  name: string;
+  prompt: string;
+}
+
+export const APP_PROFILE_PRESETS: AppProfilePreset[] = [
+  {
+    bundle_id: "com.tinyspeck.slackmacgap",
+    name: "Slack",
+    prompt: SLACK_DRAFT_PROMPT,
+  },
+];
+
 export const DEFAULT_SUMMARIZE_PROMPT = `You are an assistant that creates concise summaries of speech transcriptions.
 
 ## Input

@@ -429,7 +429,10 @@ pub fn postprocess_text(
     } else {
         Some(settings.postprocess.dictionary.clone())
     };
-    let custom_prompt = settings.postprocess.custom_prompt.clone();
+    let custom_prompt = settings
+        .postprocess
+        .resolve_prompt(app_bundle_id.as_deref())
+        .map(String::from);
     drop(settings);
 
     let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;

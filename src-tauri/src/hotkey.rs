@@ -260,7 +260,9 @@ fn handle_hotkey_released(app: &AppHandle) {
                                 app_info.and_then(|a| a.app_name.as_deref()),
                                 app_info.and_then(|a| a.bundle_id.as_deref()),
                                 dictionary,
-                                postprocess_settings.custom_prompt.as_deref(),
+                                postprocess_settings.resolve_prompt(
+                                    app_info.and_then(|a| a.bundle_id.as_deref()),
+                                ),
                             ) {
                                 Ok(pp_result) => {
                                     if pp_result.success {

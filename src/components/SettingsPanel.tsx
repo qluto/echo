@@ -27,6 +27,7 @@ import {
 import { MODEL_ORDER, SUPPORTED_LANGUAGES, getModelDisplayName, getModelSize, isGatedModel } from "../lib/models";
 import { formatHotkey } from "../lib/format";
 import { DEFAULT_POSTPROCESS_PROMPT, DEFAULT_SUMMARIZE_PROMPT } from "../lib/prompts";
+import { AppProfilesSection } from "./AppProfilesSection";
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -929,6 +930,21 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                   >
                     Removes fillers, applies corrections, and formats text based on the target app.
                   </div>
+                )}
+
+                {/* Per-app prompt profiles */}
+                {settings.postprocess.enabled && (
+                  <AppProfilesSection
+                    profiles={settings.postprocess.app_profiles ?? []}
+                    onChange={(app_profiles) => {
+                      const newPostprocess: PostProcessSettings = {
+                        ...settings.postprocess,
+                        app_profiles,
+                      };
+                      setSettings({ ...settings, postprocess: newPostprocess });
+                      updatePostprocessSettings(newPostprocess).catch(console.error);
+                    }}
+                  />
                 )}
 
                 {/* Advanced Section - Collapsible */}
