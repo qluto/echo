@@ -91,11 +91,13 @@ impl TranscriptionDb {
         })
     }
 
-    /// Insert a new transcription entry. Returns the new row ID.
-    pub fn insert(&self, entry: &TranscriptionEntry) -> Result<i64> {
-        self.conn.execute(
+    /// Insert a new transcription entry. Returns the new row ID and the
+    /// DB-generated created_at timestamp.
+    pub fn insert(&self, entry: &TranscriptionEntry) -> Result<(i64, String)> {
+        let row = self.conn.query_row(
             "INSERT INTO transcriptions (duration_seconds, text, raw_text, language, model_name, segments_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             RETURNING id, created_at",
             params![
                 entry.duration_seconds,
                 entry.text,
@@ -104,8 +106,9 @@ impl TranscriptionDb {
                 entry.model_name,
                 entry.segments_json,
             ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(row)
     }
 
     /// Get paginated history ordered by created_at DESC.
@@ -272,15 +275,16 @@ mod tests {
     fn test_insert_and_get() {
         let (db, _dir) = temp_db();
 
-        let id = db.insert(&sample_entry("テスト書き起こし")).unwrap();
+        let (id, created_at) = db.insert(&sample_entry("テスト書き起こし")).unwrap();
         assert!(id > 0);
+        assert!(!created_at.is_empty());
 
         let page = db.get_all(10, 0).unwrap();
         assert_eq!(page.total_count, 1);
         assert_eq!(page.entries.len(), 1);
         assert_eq!(page.entries[0].text, "テスト書き起こし");
         assert_eq!(page.entries[0].id, Some(id));
-        assert!(!page.entries[0].created_at.is_empty());
+        assert_eq!(page.entries[0].created_at, created_at);
     }
 
     #[test]
@@ -332,7 +336,7 @@ mod tests {
     fn test_delete() {
         let (db, _dir) = temp_db();
 
-        let id = db.insert(&sample_entry("削除テスト")).unwrap();
+        let (id, _) = db.insert(&sample_entry("削除テスト")).unwrap();
         assert_eq!(db.count().unwrap(), 1);
 
         assert!(db.delete(id).unwrap());
@@ -379,7 +383,7 @@ mod tests {
     fn test_fts5_sync_on_delete() {
         let (db, _dir) = temp_db();
 
-        let id = db.insert(&sample_entry("検索用テキスト")).unwrap();
+        let (id, _) = db.insert(&sample_entry("検索用テキスト")).unwrap();
 
         // 3+ chars uses FTS5 trigram
         let page = db.search("検索用", 10, 0).unwrap();
@@ -391,7 +395,7 @@ mod tests {
         assert_eq!(page.total_count, 0);
 
         // Also verify LIKE fallback works after delete
-        let id2 = db.insert(&sample_entry("テスト文字列")).unwrap();
+        let (id2, _) = db.insert(&sample_entry("テスト文字列")).unwrap();
         let page = db.search("テス", 10, 0).unwrap();
         assert_eq!(page.total_count, 1);
         db.delete(id2).unwrap();

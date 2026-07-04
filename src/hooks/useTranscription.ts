@@ -7,7 +7,7 @@ import {
   getSettings,
   onRecordingStateChange,
   onTranscriptionComplete,
-  onError,
+  onTranscriptionStatus,
   RecordingState,
   TranscriptionResult,
 } from "../lib/tauri";
@@ -79,15 +79,18 @@ export function useTranscription(): UseTranscriptionReturn {
 
     onTranscriptionComplete((event) => {
       if (event.error) {
-        setError(event.error);
+        setError(event.error.message);
       } else if (event.result) {
         setResult(event.result);
         setError(null);
       }
     }).then((unlisten) => unlisteners.push(unlisten));
 
-    onError((errorMessage) => {
-      setError(errorMessage);
+    onTranscriptionStatus((event) => {
+      // no_speech is a normal outcome; only surface real hotkey-path errors here
+      if (event.source === "hotkey" && event.kind !== "no_speech") {
+        setError(event.message ?? event.kind);
+      }
     }).then((unlisten) => unlisteners.push(unlisten));
 
     return () => {
