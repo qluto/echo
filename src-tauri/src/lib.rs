@@ -8,6 +8,7 @@ mod clipboard;
 mod commands;
 mod continuous;
 mod database;
+mod export;
 mod handy_keys;
 mod hotkey;
 mod input;
@@ -100,6 +101,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Debug)
@@ -263,6 +265,7 @@ pub fn run() {
             commands::search_transcription_history,
             commands::delete_transcription_entry,
             commands::clear_transcription_history,
+            commands::export_transcription_history,
             commands::summarize_recent_transcriptions,
         ])
         .run(tauri::generate_context!())

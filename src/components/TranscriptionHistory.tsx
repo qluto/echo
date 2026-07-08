@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { useTranscriptionHistory } from "../hooks/useTranscriptionHistory";
 import { useContinuousListening } from "../hooks/useContinuousListening";
+import { exportTranscriptionHistory, ExportFormat } from "../lib/tauri";
 
 const TIME_OPTIONS = [
   { label: "5 min", minutes: 5 },
@@ -8,6 +9,12 @@ const TIME_OPTIONS = [
   { label: "30 min", minutes: 30 },
   { label: "1 hour", minutes: 60 },
   { label: "3 hours", minutes: 180 },
+];
+
+const EXPORT_OPTIONS: { label: string; format: ExportFormat }[] = [
+  { label: "Markdown", format: "markdown" },
+  { label: "JSON", format: "json" },
+  { label: "CSV", format: "csv" },
 ];
 
 interface TranscriptionHistoryProps {
@@ -38,6 +45,9 @@ export function TranscriptionHistory({ onSummarize, isSummarizing }: Transcripti
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showTimeMenu, setShowTimeMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
 
   // Load initial history
   useEffect(() => {
@@ -51,17 +61,32 @@ export function TranscriptionHistory({ onSummarize, isSummarizing }: Transcripti
     }
   }, [recentEntries.length]);
 
-  // Close menu on outside click
+  // Close menus on outside click
   useEffect(() => {
-    if (!showTimeMenu) return;
+    if (!showTimeMenu && !showExportMenu) return;
     const handleClick = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setShowTimeMenu(false);
       }
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setShowExportMenu(false);
+      }
     };
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
-  }, [showTimeMenu]);
+  }, [showTimeMenu, showExportMenu]);
+
+  const handleExport = useCallback(async (format: ExportFormat) => {
+    setIsExporting(true);
+    try {
+      // Resolves to null when the user cancels the save dialog
+      await exportTranscriptionHistory(format);
+    } catch (e) {
+      console.error("Failed to export history:", e);
+    } finally {
+      setIsExporting(false);
+    }
+  }, []);
 
   // Debounced search
   const handleSearchInput = useCallback(
@@ -119,6 +144,53 @@ export function TranscriptionHistory({ onSummarize, isSummarizing }: Transcripti
         </span>
 
         <div className="flex items-center gap-2">
+          {/* Export */}
+          {totalCount > 0 && (
+            <div className="relative" ref={exportMenuRef}>
+              <button
+                onClick={() => {
+                  if (!isExporting) setShowExportMenu((v) => !v);
+                }}
+                disabled={isExporting}
+                className="text-[10px] flex-shrink-0 px-2 py-0.5 rounded-md transition-colors border border-subtle hover:bg-surface-elevated disabled:opacity-50"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                {isExporting ? (
+                  <span className="flex items-center gap-1">
+                    <span
+                      className="inline-block w-2 h-2 border border-current rounded-full animate-spin"
+                      style={{ borderTopColor: "transparent" }}
+                    />
+                    Exporting
+                  </span>
+                ) : (
+                  "Export"
+                )}
+              </button>
+
+              {showExportMenu && (
+                <div
+                  className="absolute right-0 top-full mt-1 py-1 rounded-lg border border-subtle shadow-lg z-10 min-w-[100px]"
+                  style={{ backgroundColor: "var(--surface)" }}
+                >
+                  {EXPORT_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.format}
+                      onClick={() => {
+                        setShowExportMenu(false);
+                        handleExport(opt.format);
+                      }}
+                      className="w-full px-3 py-1.5 text-xs text-left hover:bg-surface-elevated transition-colors"
+                      style={{ color: "var(--text-primary)" }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Summarize */}
           {totalCount > 0 && onSummarize && (
             <div className="relative" ref={menuRef}>

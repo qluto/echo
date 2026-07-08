@@ -228,6 +228,20 @@ impl TranscriptionDb {
         Ok(entries)
     }
 
+    /// Get all entries ordered chronologically (oldest first) for export.
+    pub fn export_all(&self) -> Result<Vec<TranscriptionEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, created_at, duration_seconds, text, raw_text, language, model_name, segments_json
+             FROM transcriptions ORDER BY created_at ASC, id ASC",
+        )?;
+
+        let entries = stmt
+            .query_map([], Self::row_to_entry)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(entries)
+    }
+
     /// Get the database file path.
     pub fn path(&self) -> &Path {
         &self.path
@@ -377,6 +391,22 @@ mod tests {
         // 1 minute window should still include entries just inserted
         let entries = db.get_recent(1).unwrap();
         assert_eq!(entries.len(), 3);
+    }
+
+    #[test]
+    fn test_export_all_chronological() {
+        let (db, _dir) = temp_db();
+
+        for i in 0..3 {
+            db.insert(&sample_entry(&format!("Entry {}", i))).unwrap();
+        }
+
+        let entries = db.export_all().unwrap();
+        assert_eq!(entries.len(), 3);
+        // Oldest first (insertion order, since timestamps are identical the
+        // id tiebreaker keeps it stable)
+        assert_eq!(entries[0].text, "Entry 0");
+        assert_eq!(entries[2].text, "Entry 2");
     }
 
     #[test]

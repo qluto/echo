@@ -25,6 +25,7 @@ tauri-plugin-clipboard-manager = "2.0"
 tauri-plugin-global-shortcut = "2.0"
 tauri-plugin-store = "2.0"
 tauri-plugin-log = "2.0"
+tauri-plugin-dialog = "2.0"
 
 # オーディオ処理
 cpal = "0.15"
