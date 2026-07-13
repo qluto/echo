@@ -28,6 +28,7 @@ import { MODEL_ORDER, SUPPORTED_LANGUAGES, getModelDisplayName, getModelSize, is
 import { formatHotkey } from "../lib/format";
 import { DEFAULT_POSTPROCESS_PROMPT, DEFAULT_SUMMARIZE_PROMPT } from "../lib/prompts";
 import { AppProfilesSection } from "./AppProfilesSection";
+import { DictionarySection } from "./DictionarySection";
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -930,6 +931,21 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                   >
                     Removes fillers, applies corrections, and formats text based on the target app.
                   </div>
+                )}
+
+                {/* User dictionary */}
+                {settings.postprocess.enabled && (
+                  <DictionarySection
+                    dictionary={settings.postprocess.dictionary}
+                    onChange={(dictionary) => {
+                      const newPostprocess: PostProcessSettings = {
+                        ...settings.postprocess,
+                        dictionary,
+                      };
+                      setSettings({ ...settings, postprocess: newPostprocess });
+                      updatePostprocessSettings(newPostprocess).catch(console.error);
+                    }}
+                  />
                 )}
 
                 {/* Per-app prompt profiles */}

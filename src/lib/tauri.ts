@@ -440,6 +440,18 @@ export async function clearTranscriptionHistory(): Promise<number> {
   return invoke("clear_transcription_history");
 }
 
+export type ExportFormat = "json" | "csv" | "markdown";
+
+/**
+ * Export the full transcription history via a native save dialog.
+ * Resolves to the saved file path, or null if the user cancelled.
+ */
+export async function exportTranscriptionHistory(
+  format: ExportFormat
+): Promise<string | null> {
+  return invoke("export_transcription_history", { format });
+}
+
 // Summarization types and commands
 export interface SummarizeResult {
   success: boolean;

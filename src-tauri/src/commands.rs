@@ -6,6 +6,7 @@ use crate::audio_capture;
 use crate::clipboard;
 use crate::continuous;
 use crate::database;
+use crate::export;
 use crate::handy_keys;
 use crate::input::EnigoState;
 use crate::transcription::{ModelCacheStatus, ModelStatus, WarmupResult};
@@ -574,6 +575,44 @@ pub fn clear_transcription_history(
 ) -> Result<u32, String> {
     let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
     db.delete_all().map_err(|e| e.to_string())
+}
+
+/// Export the full transcription history to a user-chosen file.
+/// Returns the saved path, or None if the user cancelled the dialog.
+/// Async so the blocking save dialog runs off the main thread.
+#[tauri::command]
+pub async fn export_transcription_history(
+    format: export::ExportFormat,
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let file_path = app
+        .dialog()
+        .file()
+        .set_file_name(format!("echo-transcripts.{}", format.extension()))
+        .add_filter(format.filter_name(), &[format.extension()])
+        .blocking_save_file();
+
+    let Some(file_path) = file_path else {
+        return Ok(None);
+    };
+    let path = file_path.into_path().map_err(|e| e.to_string())?;
+
+    let state = app.state::<AppState>();
+    let entries = {
+        let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
+        db.export_all().map_err(|e| e.to_string())?
+    };
+
+    let content = export::format_entries(format, &entries)?;
+    std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    log::info!(
+        "Exported {} transcription entries to {:?}",
+        entries.len(),
+        path
+    );
+    Ok(Some(path.to_string_lossy().into_owned()))
 }
 
 // ===== Summarization commands =====
