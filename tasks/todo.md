@@ -1,20 +1,16 @@
-# ホットキー録音中の途中経過表示（partial）試作
+# ホットキー録音中の途中経過表示（partial）— PR 済み
 
 ブランチ: feature/streaming-partial-refine
-参考: https://github.com/oboroge0/hayamimi の partial 方式（0.5s ごとに末尾 ≤8s を再デコード）
+参考: https://github.com/oboroge0/hayamimi の partial 方式
 
 ## 実装済み
-- [x] `audio_capture.rs`: `start_recording_with_tap()` — 録音中の音声を 16kHz mono 512-sample フレームで
-      並行配信（既存 `FrameAccumulator` を再利用。WAV 書き出しはそのまま）
-- [x] `partial.rs`（新規）: `PartialDecoder` スレッド。0.5s 分の新音声ごとに末尾 ≤8s を
-      `ASREngine::transcribe_samples` で再デコードし `hotkey-partial` を emit。
-      エンジンは `try_lock` のみ（busy なら tick をスキップ）。Whisper 時は自動無効（`supports_partial`）
-- [x] `hotkey.rs`: 押下で decoder 起動、離した直後に `stop()`（join）してから最終デコード → 古い draft が後から出ない
-- [x] `transcription.rs`: `transcribe_samples(samples, lang, vad_gate)` を追加、`transcribe(path)` はそれに委譲
-- [x] FloatApp: 録音中、ピルの上に draft 吹き出し（最大 3 行）を表示。録音終了で消える
-- [x] cargo check / lib テスト 29 件 / npm run build OK
+- [x] 録音音声の 16kHz タップ（`start_recording_with_tap`）と `partial.rs` の draft デコーダ
+      （0.5s ごとに末尾 ≤8s を再デコード、8s 超は最も静かな地点で区切って committed に昇格）
+- [x] 離したときは committed + 末尾デコードで確定（ファイル読込・リサンプル・全体再デコード不要）
+- [x] フロート UI: ピルが draft を内包して伸縮、下段に波形＋タイマー、窓自体も高さ追従（最大 40 行）
+- [x] 未確定部分（末尾窓）はぼかし表示、確定で解除
+- [x] 実機確認済み（ユーザー）
 
-## 要ユーザー確認（実機）
-- [ ] 体感: 話している途中に draft が追従するか、ちらつきが気にならないか
-- [ ] ログ `partial: N.Ns window in M ms` が 500ms 以内か（超えるなら PARTIAL_EVERY_SEC を上げる）
-- [ ] Whisper 選択時は draft が出ない（仕様）。出したい場合は別途検討
+## 今後の候補
+- [ ] 短い発話でも早めに確定表示にしたい場合は `PARTIAL_WINDOW_SEC` を下げる
+- [ ] 区切り位置の認識差が気になる場合、速報挿入 → 裏で全体デコードして差し替える二段構成
