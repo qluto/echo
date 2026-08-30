@@ -16,6 +16,10 @@ static WAS_LISTENING: AtomicBool = AtomicBool::new(false);
 
 /// Register a global hotkey
 #[allow(dead_code)]
+/// Draft decoder for the recording in progress (hotkey held).
+static PARTIAL_DECODER: std::sync::Mutex<Option<crate::partial::PartialDecoder>> =
+    std::sync::Mutex::new(None);
+
 pub fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<()> {
     // Unregister all existing hotkeys first
     if let Err(e) = app.global_shortcut().unregister_all() {
@@ -86,10 +90,31 @@ fn handle_hotkey_pressed(app: &AppHandle) {
         None
     };
 
+    // Live tap for in-progress draft decoding while the key is held
+    let (tap_tx, tap_rx) = crossbeam_channel::bounded::<Vec<f32>>(64);
+
     // Start recording
-    match crate::audio_capture::start_recording(device_name) {
+    match crate::audio_capture::start_recording_with_tap(device_name, Some(tap_tx)) {
         Ok(file_path) => {
             log::info!("Recording started: {}", file_path);
+
+            if let Some(state) = app.try_state::<crate::AppState>() {
+                let language = state
+                    .settings
+                    .lock()
+                    .ok()
+                    .map(|s| s.language.clone())
+                    .filter(|l| l != "auto");
+                let decoder = crate::partial::PartialDecoder::start(
+                    app.clone(),
+                    Arc::clone(&state.asr_engine),
+                    language,
+                    tap_rx,
+                );
+                if let Ok(mut slot) = PARTIAL_DECODER.lock() {
+                    *slot = Some(decoder);
+                }
+            }
 
             // Store file path in recording state
             if let Some(state) = app.try_state::<crate::AppState>() {
@@ -118,6 +143,12 @@ fn handle_hotkey_pressed(app: &AppHandle) {
 
 fn handle_hotkey_released(app: &AppHandle) {
     log::info!("Hotkey released - stopping recording");
+
+    // Stop draft decoding first: waits for an in-flight draft so the final
+    // decode below never queues behind one.
+    if let Some(decoder) = PARTIAL_DECODER.lock().ok().and_then(|mut s| s.take()) {
+        decoder.stop();
+    }
     app.emit(
         "recording-state-change",
         serde_json::json!({"state": "transcribing"}),

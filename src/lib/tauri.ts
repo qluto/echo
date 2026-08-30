@@ -379,6 +379,19 @@ export function onContinuousTranscription(
   });
 }
 
+// Draft text of the hotkey recording in progress (empty text = cleared)
+export interface HotkeyPartialEvent {
+  text: string;
+}
+
+export function onHotkeyPartial(
+  callback: (event: HotkeyPartialEvent) => void
+): Promise<UnlistenFn> {
+  return listen<HotkeyPartialEvent>("hotkey-partial", (event) => {
+    callback(event.payload);
+  });
+}
+
 // VAD state events (for ambient float indicator)
 export interface ContinuousVadStateEvent {
   is_speech: boolean;

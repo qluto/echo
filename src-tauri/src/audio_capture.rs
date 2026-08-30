@@ -36,6 +36,9 @@ fn reset_audio_level() {
 enum AudioCommand {
     StartRecording {
         device_name: Option<String>,
+        /// Optional live tap: 16 kHz mono 512-sample frames of the recording
+        /// as it happens (used for in-progress partial decoding).
+        tap: Option<crossbeam_channel::Sender<Vec<f32>>>,
         reply: mpsc::Sender<Result<String>>,
     },
     StopRecording {
@@ -68,8 +71,8 @@ fn spawn_audio_thread() -> AudioThread {
 
         for cmd in rx {
             match cmd {
-                AudioCommand::StartRecording { device_name, reply } => {
-                    let result = start_recording_impl(device_name, &mut current_recording);
+                AudioCommand::StartRecording { device_name, tap, reply } => {
+                    let result = start_recording_impl(device_name, tap, &mut current_recording);
                     let _ = reply.send(result);
                 }
                 AudioCommand::StopRecording { reply } => {
@@ -92,6 +95,7 @@ struct RecordingState {
 
 fn start_recording_impl(
     device_name: Option<String>,
+    tap: Option<crossbeam_channel::Sender<Vec<f32>>>,
     current_recording: &mut Option<RecordingState>,
 ) -> Result<String> {
     if current_recording.is_some() {
@@ -143,9 +147,18 @@ fn start_recording_impl(
 
     let config = supported_config.config();
 
+    let tap = match tap {
+        Some(sender) => Some(Arc::new(Mutex::new(FrameAccumulator::new(
+            sample_rate,
+            channels as usize,
+            sender,
+        )?))),
+        None => None,
+    };
+
     let stream = match supported_config.sample_format() {
-        SampleFormat::I16 => build_stream::<i16>(&device, &config, writer_clone)?,
-        SampleFormat::F32 => build_stream::<f32>(&device, &config, writer_clone)?,
+        SampleFormat::I16 => build_stream::<i16>(&device, &config, writer_clone, tap)?,
+        SampleFormat::F32 => build_stream::<f32>(&device, &config, writer_clone, tap)?,
         sample_format => return Err(anyhow!("Unsupported sample format: {:?}", sample_format)),
     };
 
@@ -186,6 +199,7 @@ fn build_stream<T>(
     device: &Device,
     config: &cpal::StreamConfig,
     writer: Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>,
+    tap: Option<Arc<Mutex<FrameAccumulator>>>,
 ) -> Result<Stream>
 where
     T: cpal::Sample + cpal::SizedSample,
@@ -222,6 +236,16 @@ where
                     }
                 }
             }
+
+            if let Some(tap) = tap.as_ref() {
+                let f32s: Vec<f32> = data
+                    .iter()
+                    .map(|&s| cpal::Sample::from_sample(s))
+                    .collect();
+                if let Ok(mut acc) = tap.lock() {
+                    acc.push_samples(&f32s);
+                }
+            }
         },
         err_fn,
         None,
@@ -232,6 +256,15 @@ where
 
 /// Start recording audio to a temp file
 pub fn start_recording(device_name: Option<String>) -> Result<String> {
+    start_recording_with_tap(device_name, None)
+}
+
+/// Start recording, additionally streaming 16 kHz mono frames to `tap` while
+/// the recording is in progress (the tap closes when the recording stops).
+pub fn start_recording_with_tap(
+    device_name: Option<String>,
+    tap: Option<crossbeam_channel::Sender<Vec<f32>>>,
+) -> Result<String> {
     let guard = get_audio_thread().lock().map_err(|e| anyhow!("{}", e))?;
     let thread = guard.as_ref().ok_or_else(|| anyhow!("Audio thread not available"))?;
 
@@ -240,6 +273,7 @@ pub fn start_recording(device_name: Option<String>) -> Result<String> {
         .tx
         .send(AudioCommand::StartRecording {
             device_name,
+            tap,
             reply: reply_tx,
         })
         .map_err(|e| anyhow!("Failed to send command: {}", e))?;

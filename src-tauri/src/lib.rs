@@ -11,6 +11,7 @@ mod database;
 mod export;
 mod handy_keys;
 mod hotkey;
+mod partial;
 mod input;
 mod transcription;
 mod types;

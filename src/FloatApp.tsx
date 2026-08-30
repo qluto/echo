@@ -1,7 +1,11 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import type { StatusKind, TranscriptionStatusEvent } from "./lib/tauri";
+import type {
+  StatusKind,
+  TranscriptionStatusEvent,
+  HotkeyPartialEvent,
+} from "./lib/tauri";
 import {
   getCurrentWindow,
   LogicalSize,
@@ -248,6 +252,7 @@ function FloatApp() {
   const [isHovered, setIsHovered] = useState(false);
   const [isHoverPanelMounted, setIsHoverPanelMounted] = useState(false);
   const [recentEntries, setRecentEntries] = useState<RecentEntry[]>([]);
+  const [partialText, setPartialText] = useState("");
   const [morphPhase, setMorphPhase] = useState<MorphPhase>("ambient");
   const [audioLevel, setAudioLevel] = useState(0);
   const [showRipple, setShowRipple] = useState(false);
@@ -340,6 +345,19 @@ function FloatApp() {
       unlisten.then((fn) => fn());
     };
   }, []);
+
+  // Draft of the recording in progress (hotkey held)
+  useEffect(() => {
+    const unlisten = listen<HotkeyPartialEvent>("hotkey-partial", (event) => {
+      setPartialText(event.payload.text);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+  useEffect(() => {
+    if (state !== "recording") setPartialText("");
+  }, [state]);
 
   // Transient status toast (no_speech / errors) from either pipeline
   useEffect(() => {
@@ -645,6 +663,35 @@ function FloatApp() {
       className="h-screen w-screen relative flex items-end justify-center bg-transparent"
       style={{ paddingBottom: 15 }}
     >
+      {/* Draft caption while recording (in-progress partial decode) */}
+      {state === "recording" && partialText && (
+        <div
+          className="absolute inset-x-0 flex justify-center pointer-events-none"
+          style={{ bottom: 15 + pillHeight + 8, padding: "0 8px" }}
+        >
+          <div
+            style={{
+              fontFamily: "'Plus Jakarta Sans', sans-serif",
+              fontSize: 12,
+              lineHeight: 1.45,
+              padding: "6px 12px",
+              borderRadius: 12,
+              maxWidth: "100%",
+              overflow: "hidden",
+              display: "-webkit-box",
+              WebkitLineClamp: 3,
+              WebkitBoxOrient: "vertical" as const,
+              wordBreak: "break-word",
+              backgroundColor: "rgba(26, 26, 28, 0.92)",
+              color: "rgba(255, 255, 255, 0.9)",
+              boxShadow: "0 2px 8px rgba(0, 0, 0, 0.15)",
+            }}
+          >
+            {partialText}
+          </div>
+        </div>
+      )}
+
       {/* Transient status toast (no_speech = neutral, real errors = red) */}
       {statusToast && (
         <div
