@@ -379,9 +379,11 @@ export function onContinuousTranscription(
   });
 }
 
-// Draft text of the hotkey recording in progress (empty text = cleared)
+// Draft of the hotkey recording in progress (both empty = cleared).
+// `committed` is final for this recording; `draft` is still tentative.
 export interface HotkeyPartialEvent {
-  text: string;
+  committed: string;
+  draft: string;
 }
 
 export function onHotkeyPartial(

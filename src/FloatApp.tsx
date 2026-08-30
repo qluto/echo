@@ -88,6 +88,15 @@ async function resizeAndPosition(width: number, height: number) {
   }
 }
 
+/** Mirror of partial.rs append_text: no space between CJK, a space otherwise. */
+function joinDraft(a: string, b: string): string {
+  if (!a) return b;
+  if (!b) return a;
+  const cjk = /[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef\uac00-\ud7af]/;
+  const needsSpace = !(cjk.test(a[a.length - 1]) || cjk.test(b[0]));
+  return a + (needsSpace ? " " : "") + b;
+}
+
 function formatTime(createdAt: string): string {
   const timePart = createdAt.split(" ")[1];
   if (!timePart) return "";
@@ -192,6 +201,7 @@ function IndicatorContent({
   duration,
   audioLevel,
   draft,
+  parts,
   draftRef,
 }: {
   state: IndicatorState;
@@ -199,12 +209,17 @@ function IndicatorContent({
   audioLevel: number;
   /** In-progress transcription shown inside the pill while recording. */
   draft: string;
+  /** Split of `draft` into final vs. tentative text (tentative is blurred). */
+  parts: HotkeyPartialEvent;
   draftRef: React.RefObject<HTMLSpanElement>;
 }) {
   const glowColor = getGlowColor(state);
 
   if (state === "recording") {
     const hasDraft = draft.length > 0;
+    const needsSpace =
+      parts.committed && parts.draft && joinDraft(parts.committed, parts.draft).length
+        > parts.committed.length + parts.draft.length;
     // With a draft: text on top, the original wave bars + timer row stays at
     // the bottom of the pill (same place as the plain recording pill).
     return (
@@ -230,7 +245,11 @@ function IndicatorContent({
                 wordBreak: "break-word",
               }}
             >
-              {draft}
+              {parts.committed}
+              {needsSpace ? " " : ""}
+              {parts.draft && (
+                <span className="draft-tentative">{parts.draft}</span>
+              )}
             </span>
           </div>
         )}
@@ -299,7 +318,8 @@ function FloatApp() {
   const [isHovered, setIsHovered] = useState(false);
   const [isHoverPanelMounted, setIsHoverPanelMounted] = useState(false);
   const [recentEntries, setRecentEntries] = useState<RecentEntry[]>([]);
-  const [partialText, setPartialText] = useState("");
+  const [partialText, setPartialText] = useState(""); // committed + draft, for layout
+  const [partial, setPartial] = useState<HotkeyPartialEvent>({ committed: "", draft: "" });
   const [draftLines, setDraftLines] = useState(1);
   const draftRef = useRef<HTMLSpanElement>(null);
   const [morphPhase, setMorphPhase] = useState<MorphPhase>("ambient");
@@ -398,14 +418,19 @@ function FloatApp() {
   // Draft of the recording in progress (hotkey held)
   useEffect(() => {
     const unlisten = listen<HotkeyPartialEvent>("hotkey-partial", (event) => {
-      setPartialText(event.payload.text);
+      const { committed, draft } = event.payload;
+      setPartial({ committed, draft });
+      setPartialText(joinDraft(committed, draft));
     });
     return () => {
       unlisten.then((fn) => fn());
     };
   }, []);
   useEffect(() => {
-    if (state !== "recording") setPartialText("");
+    if (state !== "recording") {
+      setPartialText("");
+      setPartial({ committed: "", draft: "" });
+    }
   }, [state]);
   // Measure the draft so the pill grows with it (capped at DRAFT_MAX_LINES)
   useLayoutEffect(() => {
@@ -959,6 +984,7 @@ function FloatApp() {
                 duration={duration}
                 audioLevel={audioLevel}
                 draft={partialText}
+                parts={partial}
                 draftRef={draftRef}
               />
             </div>

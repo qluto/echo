@@ -424,3 +424,12 @@ html.float-window #root,
 .animate-success-bounce {
   animation: success-bounce 400ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
 }
+
+/* Tentative (not yet final) part of the in-progress hotkey draft: softly
+   blurred and muted, like "still listening"; clears once it becomes committed. */
+.draft-tentative {
+  color: #8A8A8A;
+  filter: blur(0.6px);
+  opacity: 0.75;
+  transition: filter 220ms ease-out, opacity 220ms ease-out, color 220ms ease-out;
+}

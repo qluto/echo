@@ -33,10 +33,13 @@ const PARTIAL_MIN_SEC: f64 = 0.6;
 /// Granularity (100 ms) for locating the quietest point to commit at.
 const CUT_PROBE_SEC: f64 = 0.1;
 
-/// Draft text of the recording in progress (empty = cleared).
+/// Draft of the recording in progress (both empty = cleared).
+/// `committed` is final for this recording; `draft` is the still-changing
+/// decode of the last window, so the UI can render it as tentative.
 #[derive(Debug, Clone, Serialize)]
 pub struct HotkeyPartialEvent {
-    pub text: String,
+    pub committed: String,
+    pub draft: String,
 }
 
 /// What the decoder has when the recording ends: the text already decoded
@@ -159,8 +162,9 @@ fn run(
 
         match result {
             Ok(r) if r.success => {
+                let draft = r.text.trim().to_string();
                 let mut text = committed.clone();
-                append_text(&mut text, r.text.trim());
+                append_text(&mut text, &draft);
                 log::debug!(
                     "partial: {:.1}s window in {} ms: {}",
                     audio.len() as f64 / VAD_SAMPLE_RATE as f64,
@@ -168,8 +172,11 @@ fn run(
                     text
                 );
                 if !text.is_empty() && text != last_text {
-                    last_text = text.clone();
-                    let _ = app.emit("hotkey-partial", HotkeyPartialEvent { text });
+                    last_text = text;
+                    let _ = app.emit(
+                        "hotkey-partial",
+                        HotkeyPartialEvent { committed: committed.clone(), draft },
+                    );
                 }
             }
             Ok(_) => {}
@@ -177,7 +184,10 @@ fn run(
         }
     }
 
-    let _ = app.emit("hotkey-partial", HotkeyPartialEvent { text: String::new() });
+    let _ = app.emit(
+        "hotkey-partial",
+        HotkeyPartialEvent { committed: String::new(), draft: String::new() },
+    );
     log::debug!("Partial decoder exiting");
     if aborted || stop.load(Ordering::SeqCst) {
         return None;
