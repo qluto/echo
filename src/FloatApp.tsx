@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useLayoutEffect, useState, useRef, useCallback } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import type {
@@ -49,6 +49,12 @@ const AMBIENT_PILL_RADIUS = 5;
 const INDICATOR_WIDTH = 120;
 const INDICATOR_HEIGHT = 44;
 const INDICATOR_RADIUS = 22;
+/// Recording pill while a draft is shown: wider, and tall enough for up to
+/// DRAFT_MAX_LINES lines of text (tail-anchored so the newest words show).
+const DRAFT_PILL_WIDTH = 248;
+const DRAFT_LINE_HEIGHT = 17;
+const DRAFT_MAX_LINES = 3;
+const DRAFT_PADDING_Y = 12;
 
 /** Ripple ring decay: first ring strongest, subsequent rings weaker */
 const RIPPLE_RINGS = [
@@ -182,26 +188,56 @@ function IndicatorContent({
   state,
   duration,
   audioLevel,
+  draft,
+  draftRef,
 }: {
   state: IndicatorState;
   duration: number;
   audioLevel: number;
+  /** In-progress transcription shown inside the pill while recording. */
+  draft: string;
+  draftRef: React.RefObject<HTMLSpanElement>;
 }) {
   const glowColor = getGlowColor(state);
 
   if (state === "recording") {
+    const hasDraft = draft.length > 0;
     return (
-      <div className="flex items-center justify-center gap-3 h-full">
-        <WaveBars audioLevel={audioLevel} glowColor={glowColor} />
-        <span
-          className="text-[11px] font-mono flex-shrink-0"
-          style={{
-            color: "var(--text-secondary)",
-            fontVariantNumeric: "tabular-nums",
-          }}
-        >
-          {formatDuration(duration)}
-        </span>
+      <div
+        className={`flex items-center h-full ${hasDraft ? "gap-2.5" : "gap-3 justify-center"}`}
+        style={{ padding: hasDraft ? "0 14px 0 12px" : 0 }}
+      >
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <WaveBars audioLevel={audioLevel} glowColor={glowColor} />
+          <span
+            className="text-[11px] font-mono flex-shrink-0"
+            style={{
+              color: "var(--text-secondary)",
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {formatDuration(duration)}
+          </span>
+        </div>
+        {hasDraft && (
+          <div
+            className="flex-1 min-w-0 flex flex-col justify-end overflow-hidden"
+            style={{ maxHeight: DRAFT_LINE_HEIGHT * DRAFT_MAX_LINES }}
+          >
+            <span
+              ref={draftRef}
+              style={{
+                fontFamily: "'Plus Jakarta Sans', sans-serif",
+                fontSize: 12,
+                lineHeight: `${DRAFT_LINE_HEIGHT}px`,
+                color: "#2D2D2D",
+                wordBreak: "break-word",
+              }}
+            >
+              {draft}
+            </span>
+          </div>
+        )}
       </div>
     );
   }
@@ -253,6 +289,8 @@ function FloatApp() {
   const [isHoverPanelMounted, setIsHoverPanelMounted] = useState(false);
   const [recentEntries, setRecentEntries] = useState<RecentEntry[]>([]);
   const [partialText, setPartialText] = useState("");
+  const [draftLines, setDraftLines] = useState(1);
+  const draftRef = useRef<HTMLSpanElement>(null);
   const [morphPhase, setMorphPhase] = useState<MorphPhase>("ambient");
   const [audioLevel, setAudioLevel] = useState(0);
   const [showRipple, setShowRipple] = useState(false);
@@ -358,6 +396,16 @@ function FloatApp() {
   useEffect(() => {
     if (state !== "recording") setPartialText("");
   }, [state]);
+  // Measure the draft so the pill grows with it (capped at DRAFT_MAX_LINES)
+  useLayoutEffect(() => {
+    const el = draftRef.current;
+    if (!el || !partialText) {
+      setDraftLines(1);
+      return;
+    }
+    const lines = Math.round(el.scrollHeight / DRAFT_LINE_HEIGHT);
+    setDraftLines(Math.min(Math.max(lines, 1), DRAFT_MAX_LINES));
+  }, [partialText]);
 
   // Transient status toast (no_speech / errors) from either pipeline
   useEffect(() => {
@@ -637,10 +685,18 @@ function FloatApp() {
   const isInAmbientPhase =
     morphPhase === "ambient" || morphPhase === "collapsing";
 
-  // Morph pill dimensions
-  const pillWidth = isInIndicatorPhase ? INDICATOR_WIDTH : AMBIENT_PILL_WIDTH;
+  // Morph pill dimensions. While recording with a draft, the pill widens and
+  // grows to fit the text (one component changing shape, no extra window).
+  const draftActive = state === "recording" && partialText.length > 0;
+  const pillWidth = isInIndicatorPhase
+    ? draftActive
+      ? DRAFT_PILL_WIDTH
+      : INDICATOR_WIDTH
+    : AMBIENT_PILL_WIDTH;
   const pillHeight = isInIndicatorPhase
-    ? INDICATOR_HEIGHT
+    ? draftActive
+      ? Math.max(INDICATOR_HEIGHT, draftLines * DRAFT_LINE_HEIGHT + DRAFT_PADDING_Y * 2)
+      : INDICATOR_HEIGHT
     : AMBIENT_PILL_HEIGHT;
   const pillRadius = isInIndicatorPhase ? INDICATOR_RADIUS : AMBIENT_PILL_RADIUS;
   const pillBg = isInIndicatorPhase ? "#FFFFFF" : (state === "ambient-active" ? "#7C9082" : "#1A1A1C");
@@ -663,38 +719,6 @@ function FloatApp() {
       className="h-screen w-screen relative flex items-end justify-center bg-transparent"
       style={{ paddingBottom: 15 }}
     >
-      {/* Draft caption while recording (in-progress partial decode) */}
-      {state === "recording" && partialText && (
-        <div
-          className="absolute inset-x-0 flex justify-center pointer-events-none"
-          style={{ bottom: 15 + pillHeight + 8, padding: "0 8px" }}
-        >
-          <div
-            style={{
-              fontFamily: "'Plus Jakarta Sans', sans-serif",
-              fontSize: 12,
-              lineHeight: 1.45,
-              padding: "6px 12px",
-              borderRadius: 12,
-              maxWidth: "100%",
-              // Show the tail: newest words stay visible when the text is
-              // taller than the available space above the pill.
-              maxHeight: 300 - (15 + pillHeight + 8) - 12,
-              overflow: "hidden",
-              display: "flex",
-              flexDirection: "column" as const,
-              justifyContent: "flex-end",
-              wordBreak: "break-word",
-              backgroundColor: "rgba(26, 26, 28, 0.92)",
-              color: "rgba(255, 255, 255, 0.9)",
-              boxShadow: "0 2px 8px rgba(0, 0, 0, 0.15)",
-            }}
-          >
-            <span>{partialText}</span>
-          </div>
-        </div>
-      )}
-
       {/* Transient status toast (no_speech = neutral, real errors = red) */}
       {statusToast && (
         <div
@@ -910,7 +934,13 @@ function FloatApp() {
               className="morph-pill-content w-full h-full"
               style={{ opacity: contentVisible ? 1 : 0 }}
             >
-              <IndicatorContent state={state} duration={duration} audioLevel={audioLevel} />
+              <IndicatorContent
+                state={state}
+                duration={duration}
+                audioLevel={audioLevel}
+                draft={partialText}
+                draftRef={draftRef}
+              />
             </div>
           </div>
         </div>
