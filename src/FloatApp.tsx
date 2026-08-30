@@ -183,6 +183,13 @@ const LEVEL_POLL_MS = 33;
 /** Per-frame lerp factor toward the latest polled level (higher = snappier). */
 const LEVEL_LERP = 0.35;
 
+/** Resolve a CSS color (including `var(--token)`) to a concrete value for canvas. */
+function resolveCssColor(el: HTMLElement, color: string): string {
+  const m = color.match(/^var\((--[\w-]+)\)$/);
+  if (!m) return color;
+  return getComputedStyle(el).getPropertyValue(m[1]).trim() || color;
+}
+
 /**
  * Wave bars driven by per-band audio levels. Rendered on a canvas inside a
  * rAF loop reading a ref, so level updates never trigger React re-renders.
@@ -207,7 +214,8 @@ function WaveBars({ levelsRef, glowColor }: { levelsRef: React.MutableRefObject<
     const draw = () => {
       const target = levelsRef.current;
       ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-      ctx.fillStyle = colorRef.current;
+      // Canvas can't parse `var(--x)`; resolve design-system tokens via CSS.
+      ctx.fillStyle = resolveCssColor(canvas, colorRef.current);
       for (let i = 0; i < BAR_BAND.length; i++) {
         const t = target[BAR_BAND[i]] ?? 0;
         shown[i] += (t - shown[i]) * LEVEL_LERP;
