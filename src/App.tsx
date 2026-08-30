@@ -167,6 +167,26 @@ function App() {
     }
   }, [isRecording, isTranscribing, showSuccess, recordingDuration, isListening, isSpeechDetected, emitFloatState]);
 
+  // Re-send the current state when the float window (re)mounts — it may have
+  // missed the initial emit while its webview was still loading.
+  useEffect(() => {
+    const unlisten = listen("float-ready", () => {
+      const state: FloatState = showSuccess
+        ? "success"
+        : isRecording
+        ? "recording"
+        : isTranscribing
+        ? "processing"
+        : isListening
+        ? (isSpeechDetected ? "ambient-active" : "ambient")
+        : "ambient";
+      emitFloatState(state, recordingDuration, isListening);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [isRecording, isTranscribing, showSuccess, recordingDuration, isListening, isSpeechDetected, emitFloatState]);
+
   // Listen for toggle-listening requests from float window hover panel
   useEffect(() => {
     const unlisten = listen("request-toggle-listening", () => {
