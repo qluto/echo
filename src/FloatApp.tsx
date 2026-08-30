@@ -53,8 +53,12 @@ const INDICATOR_RADIUS = 22;
 /// DRAFT_MAX_LINES lines of text (tail-anchored so the newest words show).
 const DRAFT_PILL_WIDTH = 248;
 const DRAFT_LINE_HEIGHT = 17;
-const DRAFT_MAX_LINES = 3;
 const DRAFT_PADDING_Y = 12;
+// As many lines as fit in the window above the bottom margin; beyond that the
+// text is tail-anchored so the newest words stay visible.
+const DRAFT_MAX_LINES = Math.floor(
+  (HOVER_HEIGHT - 15 - 8 - DRAFT_PADDING_Y * 2) / DRAFT_LINE_HEIGHT,
+);
 
 /** Ripple ring decay: first ring strongest, subsequent rings weaker */
 const RIPPLE_RINGS = [
