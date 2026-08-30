@@ -5,6 +5,13 @@
 //! keeps each decode O(1) regardless of how long the key is held; the final
 //! transcription on release still uses the full recording as before.
 //!
+//! So that a long hold still shows *everything* said so far, audio that
+//! falls out of the window is not dropped: once the buffer exceeds the
+//! window, it is cut at the quietest point in the window's second half, the
+//! part before the cut is decoded once more and appended to a `committed`
+//! prefix, and drafting continues on the remainder. The draft shown is
+//! `committed + current window`.
+//!
 //! The decoder only ever `try_lock`s the ASR engine and skips a tick when it
 //! is busy, so it can never delay the final decode or the always-on pipeline.
 
@@ -23,6 +30,8 @@ use crate::vad::VAD_SAMPLE_RATE;
 const PARTIAL_EVERY_SEC: f64 = 0.5;
 const PARTIAL_WINDOW_SEC: f64 = 8.0;
 const PARTIAL_MIN_SEC: f64 = 0.6;
+/// Granularity (100 ms) for locating the quietest point to commit at.
+const CUT_PROBE_SEC: f64 = 0.1;
 
 /// Draft text of the recording in progress (empty = cleared).
 #[derive(Debug, Clone, Serialize)]
@@ -76,6 +85,7 @@ fn run(
     let min = (PARTIAL_MIN_SEC * VAD_SAMPLE_RATE as f64) as usize;
     let mut audio: Vec<f32> = Vec::with_capacity(window * 2);
     let mut decoded_upto = 0usize;
+    let mut committed = String::new();
     let mut last_text = String::new();
     let mut enabled: Option<bool> = None; // resolved lazily from the loaded engine
 
@@ -84,16 +94,7 @@ fn run(
             break;
         }
         match frame_rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(frame) => {
-                audio.extend_from_slice(&frame);
-                // Keep only what a draft can use (plus slack) so a long hold
-                // doesn't grow memory.
-                if audio.len() > window * 2 {
-                    let drop = audio.len() - window;
-                    audio.drain(..drop);
-                    decoded_upto = decoded_upto.saturating_sub(drop);
-                }
-            }
+            Ok(frame) => audio.extend_from_slice(&frame),
             Err(channel::RecvTimeoutError::Timeout) => continue,
             Err(channel::RecvTimeoutError::Disconnected) => break,
         }
@@ -113,17 +114,39 @@ fn run(
             break;
         }
         decoded_upto = audio.len();
-        let start = audio.len().saturating_sub(window);
+
+        // Buffer outgrew the window: commit the head so it stays visible.
+        if audio.len() > window {
+            let cut = quietest_cut(&audio, window / 2, window, (CUT_PROBE_SEC * VAD_SAMPLE_RATE as f64) as usize);
+            let t0 = std::time::Instant::now();
+            match engine.transcribe_samples(&audio[..cut], language, false) {
+                Ok(r) if r.success => {
+                    log::debug!(
+                        "partial: committed {:.1}s in {} ms: {}",
+                        cut as f64 / VAD_SAMPLE_RATE as f64,
+                        t0.elapsed().as_millis(),
+                        r.text.trim()
+                    );
+                    append_text(&mut committed, r.text.trim());
+                }
+                Ok(_) => {}
+                Err(e) => log::warn!("partial commit decode failed: {}", e),
+            }
+            audio.drain(..cut);
+            decoded_upto = audio.len();
+        }
+
         let t0 = std::time::Instant::now();
-        let result = engine.transcribe_samples(&audio[start..], language, false);
+        let result = engine.transcribe_samples(&audio, language, false);
         drop(engine);
 
         match result {
             Ok(r) if r.success => {
-                let text = r.text.trim().to_string();
+                let mut text = committed.clone();
+                append_text(&mut text, r.text.trim());
                 log::debug!(
                     "partial: {:.1}s window in {} ms: {}",
-                    (audio.len() - start) as f64 / VAD_SAMPLE_RATE as f64,
+                    audio.len() as f64 / VAD_SAMPLE_RATE as f64,
                     t0.elapsed().as_millis(),
                     text
                 );
@@ -139,4 +162,69 @@ fn run(
 
     let _ = app.emit("hotkey-partial", HotkeyPartialEvent { text: String::new() });
     log::debug!("Partial decoder exiting");
+}
+
+/// Index in `[lo, hi)` (aligned to `probe`-sample steps) of the quietest
+/// `probe`-long stretch — the least likely place to be mid-word.
+fn quietest_cut(audio: &[f32], lo: usize, hi: usize, probe: usize) -> usize {
+    let hi = hi.min(audio.len());
+    let mut best = hi;
+    let mut best_energy = f32::INFINITY;
+    let mut i = lo;
+    while i + probe <= hi {
+        let e: f32 = audio[i..i + probe].iter().map(|s| s * s).sum();
+        if e < best_energy {
+            best_energy = e;
+            best = i + probe / 2;
+        }
+        i += probe;
+    }
+    best
+}
+
+/// Join draft pieces: no separator between CJK text, a space otherwise.
+fn append_text(acc: &mut String, piece: &str) {
+    if piece.is_empty() {
+        return;
+    }
+    if let Some(last) = acc.chars().last() {
+        let first = piece.chars().next().unwrap_or(' ');
+        if !(is_cjk(last) || is_cjk(first)) {
+            acc.push(' ');
+        }
+    }
+    acc.push_str(piece);
+}
+
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32,
+        0x3000..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF | 0xAC00..=0xD7AF)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quietest_cut_finds_the_silent_gap() {
+        let mut audio = vec![0.5f32; 4000];
+        for s in &mut audio[2500..2700] {
+            *s = 0.0;
+        }
+        let cut = quietest_cut(&audio, 1000, 4000, 100);
+        assert!((2500..2700).contains(&cut), "cut at {cut}");
+    }
+
+    #[test]
+    fn append_text_joins_cjk_without_space_and_latin_with_space() {
+        let mut s = String::from("今日は");
+        append_text(&mut s, "いい天気");
+        assert_eq!(s, "今日はいい天気");
+        let mut e = String::from("hello");
+        append_text(&mut e, "world");
+        assert_eq!(e, "hello world");
+        let mut m = String::new();
+        append_text(&mut m, "");
+        assert_eq!(m, "");
+    }
 }

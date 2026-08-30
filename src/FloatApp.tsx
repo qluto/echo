@@ -677,17 +677,20 @@ function FloatApp() {
               padding: "6px 12px",
               borderRadius: 12,
               maxWidth: "100%",
+              // Show the tail: newest words stay visible when the text is
+              // taller than the available space above the pill.
+              maxHeight: 300 - (15 + pillHeight + 8) - 12,
               overflow: "hidden",
-              display: "-webkit-box",
-              WebkitLineClamp: 3,
-              WebkitBoxOrient: "vertical" as const,
+              display: "flex",
+              flexDirection: "column" as const,
+              justifyContent: "flex-end",
               wordBreak: "break-word",
               backgroundColor: "rgba(26, 26, 28, 0.92)",
               color: "rgba(255, 255, 255, 0.9)",
               boxShadow: "0 2px 8px rgba(0, 0, 0, 0.15)",
             }}
           >
-            {partialText}
+            <span>{partialText}</span>
           </div>
         </div>
       )}
