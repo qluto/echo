@@ -39,9 +39,17 @@ pub struct HotkeyPartialEvent {
     pub text: String,
 }
 
+/// What the decoder has when the recording ends: the text already decoded
+/// for everything before the last cut, plus the not-yet-final tail audio
+/// (16 kHz mono). The final transcription only needs to decode the tail.
+pub struct Draft {
+    pub committed: String,
+    pub tail: Vec<f32>,
+}
+
 pub struct PartialDecoder {
     stop: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
+    handle: Option<JoinHandle<Option<Draft>>>,
 }
 
 impl PartialDecoder {
@@ -62,9 +70,16 @@ impl PartialDecoder {
         Self { stop, handle }
     }
 
-    /// Stop and wait for any in-flight draft decode, then clear the draft.
-    /// Called on hotkey release *before* the final decode so the two never
-    /// interleave and no stale draft lands after the final.
+    /// Wait for the decoder to drain the tap (call after the recording has
+    /// stopped, which closes the tap) and hand back what it decoded.
+    /// Returns `None` when partial decoding was unavailable for this model,
+    /// in which case the caller should transcribe the recording file instead.
+    pub fn finish(mut self) -> Option<Draft> {
+        self.handle.take().and_then(|h| h.join().ok().flatten())
+    }
+
+    /// Abort without waiting for a result.
+    #[allow(dead_code)]
     pub fn stop(mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(h) = self.handle.take() {
@@ -79,7 +94,7 @@ fn run(
     language: Option<&str>,
     frame_rx: channel::Receiver<Vec<f32>>,
     stop: Arc<AtomicBool>,
-) {
+) -> Option<Draft> {
     let every = (PARTIAL_EVERY_SEC * VAD_SAMPLE_RATE as f64) as usize;
     let window = (PARTIAL_WINDOW_SEC * VAD_SAMPLE_RATE as f64) as usize;
     let min = (PARTIAL_MIN_SEC * VAD_SAMPLE_RATE as f64) as usize;
@@ -88,6 +103,7 @@ fn run(
     let mut committed = String::new();
     let mut last_text = String::new();
     let mut enabled: Option<bool> = None; // resolved lazily from the loaded engine
+    let mut aborted = false;
 
     loop {
         if stop.load(Ordering::SeqCst) {
@@ -111,6 +127,7 @@ fn run(
         let ok = *enabled.get_or_insert_with(|| engine.supports_partial());
         if !ok {
             log::info!("Partial decoding disabled for the active model");
+            aborted = true;
             break;
         }
         decoded_upto = audio.len();
@@ -162,6 +179,10 @@ fn run(
 
     let _ = app.emit("hotkey-partial", HotkeyPartialEvent { text: String::new() });
     log::debug!("Partial decoder exiting");
+    if aborted || stop.load(Ordering::SeqCst) {
+        return None;
+    }
+    Some(Draft { committed, tail: audio })
 }
 
 /// Index in `[lo, hi)` (aligned to `probe`-sample steps) of the quietest
@@ -183,7 +204,7 @@ fn quietest_cut(audio: &[f32], lo: usize, hi: usize, probe: usize) -> usize {
 }
 
 /// Join draft pieces: no separator between CJK text, a space otherwise.
-fn append_text(acc: &mut String, piece: &str) {
+pub fn append_text(acc: &mut String, piece: &str) {
     if piece.is_empty() {
         return;
     }

@@ -144,11 +144,9 @@ fn handle_hotkey_pressed(app: &AppHandle) {
 fn handle_hotkey_released(app: &AppHandle) {
     log::info!("Hotkey released - stopping recording");
 
-    // Stop draft decoding first: waits for an in-flight draft so the final
-    // decode below never queues behind one.
-    if let Some(decoder) = PARTIAL_DECODER.lock().ok().and_then(|mut s| s.take()) {
-        decoder.stop();
-    }
+    // Draft decoder for this recording; finished (after the tap closes) in
+    // the transcription thread below so the final only decodes the tail.
+    let partial_decoder = PARTIAL_DECODER.lock().ok().and_then(|mut s| s.take());
     app.emit(
         "recording-state-change",
         serde_json::json!({"state": "transcribing"}),
@@ -234,6 +232,9 @@ fn handle_hotkey_released(app: &AppHandle) {
             }
         };
 
+        // The recording stopped, so the tap is closed: collect the draft.
+        let draft = partial_decoder.and_then(|d| d.finish());
+
         log::info!("Transcribing: {} with language setting: {}", file_path, language);
 
         // Call ASR engine to transcribe
@@ -247,7 +248,29 @@ fn handle_hotkey_released(app: &AppHandle) {
                         log::info!("Passing language '{}' to ASR engine", language);
                         Some(language.as_str())
                     };
-                    asr_engine.transcribe(&file_path, lang)
+                    match draft {
+                        // Fast final: everything before the last cut is already
+                        // decoded; only the tail (≤ ~8 s) needs ASR. Skips the
+                        // WAV read + resample + full re-decode.
+                        Some(d) => {
+                            let t0 = std::time::Instant::now();
+                            asr_engine
+                                .transcribe_samples(&d.tail, lang, d.committed.is_empty())
+                                .map(|mut r| {
+                                    let mut text = d.committed;
+                                    crate::partial::append_text(&mut text, r.text.trim());
+                                    r.no_speech = text.is_empty().then_some(true);
+                                    r.text = text;
+                                    log::info!(
+                                        "Fast final from draft: tail {:.1}s decoded in {} ms",
+                                        d.tail.len() as f64 / crate::vad::VAD_SAMPLE_RATE as f64,
+                                        t0.elapsed().as_millis()
+                                    );
+                                    r
+                                })
+                        }
+                        None => asr_engine.transcribe(&file_path, lang),
+                    }
                 } else {
                     Err(anyhow::anyhow!("Failed to lock ASR engine"))
                 }
