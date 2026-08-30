@@ -329,15 +329,28 @@ impl ASREngine {
         audio_path: &str,
         language: Option<&str>,
     ) -> Result<TranscriptionResult> {
+        // Read once at 16 kHz mono (also what the engines need).
+        let samples =
+            rust_asr::read_wav_16k_mono(audio_path).map_err(|e| anyhow!("read audio: {e}"))?;
+        self.transcribe_samples(&samples, language, true)
+    }
+
+    /// Transcribe 16 kHz mono f32 samples with the active in-process engine.
+    ///
+    /// `vad_gate`: run Silero VAD first and skip ASR when there is no speech
+    /// (so silence doesn't hallucinate). In-progress partial decodes pass
+    /// `false`: a draft of silence is harmless and the extra pass costs time.
+    pub fn transcribe_samples(
+        &mut self,
+        samples: &[f32],
+        language: Option<&str>,
+        vad_gate: bool,
+    ) -> Result<TranscriptionResult> {
         if !self.active_loaded() {
             self.load_model()?;
         }
 
-        // Read once at 16 kHz mono (also what the engines need) and gate on VAD:
-        // if there's no speech, skip ASR so silence doesn't hallucinate.
-        let samples =
-            rust_asr::read_wav_16k_mono(audio_path).map_err(|e| anyhow!("read audio: {e}"))?;
-        if !self.has_speech(&samples) {
+        if vad_gate && !self.has_speech(samples) {
             log::info!("No speech detected (VAD); skipping transcription");
             return Ok(TranscriptionResult {
                 success: true,
@@ -351,11 +364,11 @@ impl ASREngine {
 
         let lang = language.unwrap_or("auto");
         let out = if let Some(e) = self.whisper.as_ref() {
-            e.transcribe_samples(&samples, lang)
+            e.transcribe_samples(samples, lang)
         } else if let Some(e) = self.parakeet.as_ref() {
-            e.transcribe_samples(&samples, lang)
+            e.transcribe_samples(samples, lang)
         } else if let Some(e) = self.cohere.as_ref() {
-            e.transcribe_samples(&samples, lang)
+            e.transcribe_samples(samples, lang)
         } else {
             return Err(anyhow!("No ASR model loaded"));
         }
@@ -375,6 +388,13 @@ impl ASREngine {
             no_speech,
             raw_text: None,
         })
+    }
+
+    /// Whether the active, already-loaded ASR model is suitable for cheap
+    /// in-progress (partial) decoding. whisper.cpp is too slow per call and
+    /// hallucinates on truncated audio; the MLX encoder models are fine.
+    pub fn supports_partial(&self) -> bool {
+        self.whisper.is_none() && (self.parakeet.is_some() || self.cohere.is_some())
     }
 
     /// Run Silero VAD over the whole 16 kHz clip; speech if enough frames clear

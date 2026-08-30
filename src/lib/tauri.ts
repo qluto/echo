@@ -379,6 +379,21 @@ export function onContinuousTranscription(
   });
 }
 
+// Draft of the hotkey recording in progress (both empty = cleared).
+// `committed` is final for this recording; `draft` is still tentative.
+export interface HotkeyPartialEvent {
+  committed: string;
+  draft: string;
+}
+
+export function onHotkeyPartial(
+  callback: (event: HotkeyPartialEvent) => void
+): Promise<UnlistenFn> {
+  return listen<HotkeyPartialEvent>("hotkey-partial", (event) => {
+    callback(event.payload);
+  });
+}
+
 // VAD state events (for ambient float indicator)
 export interface ContinuousVadStateEvent {
   is_speech: boolean;

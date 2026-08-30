@@ -16,6 +16,10 @@ static WAS_LISTENING: AtomicBool = AtomicBool::new(false);
 
 /// Register a global hotkey
 #[allow(dead_code)]
+/// Draft decoder for the recording in progress (hotkey held).
+static PARTIAL_DECODER: std::sync::Mutex<Option<crate::partial::PartialDecoder>> =
+    std::sync::Mutex::new(None);
+
 pub fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<()> {
     // Unregister all existing hotkeys first
     if let Err(e) = app.global_shortcut().unregister_all() {
@@ -86,10 +90,31 @@ fn handle_hotkey_pressed(app: &AppHandle) {
         None
     };
 
+    // Live tap for in-progress draft decoding while the key is held
+    let (tap_tx, tap_rx) = crossbeam_channel::bounded::<Vec<f32>>(64);
+
     // Start recording
-    match crate::audio_capture::start_recording(device_name) {
+    match crate::audio_capture::start_recording_with_tap(device_name, Some(tap_tx)) {
         Ok(file_path) => {
             log::info!("Recording started: {}", file_path);
+
+            if let Some(state) = app.try_state::<crate::AppState>() {
+                let language = state
+                    .settings
+                    .lock()
+                    .ok()
+                    .map(|s| s.language.clone())
+                    .filter(|l| l != "auto");
+                let decoder = crate::partial::PartialDecoder::start(
+                    app.clone(),
+                    Arc::clone(&state.asr_engine),
+                    language,
+                    tap_rx,
+                );
+                if let Ok(mut slot) = PARTIAL_DECODER.lock() {
+                    *slot = Some(decoder);
+                }
+            }
 
             // Store file path in recording state
             if let Some(state) = app.try_state::<crate::AppState>() {
@@ -118,6 +143,10 @@ fn handle_hotkey_pressed(app: &AppHandle) {
 
 fn handle_hotkey_released(app: &AppHandle) {
     log::info!("Hotkey released - stopping recording");
+
+    // Draft decoder for this recording; finished (after the tap closes) in
+    // the transcription thread below so the final only decodes the tail.
+    let partial_decoder = PARTIAL_DECODER.lock().ok().and_then(|mut s| s.take());
     app.emit(
         "recording-state-change",
         serde_json::json!({"state": "transcribing"}),
@@ -203,6 +232,9 @@ fn handle_hotkey_released(app: &AppHandle) {
             }
         };
 
+        // The recording stopped, so the tap is closed: collect the draft.
+        let draft = partial_decoder.and_then(|d| d.finish());
+
         log::info!("Transcribing: {} with language setting: {}", file_path, language);
 
         // Call ASR engine to transcribe
@@ -216,7 +248,29 @@ fn handle_hotkey_released(app: &AppHandle) {
                         log::info!("Passing language '{}' to ASR engine", language);
                         Some(language.as_str())
                     };
-                    asr_engine.transcribe(&file_path, lang)
+                    match draft {
+                        // Fast final: everything before the last cut is already
+                        // decoded; only the tail (≤ ~8 s) needs ASR. Skips the
+                        // WAV read + resample + full re-decode.
+                        Some(d) => {
+                            let t0 = std::time::Instant::now();
+                            asr_engine
+                                .transcribe_samples(&d.tail, lang, d.committed.is_empty())
+                                .map(|mut r| {
+                                    let mut text = d.committed;
+                                    crate::partial::append_text(&mut text, r.text.trim());
+                                    r.no_speech = text.is_empty().then_some(true);
+                                    r.text = text;
+                                    log::info!(
+                                        "Fast final from draft: tail {:.1}s decoded in {} ms",
+                                        d.tail.len() as f64 / crate::vad::VAD_SAMPLE_RATE as f64,
+                                        t0.elapsed().as_millis()
+                                    );
+                                    r
+                                })
+                        }
+                        None => asr_engine.transcribe(&file_path, lang),
+                    }
                 } else {
                     Err(anyhow::anyhow!("Failed to lock ASR engine"))
                 }

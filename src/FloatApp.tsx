@@ -1,7 +1,11 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useLayoutEffect, useState, useRef, useCallback } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import type { StatusKind, TranscriptionStatusEvent } from "./lib/tauri";
+import type {
+  StatusKind,
+  TranscriptionStatusEvent,
+  HotkeyPartialEvent,
+} from "./lib/tauri";
 import {
   getCurrentWindow,
   LogicalSize,
@@ -45,6 +49,15 @@ const AMBIENT_PILL_RADIUS = 5;
 const INDICATOR_WIDTH = 120;
 const INDICATOR_HEIGHT = 44;
 const INDICATOR_RADIUS = 22;
+/// Recording pill while a draft is shown: wider, and tall enough for up to
+/// DRAFT_MAX_LINES lines of text (tail-anchored so the newest words show).
+const DRAFT_PILL_WIDTH = 248;
+const DRAFT_LINE_HEIGHT = 17;
+const DRAFT_PADDING_Y = 12;
+// The float window grows with the draft (see the sizing effect) up to this
+// many lines; beyond that the text is tail-anchored so the newest words show.
+const DRAFT_MAX_LINES = 40;
+const DRAFT_WINDOW_EXTRA = 15 + 8; // bottom padding + breathing room above the pill
 
 /** Ripple ring decay: first ring strongest, subsequent rings weaker */
 const RIPPLE_RINGS = [
@@ -73,6 +86,15 @@ async function resizeAndPosition(width: number, height: number) {
   } catch (_) {
     /* window may not be ready */
   }
+}
+
+/** Mirror of partial.rs append_text: no space between CJK, a space otherwise. */
+function joinDraft(a: string, b: string): string {
+  if (!a) return b;
+  if (!b) return a;
+  const cjk = /[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef\uac00-\ud7af]/;
+  const needsSpace = !(cjk.test(a[a.length - 1]) || cjk.test(b[0]));
+  return a + (needsSpace ? " " : "") + b;
 }
 
 function formatTime(createdAt: string): string {
@@ -178,26 +200,74 @@ function IndicatorContent({
   state,
   duration,
   audioLevel,
+  draft,
+  parts,
+  draftRef,
 }: {
   state: IndicatorState;
   duration: number;
   audioLevel: number;
+  /** In-progress transcription shown inside the pill while recording. */
+  draft: string;
+  /** Split of `draft` into final vs. tentative text (tentative is blurred). */
+  parts: HotkeyPartialEvent;
+  draftRef: React.RefObject<HTMLSpanElement>;
 }) {
   const glowColor = getGlowColor(state);
 
   if (state === "recording") {
+    const hasDraft = draft.length > 0;
+    const needsSpace =
+      parts.committed && parts.draft && joinDraft(parts.committed, parts.draft).length
+        > parts.committed.length + parts.draft.length;
+    // With a draft: text on top, the original wave bars + timer row stays at
+    // the bottom of the pill (same place as the plain recording pill).
     return (
-      <div className="flex items-center justify-center gap-3 h-full">
-        <WaveBars audioLevel={audioLevel} glowColor={glowColor} />
-        <span
-          className="text-[11px] font-mono flex-shrink-0"
-          style={{
-            color: "var(--text-secondary)",
-            fontVariantNumeric: "tabular-nums",
-          }}
+      <div
+        className="flex flex-col justify-end h-full"
+        style={{ padding: hasDraft ? `${DRAFT_PADDING_Y}px 14px 0` : 0 }}
+      >
+        {hasDraft && (
+          <div
+            className="flex-1 min-w-0 flex flex-col justify-end overflow-hidden"
+            style={{
+              maxHeight: DRAFT_LINE_HEIGHT * DRAFT_MAX_LINES,
+              marginBottom: 6,
+            }}
+          >
+            <span
+              ref={draftRef}
+              style={{
+                fontFamily: "'Plus Jakarta Sans', sans-serif",
+                fontSize: 12,
+                lineHeight: `${DRAFT_LINE_HEIGHT}px`,
+                color: "#2D2D2D",
+                wordBreak: "break-word",
+              }}
+            >
+              {parts.committed}
+              {needsSpace ? " " : ""}
+              {parts.draft && (
+                <span className="draft-tentative">{parts.draft}</span>
+              )}
+            </span>
+          </div>
+        )}
+        <div
+          className="flex items-center justify-center gap-3 flex-shrink-0"
+          style={{ height: INDICATOR_HEIGHT }}
         >
-          {formatDuration(duration)}
-        </span>
+          <WaveBars audioLevel={audioLevel} glowColor={glowColor} />
+          <span
+            className="text-[11px] font-mono flex-shrink-0"
+            style={{
+              color: "var(--text-secondary)",
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {formatDuration(duration)}
+          </span>
+        </div>
       </div>
     );
   }
@@ -248,6 +318,10 @@ function FloatApp() {
   const [isHovered, setIsHovered] = useState(false);
   const [isHoverPanelMounted, setIsHoverPanelMounted] = useState(false);
   const [recentEntries, setRecentEntries] = useState<RecentEntry[]>([]);
+  const [partialText, setPartialText] = useState(""); // committed + draft, for layout
+  const [partial, setPartial] = useState<HotkeyPartialEvent>({ committed: "", draft: "" });
+  const [draftLines, setDraftLines] = useState(1);
+  const draftRef = useRef<HTMLSpanElement>(null);
   const [morphPhase, setMorphPhase] = useState<MorphPhase>("ambient");
   const [audioLevel, setAudioLevel] = useState(0);
   const [showRipple, setShowRipple] = useState(false);
@@ -340,6 +414,34 @@ function FloatApp() {
       unlisten.then((fn) => fn());
     };
   }, []);
+
+  // Draft of the recording in progress (hotkey held)
+  useEffect(() => {
+    const unlisten = listen<HotkeyPartialEvent>("hotkey-partial", (event) => {
+      const { committed, draft } = event.payload;
+      setPartial({ committed, draft });
+      setPartialText(joinDraft(committed, draft));
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+  useEffect(() => {
+    if (state !== "recording") {
+      setPartialText("");
+      setPartial({ committed: "", draft: "" });
+    }
+  }, [state]);
+  // Measure the draft so the pill grows with it (capped at DRAFT_MAX_LINES)
+  useLayoutEffect(() => {
+    const el = draftRef.current;
+    if (!el || !partialText) {
+      setDraftLines(1);
+      return;
+    }
+    const lines = Math.round(el.scrollHeight / DRAFT_LINE_HEIGHT);
+    setDraftLines(Math.min(Math.max(lines, 1), DRAFT_MAX_LINES));
+  }, [partialText]);
 
   // Transient status toast (no_speech / errors) from either pipeline
   useEffect(() => {
@@ -470,10 +572,19 @@ function FloatApp() {
   // ---- Window sizing ----
 
   // Always use HOVER size — ambient pill lives at bottom of this window.
+  // While a draft is shown the window grows with the pill so long
+  // utterances stay fully visible, then returns to HOVER size.
+  const draftWindowHeight =
+    state === "recording" && partialText
+      ? Math.max(
+          HOVER_HEIGHT,
+          INDICATOR_HEIGHT + DRAFT_PADDING_Y + draftLines * DRAFT_LINE_HEIGHT + 6 + DRAFT_WINDOW_EXTRA,
+        )
+      : HOVER_HEIGHT;
   useEffect(() => {
     if (!visible) return;
-    void resizeAndPosition(HOVER_WIDTH, HOVER_HEIGHT);
-  }, [visible]);
+    void resizeAndPosition(HOVER_WIDTH, draftWindowHeight);
+  }, [visible, draftWindowHeight]);
 
   // Reposition when monitor configuration changes (display connect/disconnect).
   useEffect(() => {
@@ -619,10 +730,18 @@ function FloatApp() {
   const isInAmbientPhase =
     morphPhase === "ambient" || morphPhase === "collapsing";
 
-  // Morph pill dimensions
-  const pillWidth = isInIndicatorPhase ? INDICATOR_WIDTH : AMBIENT_PILL_WIDTH;
+  // Morph pill dimensions. While recording with a draft, the pill widens and
+  // grows to fit the text (one component changing shape, no extra window).
+  const draftActive = state === "recording" && partialText.length > 0;
+  const pillWidth = isInIndicatorPhase
+    ? draftActive
+      ? DRAFT_PILL_WIDTH
+      : INDICATOR_WIDTH
+    : AMBIENT_PILL_WIDTH;
   const pillHeight = isInIndicatorPhase
-    ? INDICATOR_HEIGHT
+    ? draftActive
+      ? INDICATOR_HEIGHT + DRAFT_PADDING_Y + draftLines * DRAFT_LINE_HEIGHT + 6
+      : INDICATOR_HEIGHT
     : AMBIENT_PILL_HEIGHT;
   const pillRadius = isInIndicatorPhase ? INDICATOR_RADIUS : AMBIENT_PILL_RADIUS;
   const pillBg = isInIndicatorPhase ? "#FFFFFF" : (state === "ambient-active" ? "#7C9082" : "#1A1A1C");
@@ -860,7 +979,14 @@ function FloatApp() {
               className="morph-pill-content w-full h-full"
               style={{ opacity: contentVisible ? 1 : 0 }}
             >
-              <IndicatorContent state={state} duration={duration} audioLevel={audioLevel} />
+              <IndicatorContent
+                state={state}
+                duration={duration}
+                audioLevel={audioLevel}
+                draft={partialText}
+                parts={partial}
+                draftRef={draftRef}
+              />
             </div>
           </div>
         </div>
