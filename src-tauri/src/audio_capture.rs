@@ -12,23 +12,139 @@ use hound::{SampleFormat as HoundSampleFormat, WavSpec, WavWriter};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 
 use crate::AudioDevice;
 
-/// Global atomic holding the current audio input level (f32 bits, 0.0–1.0 normalized RMS).
-static AUDIO_LEVEL: AtomicU32 = AtomicU32::new(0);
+/// Number of frequency bands reported for the level visualizer.
+pub const NUM_BANDS: usize = 6;
 
-/// Get the current audio input level (0.0–1.0).
-pub fn get_audio_level() -> f32 {
-    f32::from_bits(AUDIO_LEVEL.load(Ordering::Relaxed))
+/// Band-pass center frequencies (Hz). Roughly log-spaced over the speech range:
+/// fundamentals/vowels at the low end, fricatives/sibilants at the top.
+const BAND_CENTERS: [f32; NUM_BANDS] = [150.0, 350.0, 800.0, 1600.0, 3000.0, 5500.0];
+/// Band-pass Q (bandwidth = fc / Q).
+const BAND_Q: f32 = 1.2;
+/// dB range mapped to 0.0–1.0 (input RMS in full-scale dB).
+const DB_FLOOR: f32 = -55.0;
+const DB_CEIL: f32 = -12.0;
+/// Envelope time constants (seconds): fast attack, slower release.
+const ATTACK_SEC: f32 = 0.008;
+const RELEASE_SEC: f32 = 0.12;
+
+/// Global per-band audio input levels (0.0–1.0), updated from the capture callback.
+static AUDIO_LEVELS: Mutex<[f32; NUM_BANDS]> = Mutex::new([0.0; NUM_BANDS]);
+
+/// Get the current per-band audio input levels (0.0–1.0), low → high frequency.
+pub fn get_audio_levels() -> [f32; NUM_BANDS] {
+    AUDIO_LEVELS.lock().map(|g| *g).unwrap_or([0.0; NUM_BANDS])
 }
 
-/// Reset the audio level to zero.
-fn reset_audio_level() {
-    AUDIO_LEVEL.store(0f32.to_bits(), Ordering::Relaxed);
+/// Reset the audio levels to zero.
+fn reset_audio_levels() {
+    if let Ok(mut g) = AUDIO_LEVELS.lock() {
+        *g = [0.0; NUM_BANDS];
+    }
+}
+
+/// Biquad band-pass filter (RBJ cookbook, constant 0 dB peak gain), direct form I.
+#[derive(Clone, Copy)]
+struct BandPass {
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+    x1: f32,
+    x2: f32,
+    y1: f32,
+    y2: f32,
+}
+
+impl BandPass {
+    fn new(fc: f32, q: f32, sample_rate: f32) -> Self {
+        // Clamp so the filter stays stable if the device rate is unusually low.
+        let fc = fc.min(sample_rate * 0.45);
+        let w0 = 2.0 * std::f32::consts::PI * fc / sample_rate;
+        let (sin, cos) = w0.sin_cos();
+        let alpha = sin / (2.0 * q);
+        let a0 = 1.0 + alpha;
+        Self {
+            b0: alpha / a0,
+            b1: 0.0,
+            b2: -alpha / a0,
+            a1: -2.0 * cos / a0,
+            a2: (1.0 - alpha) / a0,
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
+        }
+    }
+
+    #[inline]
+    fn process(&mut self, x: f32) -> f32 {
+        let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2 - self.a1 * self.y1 - self.a2 * self.y2;
+        self.x2 = self.x1;
+        self.x1 = x;
+        self.y2 = self.y1;
+        self.y1 = y;
+        y
+    }
+}
+
+/// Lightweight multi-band level analyzer run inside the capture callback.
+/// Per sample it costs `NUM_BANDS` biquads (~5 MACs each) — negligible even at 48 kHz.
+struct BandAnalyzer {
+    filters: [BandPass; NUM_BANDS],
+    /// Smoothed level per band (0.0–1.0) with attack/release envelope.
+    env: [f32; NUM_BANDS],
+    channels: usize,
+    attack: f32,
+    release: f32,
+}
+
+impl BandAnalyzer {
+    fn new(sample_rate: f32, channels: usize) -> Self {
+        let filters = BAND_CENTERS.map(|fc| BandPass::new(fc, BAND_Q, sample_rate));
+        // Envelope is updated once per callback buffer; coefficients are derived
+        // per buffer from its duration in `process` (buffer size can vary).
+        Self {
+            filters,
+            env: [0.0; NUM_BANDS],
+            channels: channels.max(1),
+            attack: ATTACK_SEC,
+            release: RELEASE_SEC,
+        }
+    }
+
+    /// Feed one interleaved buffer; returns the updated per-band levels.
+    fn process(&mut self, data: &[f32], sample_rate: f32) -> [f32; NUM_BANDS] {
+        if data.is_empty() {
+            return self.env;
+        }
+        let mut sum_sq = [0.0f32; NUM_BANDS];
+        let frames = data.len() / self.channels;
+        for frame in data.chunks_exact(self.channels) {
+            // Downmix to mono before filtering.
+            let mono = frame.iter().sum::<f32>() / self.channels as f32;
+            for (i, f) in self.filters.iter_mut().enumerate() {
+                let y = f.process(mono);
+                sum_sq[i] += y * y;
+            }
+        }
+        let buf_sec = frames as f32 / sample_rate;
+        let att = 1.0 - (-buf_sec / self.attack).exp();
+        let rel = 1.0 - (-buf_sec / self.release).exp();
+        for i in 0..NUM_BANDS {
+            let rms = (sum_sq[i] / frames.max(1) as f32).sqrt();
+            let db = 20.0 * (rms + 1e-9).log10();
+            let target = ((db - DB_FLOOR) / (DB_CEIL - DB_FLOOR)).clamp(0.0, 1.0);
+            let k = if target > self.env[i] { att } else { rel };
+            self.env[i] += (target - self.env[i]) * k;
+        }
+        self.env
+    }
 }
 
 /// Commands for the audio thread
@@ -156,14 +272,16 @@ fn start_recording_impl(
         None => None,
     };
 
+    let analyzer = BandAnalyzer::new(sample_rate as f32, channels as usize);
+
     let stream = match supported_config.sample_format() {
-        SampleFormat::I16 => build_stream::<i16>(&device, &config, writer_clone, tap)?,
-        SampleFormat::F32 => build_stream::<f32>(&device, &config, writer_clone, tap)?,
+        SampleFormat::I16 => build_stream::<i16>(&device, &config, writer_clone, tap, analyzer)?,
+        SampleFormat::F32 => build_stream::<f32>(&device, &config, writer_clone, tap, analyzer)?,
         sample_format => return Err(anyhow!("Unsupported sample format: {:?}", sample_format)),
     };
 
     stream.play()?;
-    reset_audio_level();
+    reset_audio_levels();
 
     let path_str = file_path.to_string_lossy().to_string();
     *current_recording = Some(RecordingState {
@@ -177,7 +295,7 @@ fn start_recording_impl(
 }
 
 fn stop_recording_impl(current_recording: &mut Option<RecordingState>) -> Result<()> {
-    reset_audio_level();
+    reset_audio_levels();
     if let Some(state) = current_recording.take() {
         // Drop the stream first to stop recording
         drop(state._stream);
@@ -200,6 +318,7 @@ fn build_stream<T>(
     config: &cpal::StreamConfig,
     writer: Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>,
     tap: Option<Arc<Mutex<FrameAccumulator>>>,
+    mut analyzer: BandAnalyzer,
 ) -> Result<Stream>
 where
     T: cpal::Sample + cpal::SizedSample,
@@ -207,23 +326,20 @@ where
     f32: cpal::FromSample<T>,
 {
     let err_fn = |err| log::error!("Audio stream error: {}", err);
+    let sample_rate = config.sample_rate.0 as f32;
 
     let stream = device.build_input_stream(
         config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
-            // Calculate RMS level for visualization
-            if !data.is_empty() {
-                let sum_sq: f32 = data
-                    .iter()
-                    .map(|&s| {
-                        let f: f32 = cpal::Sample::from_sample(s);
-                        f * f
-                    })
-                    .sum();
-                let rms = (sum_sq / data.len() as f32).sqrt();
-                // Normalize: typical speech RMS is ~0.01–0.1, scale to 0.0–1.0
-                let level = (rms * 14.0).min(1.0);
-                AUDIO_LEVEL.store(level.to_bits(), Ordering::Relaxed);
+            let f32s: Vec<f32> = data
+                .iter()
+                .map(|&s| cpal::Sample::from_sample(s))
+                .collect();
+
+            // Multi-band level analysis for the visualizer
+            let levels = analyzer.process(&f32s, sample_rate);
+            if let Ok(mut g) = AUDIO_LEVELS.try_lock() {
+                *g = levels;
             }
 
             if let Ok(mut guard) = writer.lock() {
@@ -238,10 +354,6 @@ where
             }
 
             if let Some(tap) = tap.as_ref() {
-                let f32s: Vec<f32> = data
-                    .iter()
-                    .map(|&s| cpal::Sample::from_sample(s))
-                    .collect();
                 if let Ok(mut acc) = tap.lock() {
                     acc.push_samples(&f32s);
                 }
@@ -595,4 +707,49 @@ pub fn get_audio_devices() -> Result<Vec<AudioDevice>> {
         .collect();
 
     Ok(devices)
+}
+
+#[cfg(test)]
+mod band_tests {
+    use super::*;
+
+    fn run_tone(freq: f32) -> [f32; NUM_BANDS] {
+        let sr = 48000.0;
+        let mut an = BandAnalyzer::new(sr, 1);
+        let mut out = [0.0; NUM_BANDS];
+        // 20 buffers of 10 ms at amplitude 0.1 (~ -20 dBFS)
+        for b in 0..20 {
+            let buf: Vec<f32> = (0..480)
+                .map(|i| {
+                    let t = (b * 480 + i) as f32 / sr;
+                    0.1 * (2.0 * std::f32::consts::PI * freq * t).sin()
+                })
+                .collect();
+            out = an.process(&buf, sr);
+        }
+        out
+    }
+
+    #[test]
+    fn low_tone_peaks_in_low_band() {
+        let l = run_tone(150.0);
+        let max = l.iter().cloned().fold(0.0, f32::max);
+        assert_eq!(l[0], max, "{l:?}");
+        assert!(l[0] > 0.5 && l[5] < 0.2, "{l:?}");
+    }
+
+    #[test]
+    fn high_tone_peaks_in_high_band() {
+        let l = run_tone(5500.0);
+        let max = l.iter().cloned().fold(0.0, f32::max);
+        assert_eq!(l[5], max, "{l:?}");
+        assert!(l[0] < 0.2, "{l:?}");
+    }
+
+    #[test]
+    fn silence_is_zero() {
+        let mut an = BandAnalyzer::new(16000.0, 2);
+        let l = an.process(&vec![0.0; 1024], 16000.0);
+        assert!(l.iter().all(|&v| v == 0.0));
+    }
 }

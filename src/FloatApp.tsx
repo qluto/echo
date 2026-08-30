@@ -164,43 +164,71 @@ function getGlowColor(state: IndicatorState): string {
   }
 }
 
-/** Base heights for wave bars (used as minimum when no audio) */
-const WAVE_BAR_BASE = [4, 6, 4, 6, 4, 6];
-/** Maximum heights for wave bars */
-const WAVE_BAR_MAX = [10, 22, 16, 26, 18, 22];
-/** Number of history samples to keep for staggered bar animation */
-const LEVEL_HISTORY_SIZE = 8;
-/** Which history index each bar reads from (higher = more delayed) */
-const BAR_DELAY = [0, 2, 4, 1, 3, 5];
+/** Number of frequency bands reported by the backend (low → high). */
+const NUM_BANDS = 6;
+/**
+ * Bar layout: 6 bands laid out symmetrically so vowels (low bands) swell the
+ * centre and sibilants (high bands) flicker at the edges, Siri-style.
+ * Each entry is the band index a bar reads from, left → right.
+ */
+const BAR_BAND = [5, 3, 1, 0, 2, 4];
+const BAR_WIDTH = 2;
+const BAR_GAP = 3;
+const BAR_MIN_H = 4;
+const BAR_MAX_H = [12, 18, 24, 26, 20, 14];
+const CANVAS_W = BAR_BAND.length * (BAR_WIDTH + BAR_GAP) - BAR_GAP;
+const CANVAS_H = 28;
+/** Backend polling interval (ms); rendering interpolates to 60 fps between polls. */
+const LEVEL_POLL_MS = 33;
+/** Per-frame lerp factor toward the latest polled level (higher = snappier). */
+const LEVEL_LERP = 0.35;
 
-/** Wave bars that react to audio levels with per-bar time stagger */
-function WaveBars({ audioLevel, glowColor }: { audioLevel: number; glowColor: string }) {
-  const historyRef = useRef<number[]>(new Array(LEVEL_HISTORY_SIZE).fill(0));
+/**
+ * Wave bars driven by per-band audio levels. Rendered on a canvas inside a
+ * rAF loop reading a ref, so level updates never trigger React re-renders.
+ */
+function WaveBars({ levelsRef, glowColor }: { levelsRef: React.MutableRefObject<number[]>; glowColor: string }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const colorRef = useRef(glowColor);
+  colorRef.current = glowColor;
 
-  // Push new level into history ring, shifting older values
-  const history = historyRef.current;
-  history.pop();
-  history.unshift(audioLevel);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = CANVAS_W * dpr;
+    canvas.height = CANVAS_H * dpr;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+
+    const shown = new Array(BAR_BAND.length).fill(0);
+    let raf = 0;
+    const draw = () => {
+      const target = levelsRef.current;
+      ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+      ctx.fillStyle = colorRef.current;
+      for (let i = 0; i < BAR_BAND.length; i++) {
+        const t = target[BAR_BAND[i]] ?? 0;
+        shown[i] += (t - shown[i]) * LEVEL_LERP;
+        const h = BAR_MIN_H + (BAR_MAX_H[i] - BAR_MIN_H) * shown[i];
+        const x = i * (BAR_WIDTH + BAR_GAP);
+        const y = (CANVAS_H - h) / 2;
+        ctx.beginPath();
+        ctx.roundRect(x, y, BAR_WIDTH, h, 1);
+        ctx.fill();
+      }
+      raf = requestAnimationFrame(draw);
+    };
+    raf = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(raf);
+  }, [levelsRef]);
 
   return (
-    <div className="flex items-center gap-[3px] h-7">
-      {WAVE_BAR_BASE.map((base, i) => {
-        const max = WAVE_BAR_MAX[i];
-        const delayed = history[BAR_DELAY[i]] ?? 0;
-        const height = base + (max - base) * delayed;
-        return (
-          <div
-            key={i}
-            className="w-0.5 rounded-sm"
-            style={{
-              height: `${height}px`,
-              backgroundColor: glowColor,
-              transition: "height 60ms ease-out",
-            }}
-          />
-        );
-      })}
-    </div>
+    <canvas
+      ref={canvasRef}
+      style={{ width: CANVAS_W, height: CANVAS_H, display: "block" }}
+    />
   );
 }
 
@@ -208,14 +236,14 @@ function WaveBars({ audioLevel, glowColor }: { audioLevel: number; glowColor: st
 function IndicatorContent({
   state,
   duration,
-  audioLevel,
+  levelsRef,
   draft,
   parts,
   draftRef,
 }: {
   state: IndicatorState;
   duration: number;
-  audioLevel: number;
+  levelsRef: React.MutableRefObject<number[]>;
   /** In-progress transcription shown inside the pill while recording. */
   draft: string;
   /** Split of `draft` into final vs. tentative text (tentative is blurred). */
@@ -266,7 +294,7 @@ function IndicatorContent({
           className="flex items-center justify-center gap-3 flex-shrink-0"
           style={{ height: INDICATOR_HEIGHT }}
         >
-          <WaveBars audioLevel={audioLevel} glowColor={glowColor} />
+          <WaveBars levelsRef={levelsRef} glowColor={glowColor} />
           <span
             className="text-[11px] font-mono flex-shrink-0"
             style={{
@@ -332,7 +360,7 @@ function FloatApp() {
   const [draftLines, setDraftLines] = useState(1);
   const draftRef = useRef<HTMLSpanElement>(null);
   const [morphPhase, setMorphPhase] = useState<MorphPhase>("ambient");
-  const [audioLevel, setAudioLevel] = useState(0);
+  const audioLevelsRef = useRef<number[]>(new Array(NUM_BANDS).fill(0));
   const [showRipple, setShowRipple] = useState(false);
   const [statusToast, setStatusToast] = useState<TranscriptionStatusEvent | null>(null);
 
@@ -347,17 +375,16 @@ function FloatApp() {
   // ---- Audio level polling during recording ----
   useEffect(() => {
     if (state !== "recording") {
-      setAudioLevel(0);
+      audioLevelsRef.current = new Array(NUM_BANDS).fill(0);
       return;
     }
     const intervalId = setInterval(async () => {
       try {
-        const level = await invoke<number>("get_audio_level");
-        setAudioLevel(level);
+        audioLevelsRef.current = await invoke<number[]>("get_audio_levels");
       } catch (_) {
         // ignore polling errors
       }
-    }, 50);
+    }, LEVEL_POLL_MS);
     return () => clearInterval(intervalId);
   }, [state]);
 
@@ -994,7 +1021,7 @@ function FloatApp() {
               <IndicatorContent
                 state={state}
                 duration={duration}
-                audioLevel={audioLevel}
+                levelsRef={audioLevelsRef}
                 draft={partialText}
                 parts={partial}
                 draftRef={draftRef}
