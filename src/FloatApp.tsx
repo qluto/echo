@@ -57,7 +57,7 @@ const DRAFT_PADDING_Y = 12;
 // As many lines as fit in the window above the bottom margin; beyond that the
 // text is tail-anchored so the newest words stay visible.
 const DRAFT_MAX_LINES = Math.floor(
-  (HOVER_HEIGHT - 15 - 8 - DRAFT_PADDING_Y * 2) / DRAFT_LINE_HEIGHT,
+  (HOVER_HEIGHT - 15 - 8 - INDICATOR_HEIGHT - DRAFT_PADDING_Y - 6) / DRAFT_LINE_HEIGHT,
 );
 
 /** Ripple ring decay: first ring strongest, subsequent rings weaker */
@@ -206,27 +206,20 @@ function IndicatorContent({
 
   if (state === "recording") {
     const hasDraft = draft.length > 0;
+    // With a draft: text on top, the original wave bars + timer row stays at
+    // the bottom of the pill (same place as the plain recording pill).
     return (
       <div
-        className={`flex items-center h-full ${hasDraft ? "gap-2.5" : "gap-3 justify-center"}`}
-        style={{ padding: hasDraft ? "0 14px 0 12px" : 0 }}
+        className="flex flex-col justify-end h-full"
+        style={{ padding: hasDraft ? `${DRAFT_PADDING_Y}px 14px 0` : 0 }}
       >
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <WaveBars audioLevel={audioLevel} glowColor={glowColor} />
-          <span
-            className="text-[11px] font-mono flex-shrink-0"
-            style={{
-              color: "var(--text-secondary)",
-              fontVariantNumeric: "tabular-nums",
-            }}
-          >
-            {formatDuration(duration)}
-          </span>
-        </div>
         {hasDraft && (
           <div
             className="flex-1 min-w-0 flex flex-col justify-end overflow-hidden"
-            style={{ maxHeight: DRAFT_LINE_HEIGHT * DRAFT_MAX_LINES }}
+            style={{
+              maxHeight: DRAFT_LINE_HEIGHT * DRAFT_MAX_LINES,
+              marginBottom: 6,
+            }}
           >
             <span
               ref={draftRef}
@@ -242,6 +235,21 @@ function IndicatorContent({
             </span>
           </div>
         )}
+        <div
+          className="flex items-center justify-center gap-3 flex-shrink-0"
+          style={{ height: INDICATOR_HEIGHT }}
+        >
+          <WaveBars audioLevel={audioLevel} glowColor={glowColor} />
+          <span
+            className="text-[11px] font-mono flex-shrink-0"
+            style={{
+              color: "var(--text-secondary)",
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {formatDuration(duration)}
+          </span>
+        </div>
       </div>
     );
   }
@@ -699,7 +707,7 @@ function FloatApp() {
     : AMBIENT_PILL_WIDTH;
   const pillHeight = isInIndicatorPhase
     ? draftActive
-      ? Math.max(INDICATOR_HEIGHT, draftLines * DRAFT_LINE_HEIGHT + DRAFT_PADDING_Y * 2)
+      ? INDICATOR_HEIGHT + DRAFT_PADDING_Y + draftLines * DRAFT_LINE_HEIGHT + 6
       : INDICATOR_HEIGHT
     : AMBIENT_PILL_HEIGHT;
   const pillRadius = isInIndicatorPhase ? INDICATOR_RADIUS : AMBIENT_PILL_RADIUS;
