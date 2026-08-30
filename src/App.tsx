@@ -1,6 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import { getCurrentWindow, primaryMonitor, LogicalPosition } from "@tauri-apps/api/window";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { useState, useEffect, useCallback } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit, listen } from "@tauri-apps/api/event";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { TranscriptionHistory } from "./components/TranscriptionHistory";
@@ -74,7 +73,6 @@ function App() {
   const [showRestartPrompt, setShowRestartPrompt] = useState(false);
 
   const [showSuccess, setShowSuccess] = useState(false);
-  const floatWindowRef = useRef<WebviewWindow | null>(null);
 
   // Remove native loading screen after React has painted
   // Using useEffect (not useLayoutEffect) ensures the React loading overlay
@@ -93,43 +91,9 @@ function App() {
     }
   }, []);
 
-  // Get float window reference
-  useEffect(() => {
-    const getFloatWindow = async () => {
-      try {
-        const floatWin = await WebviewWindow.getByLabel("float");
-        if (floatWin) {
-          floatWindowRef.current = floatWin;
-          // Position at bottom center of screen
-          await positionFloatWindow(floatWin);
-        }
-      } catch (e) {
-        console.error("Failed to get float window:", e);
-      }
-    };
-    getFloatWindow();
-  }, []);
-
-  // Position float window at bottom center
-  const positionFloatWindow = async (floatWin: WebviewWindow) => {
-    try {
-      const monitor = await primaryMonitor();
-      if (monitor) {
-        const scaleFactor = monitor.scaleFactor;
-        const screenWidth = monitor.size.width / scaleFactor;
-        const screenHeight = monitor.size.height / scaleFactor;
-        const monitorX = monitor.position.x / scaleFactor;
-        const monitorY = monitor.position.y / scaleFactor;
-        const windowWidth = 240;
-        const windowHeight = 60;
-        const x = Math.round(monitorX + (screenWidth - windowWidth) / 2);
-        const y = Math.round(monitorY + screenHeight - windowHeight - 32); // 32px from bottom
-        await floatWin.setPosition(new LogicalPosition(x, y));
-      }
-    } catch (e) {
-      console.error("Failed to position float window:", e);
-    }
-  };
+  // Note: the float window positions itself (FloatApp.resizeAndPosition).
+  // An older positioning routine here assumed a 240×60 window and, when it
+  // ran after FloatApp's own placement, pushed the pill below the screen.
 
   // Emit state to float window
   type FloatState = "idle" | "recording" | "processing" | "success" | "ambient" | "ambient-active";
@@ -165,6 +129,26 @@ function App() {
       }, 600);
       return () => clearTimeout(timer);
     }
+  }, [isRecording, isTranscribing, showSuccess, recordingDuration, isListening, isSpeechDetected, emitFloatState]);
+
+  // Re-send the current state when the float window (re)mounts — it may have
+  // missed the initial emit while its webview was still loading.
+  useEffect(() => {
+    const unlisten = listen("float-ready", () => {
+      const state: FloatState = showSuccess
+        ? "success"
+        : isRecording
+        ? "recording"
+        : isTranscribing
+        ? "processing"
+        : isListening
+        ? (isSpeechDetected ? "ambient-active" : "ambient")
+        : "ambient";
+      emitFloatState(state, recordingDuration, isListening);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, [isRecording, isTranscribing, showSuccess, recordingDuration, isListening, isSpeechDetected, emitFloatState]);
 
   // Listen for toggle-listening requests from float window hover panel

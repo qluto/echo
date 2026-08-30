@@ -72,8 +72,17 @@ async function resizeAndPosition(width: number, height: number) {
   try {
     await win.setSize(new LogicalSize(width, height));
 
-    const monitor = await primaryMonitor();
-    if (!monitor) return;
+    // Right after launch the monitor list can still be empty; retry briefly
+    // instead of leaving the window wherever the OS put it.
+    let monitor = await primaryMonitor();
+    for (let i = 0; !monitor && i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      monitor = await primaryMonitor();
+    }
+    if (!monitor) {
+      console.warn("float: no primary monitor; skipping positioning");
+      return;
+    }
     const scaleFactor = monitor.scaleFactor;
     const screenWidth = monitor.size.width / scaleFactor;
     const screenHeight = monitor.size.height / scaleFactor;
@@ -390,11 +399,14 @@ function FloatApp() {
       },
     );
 
-    // Show window immediately on mount with ambient pill
+    // Show window immediately on mount with ambient pill, then ask the main
+    // window for the current state: its initial float-state may have been
+    // emitted before this webview was listening.
     void (async () => {
       await resizeAndPosition(HOVER_WIDTH, HOVER_HEIGHT);
       setVisible(true);
-      win.show();
+      await win.show();
+      await emit("float-ready", {});
     })();
 
     return () => {
