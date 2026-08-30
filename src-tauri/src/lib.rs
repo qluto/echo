@@ -229,7 +229,7 @@ pub fn run() {
             commands::initialize_enigo,
             commands::insert_text,
             commands::get_audio_devices,
-            commands::get_audio_level,
+            commands::get_audio_levels,
             commands::set_audio_device,
             commands::get_settings,
             commands::update_settings,

@@ -113,8 +113,8 @@ pub fn get_audio_devices() -> Result<Vec<AudioDevice>, String> {
 }
 
 #[tauri::command]
-pub fn get_audio_level() -> f32 {
-    audio_capture::get_audio_level()
+pub fn get_audio_levels() -> [f32; audio_capture::NUM_BANDS] {
+    audio_capture::get_audio_levels()
 }
 
 #[tauri::command]
