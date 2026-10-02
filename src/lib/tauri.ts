@@ -483,3 +483,92 @@ export async function summarizeRecentTranscriptions(
     minutes: minutes ?? null,
   });
 }
+
+// Voice memo types and commands
+export type MemoStatus =
+  | "recording"
+  | "transcribing"
+  | "summarizing"
+  | "done"
+  | "error"
+  | "interrupted";
+
+export interface Memo {
+  id: number;
+  created_at: string;
+  duration_seconds: number | null;
+  audio_path: string;
+  status: MemoStatus;
+  /** Timestamped transcript, one `[MM:SS] text` line per chunk. */
+  transcript: string | null;
+  segments_json: string | null;
+  minutes: string | null;
+  language: string | null;
+  model_name: string | null;
+  error: string | null;
+}
+
+export interface MemoListItem {
+  id: number;
+  created_at: string;
+  duration_seconds: number | null;
+  status: MemoStatus;
+  preview: string | null;
+  error: string | null;
+}
+
+export interface MemoRecordingStatus {
+  memo_id: number;
+  elapsed_seconds: number;
+  /** Input level, 0.0–1.0. */
+  level: number;
+}
+
+export interface MemoProgressEvent {
+  id: number;
+  status: MemoStatus;
+  /** 0.0–1.0 within the current stage, when known. */
+  progress: number | null;
+}
+
+export async function startMemoRecording(): Promise<Memo> {
+  return invoke("start_memo_recording");
+}
+
+/** Stops the recording; transcription + minutes continue in the background. */
+export async function stopMemoRecording(): Promise<Memo> {
+  return invoke("stop_memo_recording");
+}
+
+export async function getMemoRecordingStatus(): Promise<MemoRecordingStatus | null> {
+  return invoke("get_memo_recording_status");
+}
+
+export async function listMemos(): Promise<MemoListItem[]> {
+  return invoke("list_memos");
+}
+
+export async function getMemo(id: number): Promise<Memo | null> {
+  return invoke("get_memo", { id });
+}
+
+export async function deleteMemo(id: number): Promise<void> {
+  return invoke("delete_memo", { id });
+}
+
+/** Regenerate the minutes, or (`retranscribe`) redo everything from the audio. */
+export async function reprocessMemo(id: number, retranscribe: boolean): Promise<void> {
+  return invoke("reprocess_memo", { id, retranscribe });
+}
+
+export async function revealMemoAudio(id: number): Promise<void> {
+  return invoke("reveal_memo_audio", { id });
+}
+
+export function onMemoProgress(
+  callback: (event: MemoProgressEvent) => void
+): Promise<UnlistenFn> {
+  return listen<MemoProgressEvent>("memo-progress", (event) => {
+    callback(event.payload);
+  });
+}

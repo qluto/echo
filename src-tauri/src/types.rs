@@ -3,6 +3,7 @@ use tauri_plugin_store::StoreExt;
 
 use crate::continuous;
 use crate::database;
+use crate::memo;
 use crate::transcription::ASREngine;
 
 /// Application settings
@@ -272,6 +273,8 @@ pub struct AppState {
     pub recording_state: Mutex<RecordingState>,
     pub transcription_db: Arc<Mutex<database::TranscriptionDb>>,
     pub continuous_pipeline: Mutex<Option<continuous::ContinuousPipeline>>,
+    /// The voice memo being recorded, if any.
+    pub memo_recorder: Mutex<Option<memo::MemoRecorder>>,
 }
 
 /// Recording state

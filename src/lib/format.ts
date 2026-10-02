@@ -25,3 +25,12 @@ export const formatHotkey = (hotkey: string): string => {
     .replace("CommandOrControl", "⌘")
     .replace(/\+/g, "");
 };
+
+/** Seconds as `M:SS`, or `H:MM:SS` from one hour on. */
+export const formatClock = (seconds: number): string => {
+  const total = Math.floor(seconds);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = (total % 60).toString().padStart(2, "0");
+  return h > 0 ? `${h}:${m.toString().padStart(2, "0")}:${s}` : `${m}:${s}`;
+};

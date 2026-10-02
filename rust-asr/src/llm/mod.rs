@@ -1,14 +1,18 @@
-//! In-process LLM post-processing (Qwen3) — the full-Rust replacement for the
-//! Python `PostProcessor`. Cleans up ASR text (filler removal, self-correction,
-//! dictionary, app-context formatting) and summarizes transcription history.
+//! In-process LLM post-processing (Qwen3.5 / Qwen3) — the full-Rust
+//! replacement for the Python `PostProcessor`. Cleans up ASR text (filler
+//! removal, self-correction, dictionary, app-context formatting) and
+//! summarizes transcription history.
 
+pub mod gated_delta;
 pub mod qwen3;
+pub mod qwen3_5;
 
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::path::Path;
 
 use qwen3::{Config, Qwen3};
+use qwen3_5::Qwen3_5;
 use tokenizers::Tokenizer;
 
 /// System prompt for cleanup — kept byte-identical to the Python PostProcessor.
@@ -54,9 +58,17 @@ You will receive a chronological list of speech transcription segments with time
 Write a clear, structured summary. Use bullet points for distinct topics.
 Do NOT include timestamps in the summary unless they are semantically important (e.g., \"meeting at 3pm\").";
 
+/// The loaded LLM, by architecture (picked from config.json's `model_type`).
+enum Model {
+    Qwen3(Qwen3),
+    Qwen3_5(Qwen3_5),
+}
+
 pub struct PostProcessor {
-    model: Qwen3,
+    model: Model,
     tokenizer: Tokenizer,
+    /// Token id of `</think>`, to cut the reasoning trace off generated ids.
+    think_end_id: Option<i32>,
 }
 
 impl PostProcessor {
@@ -79,13 +91,25 @@ impl PostProcessor {
             .get("model.safetensors")
             .map_err(|e| anyhow!("weights: {e}"))?;
 
-        let cfg = parse_config(&config_path)?;
-        let weights = crate::weights::Weights::load(st.to_str().ok_or_else(|| anyhow!("path"))?)?;
-        let model = Qwen3::load(&weights, cfg)?;
         let tokenizer =
             Tokenizer::from_file(&tok_path).map_err(|e| anyhow!("tokenizer load: {e}"))?;
-        log::info!("Post-processor (Qwen3) loaded: {model_id}");
-        Ok(Self { model, tokenizer })
+        let token_id = |t: &str| tokenizer.token_to_id(t).map(|id| id as i32);
+        let config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config_path)?)?;
+        let weights = crate::weights::Weights::load(st.to_str().ok_or_else(|| anyhow!("path"))?)?;
+        let model = if config.get("model_type").and_then(|v| v.as_str()) == Some("qwen3_5") {
+            // config.json's eos is <|endoftext|>; a chat turn ends at <|im_end|>.
+            let im_end = token_id("<|im_end|>").ok_or_else(|| anyhow!("no <|im_end|> token"))?;
+            Model::Qwen3_5(Qwen3_5::load(&weights, parse_config_3_5(&config, im_end)?)?)
+        } else {
+            Model::Qwen3(Qwen3::load(&weights, parse_config(&config)?)?)
+        };
+        let think_end_id = token_id("</think>");
+        log::info!("Post-processor loaded: {model_id}");
+        Ok(Self {
+            model,
+            tokenizer,
+            think_end_id,
+        })
     }
 
     /// Clean up ASR text. Mirrors the Python PostProcessor.process().
@@ -128,9 +152,18 @@ impl PostProcessor {
         if let Some(lang) = language_hint {
             user.push_str(&format!("\n\n(Primary language: {lang})"));
         }
-        // Thinking mode (matches Python summarize) for summary quality.
-        let prompt = chat_prompt(system, &user, true);
+        // Qwen3 summarizes in thinking mode (matches Python summarize).
+        // Qwen3.5 doesn't: under greedy decoding its reasoning trace falls
+        // into a repetition loop and never reaches the answer.
+        let thinking = matches!(self.model, Model::Qwen3(_));
+        let prompt = chat_prompt(system, &user, thinking);
         self.run(&prompt, 2048)
+    }
+
+    /// Free-form completion (no thinking): system + user message → assistant
+    /// text. Used for meeting-minutes generation.
+    pub fn chat(&self, system: &str, user: &str, max_tokens: usize) -> Result<String> {
+        self.run(&chat_prompt(system, user, false), max_tokens)
     }
 
     fn run(&self, prompt: &str, max_tokens: usize) -> Result<String> {
@@ -139,11 +172,19 @@ impl PostProcessor {
             .encode(prompt, false)
             .map_err(|e| anyhow!("encode: {e}"))?;
         let ids: Vec<i32> = enc.get_ids().iter().map(|&i| i as i32).collect();
-        let gen = self.model.generate(&ids, max_tokens)?;
-        let gen_u32: Vec<u32> = gen.iter().map(|&i| i as u32).collect();
+        let gen = match &self.model {
+            Model::Qwen3(m) => m.generate(&ids, max_tokens)?,
+            Model::Qwen3_5(m) => m.generate(&ids, max_tokens)?,
+        };
+        // Keep only what follows the reasoning trace, if there is one.
+        let answer = match self.think_end_id.and_then(|id| gen.iter().rposition(|&t| t == id)) {
+            Some(end) => &gen[end + 1..],
+            None => &gen[..],
+        };
+        let answer: Vec<u32> = answer.iter().map(|&i| i as u32).collect();
         let text = self
             .tokenizer
-            .decode(&gen_u32, true)
+            .decode(&answer, true)
             .map_err(|e| anyhow!("decode: {e}"))?;
         Ok(strip_think(&text).trim().to_string())
     }
@@ -154,7 +195,7 @@ impl PostProcessor {
     }
 }
 
-/// Qwen3 chat template (system + user). When `thinking` is false this matches
+/// Qwen chat template (system + user). When `thinking` is false this matches
 /// `apply_chat_template(enable_thinking=False)`, which primes the assistant turn
 /// with an empty `<think></think>` block so the model skips its reasoning trace.
 fn chat_prompt(system: &str, user: &str, thinking: bool) -> String {
@@ -208,8 +249,7 @@ fn strip_think(s: &str) -> String {
     }
 }
 
-fn parse_config(path: &Path) -> Result<Config> {
-    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+fn parse_config(v: &serde_json::Value) -> Result<Config> {
     let g = |k: &str| v.get(k).and_then(|x| x.as_i64());
     let gf = |k: &str| v.get(k).and_then(|x| x.as_f64());
     Ok(Config {
@@ -221,5 +261,49 @@ fn parse_config(path: &Path) -> Result<Config> {
         rope_theta: gf("rope_theta").unwrap_or(1_000_000.0) as f32,
         rms_eps: gf("rms_norm_eps").unwrap_or(1e-6) as f32,
         eos_token_id: g("eos_token_id").unwrap_or(151645) as i32,
+    })
+}
+
+fn parse_config_3_5(v: &serde_json::Value, im_end_id: i32) -> Result<qwen3_5::Config> {
+    let quant = v.get("quantization").ok_or_else(|| anyhow!("quantization"))?;
+    let bits = quant.get("bits").and_then(|x| x.as_i64());
+    let group_size = quant.get("group_size").and_then(|x| x.as_i64());
+    if (bits, group_size) != (Some(qwen3::BITS as i64), Some(qwen3::GROUP_SIZE as i64)) {
+        return Err(anyhow!("unsupported quantization: {quant}"));
+    }
+
+    let t = v.get("text_config").ok_or_else(|| anyhow!("text_config"))?;
+    let g = |k: &str| {
+        t.get(k)
+            .and_then(|x| x.as_i64())
+            .ok_or_else(|| anyhow!("text_config.{k}"))
+    };
+    let rope = t.get("rope_parameters");
+    let rope_f = |k: &str, default: f64| {
+        rope.and_then(|r| r.get(k)).and_then(|x| x.as_f64()).unwrap_or(default)
+    };
+    let n_heads = g("num_attention_heads")? as i32;
+    let hidden_size = g("hidden_size")? as i32;
+    let head_dim = g("head_dim").map(|d| d as i32).unwrap_or(hidden_size / n_heads);
+    let mut stop_token_ids = vec![im_end_id];
+    if let Ok(eos) = g("eos_token_id") {
+        stop_token_ids.push(eos as i32);
+    }
+    Ok(qwen3_5::Config {
+        hidden_size,
+        n_layers: g("num_hidden_layers")? as usize,
+        n_heads,
+        n_kv_heads: g("num_key_value_heads")? as i32,
+        head_dim,
+        rope_dims: (head_dim as f64 * rope_f("partial_rotary_factor", 0.25)) as i32,
+        rope_theta: rope_f("rope_theta", 100_000.0) as f32,
+        rms_eps: t.get("rms_norm_eps").and_then(|x| x.as_f64()).unwrap_or(1e-6) as f32,
+        full_attention_interval: g("full_attention_interval").unwrap_or(4) as usize,
+        linear_k_heads: g("linear_num_key_heads")? as i32,
+        linear_v_heads: g("linear_num_value_heads")? as i32,
+        linear_k_dim: g("linear_key_head_dim")? as i32,
+        linear_v_dim: g("linear_value_head_dim")? as i32,
+        conv_kernel: g("linear_conv_kernel_dim")? as i32,
+        stop_token_ids,
     })
 }

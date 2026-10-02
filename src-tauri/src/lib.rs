@@ -13,6 +13,7 @@ mod handy_keys;
 mod hotkey;
 mod partial;
 mod input;
+mod memo;
 mod transcription;
 mod types;
 mod vad;
@@ -130,6 +131,11 @@ pub fn run() {
                 anyhow::anyhow!("Failed to open transcription database: {}", e)
             })?;
             log::info!("Transcription database opened at {:?}", db_path);
+            match db.mark_interrupted_memos() {
+                Ok(0) => {}
+                Ok(n) => log::warn!("{} voice memo(s) were interrupted by the last exit", n),
+                Err(e) => log::warn!("Failed to mark interrupted memos: {}", e),
+            }
 
             let app_state = AppState {
                 asr_engine: Arc::new(Mutex::new(asr_engine)),
@@ -137,6 +143,7 @@ pub fn run() {
                 recording_state: Mutex::new(RecordingState::default()),
                 transcription_db: Arc::new(Mutex::new(db)),
                 continuous_pipeline: Mutex::new(None),
+                memo_recorder: Mutex::new(None),
             };
             app.manage(app_state);
 
@@ -268,6 +275,14 @@ pub fn run() {
             commands::clear_transcription_history,
             commands::export_transcription_history,
             commands::summarize_recent_transcriptions,
+            commands::start_memo_recording,
+            commands::stop_memo_recording,
+            commands::get_memo_recording_status,
+            commands::list_memos,
+            commands::get_memo,
+            commands::delete_memo,
+            commands::reprocess_memo,
+            commands::reveal_memo_audio,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
