@@ -15,8 +15,8 @@ use mlx_rs::{Array, Dtype};
 
 use crate::weights::Weights;
 
-const GROUP_SIZE: i32 = 64;
-const BITS: i32 = 4;
+pub(super) const GROUP_SIZE: i32 = 64;
+pub(super) const BITS: i32 = 4;
 
 #[derive(Clone)]
 pub struct Config {
@@ -31,14 +31,14 @@ pub struct Config {
 }
 
 /// A 4-bit quantized linear: y = x @ dequant(weight)^T.
-struct QLinear {
+pub(super) struct QLinear {
     weight: Array,
     scales: Array,
     biases: Array,
 }
 
 impl QLinear {
-    fn load(w: &Weights, prefix: &str) -> Result<Self> {
+    pub(super) fn load(w: &Weights, prefix: &str) -> Result<Self> {
         // Keep native BF16 scales/biases so inference matches mlx-lm bit-for-bit.
         Ok(Self {
             weight: w.raw(&format!("{prefix}.weight"))?.clone(),
@@ -46,7 +46,7 @@ impl QLinear {
             biases: w.raw(&format!("{prefix}.biases"))?.clone(),
         })
     }
-    fn forward(&self, x: &Array) -> Result<Array> {
+    pub(super) fn forward(&self, x: &Array) -> Result<Array> {
         Ok(quantized_matmul(
             x,
             &self.weight,
@@ -83,9 +83,9 @@ pub struct Qwen3 {
 }
 
 /// Per-layer KV cache.
-struct Kv {
-    k: Array,
-    v: Array,
+pub(super) struct Kv {
+    pub(super) k: Array,
+    pub(super) v: Array,
 }
 
 fn rmsnorm(x: &Array, weight: &Array, eps: f32) -> Result<Array> {
@@ -242,7 +242,7 @@ impl Qwen3 {
     }
 }
 
-fn repeat_kv(x: &Array, rep: i32) -> Result<Array> {
+pub(super) fn repeat_kv(x: &Array, rep: i32) -> Result<Array> {
     if rep == 1 {
         return Ok(x.clone());
     }
@@ -253,7 +253,7 @@ fn repeat_kv(x: &Array, rep: i32) -> Result<Array> {
     Ok(reshape(&x, &[b, n_kv * rep, t, hd])?)
 }
 
-fn causal_mask(s: i32) -> Result<Array> {
+pub(super) fn causal_mask(s: i32) -> Result<Array> {
     let n = s as usize;
     let mut data = vec![0.0f32; n * n];
     for i in 0..n {

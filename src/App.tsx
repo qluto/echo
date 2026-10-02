@@ -4,6 +4,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { TranscriptionHistory } from "./components/TranscriptionHistory";
 import { SummaryModal } from "./components/SummaryModal";
+import { MemoSection } from "./components/MemoSection";
 import { useTranscription } from "./hooks/useTranscription";
 import { useContinuousListening } from "./hooks/useContinuousListening";
 import { useSummarize } from "./hooks/useSummarize";
@@ -564,6 +565,9 @@ function App() {
             </button>
           </div>
         </div>
+
+        {/* Voice memo: record, then transcript + minutes */}
+        <MemoSection />
 
         {/* Separator between mode cards and results */}
         <div className="h-px -mx-5" style={{ backgroundColor: "var(--border-subtle)" }} />

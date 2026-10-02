@@ -24,7 +24,15 @@ import {
   HandyKeysEvent,
   PostProcessSettings,
 } from "../lib/tauri";
-import { MODEL_ORDER, SUPPORTED_LANGUAGES, getModelDisplayName, getModelSize, isGatedModel } from "../lib/models";
+import {
+  MODEL_ORDER,
+  POSTPROCESS_MODEL_SIZES,
+  SUPPORTED_LANGUAGES,
+  getModelDisplayName,
+  getModelSize,
+  getPostprocessModelName,
+  isGatedModel,
+} from "../lib/models";
 import { formatHotkey } from "../lib/format";
 import { DEFAULT_POSTPROCESS_PROMPT, DEFAULT_SUMMARIZE_PROMPT } from "../lib/prompts";
 import { AppProfilesSection } from "./AppProfilesSection";
@@ -60,12 +68,10 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [customPrompt, setCustomPrompt] = useState<string | null>(null);
   const [customSummaryPrompt, setCustomSummaryPrompt] = useState<string | null>(null);
-  const [postprocessModelName, setPostprocessModelName] = useState<string>("mlx-community/Qwen3-4B-4bit");
-  const [availablePostprocessModels, setAvailablePostprocessModels] = useState<string[]>([
-    "mlx-community/Qwen3-8B-4bit",
-    "mlx-community/Qwen3-4B-4bit",
-    "mlx-community/Qwen3-1.7B-4bit",
-  ]);
+  const [postprocessModelName, setPostprocessModelName] = useState<string>("mlx-community/Qwen3.5-4B-4bit");
+  const [availablePostprocessModels, setAvailablePostprocessModels] = useState<string[]>(
+    Object.keys(POSTPROCESS_MODEL_SIZES)
+  );
   const [isPostprocessModelChanging, setIsPostprocessModelChanging] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const currentKeysRef = useRef("");
@@ -888,8 +894,8 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                             style={{ color: "var(--text-primary)" }}
                           >
                             {availablePostprocessModels.map((model) => {
-                              const displayName = model.includes("8B") ? "Qwen3 8B" : model.includes("4B") ? "Qwen3 4B" : "Qwen3 1.7B";
-                              const memInfo = model.includes("8B") ? "~5GB" : model.includes("4B") ? "~2.5GB" : "~1.3GB";
+                              const displayName = getPostprocessModelName(model);
+                              const memInfo = POSTPROCESS_MODEL_SIZES[model] ?? "?";
                               return (
                                 <option
                                   key={model}

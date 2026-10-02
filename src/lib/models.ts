@@ -97,3 +97,19 @@ export const getModelShortName = (name: string): string => {
   const size = getModelSize(name);
   return `${family} · ${size}`;
 };
+
+// Post-processing LLMs (download size), in picker order. Qwen3.5 is the
+// current generation; Qwen3 stays for installs that already downloaded it.
+export const POSTPROCESS_MODEL_SIZES: Record<string, string> = {
+  "mlx-community/Qwen3.5-4B-4bit": "~3GB",
+  "mlx-community/Qwen3.5-2B-4bit": "~1.7GB",
+  "mlx-community/Qwen3-8B-4bit": "~5GB",
+  "mlx-community/Qwen3-4B-4bit": "~2.5GB",
+  "mlx-community/Qwen3-1.7B-4bit": "~1.3GB",
+};
+
+/** "mlx-community/Qwen3.5-4B-4bit" → "Qwen3.5 4B" */
+export function getPostprocessModelName(modelId: string): string {
+  const name = modelId.split("/").pop() ?? modelId;
+  return name.replace(/-4bit$/, "").replace("-", " ");
+}

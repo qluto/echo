@@ -12,7 +12,7 @@ Echo is an offline voice input desktop application optimized for Apple Silicon. 
 - **Backend**: Tauri 2.x, Rust
 - **ASR Engine**: fully in-process Rust — Whisper (whisper.cpp via `whisper-rs`), Parakeet-JA + Cohere (Apple MLX via `mlx-rs`). No Python sidecar.
 - **VAD**: Silero VAD v5 via ONNX Runtime (`voice_activity_detector` crate), rubato for audio resampling
-- **Post-Processing**: MLX LLM (Qwen3-1.7B-4bit) for cleaning up transcription results
+- **Post-Processing**: MLX LLM (Qwen3.5-4B-4bit by default) for cleaning up transcription results and writing memo minutes
 - **Database**: SQLite with FTS5 full-text search (`rusqlite` crate) for transcription history
 - **Target Platform**: macOS 14.0+ on Apple Silicon (M1/M2/M3/M4)
 
@@ -64,6 +64,17 @@ git push origin v0.x.x
 7. **Storage** → Results saved to SQLite via `database.rs` (FTS5 full-text search enabled)
 8. **Frontend** → `continuous-transcription` Tauri event emitted, rendered in `TranscriptionHistory.tsx`
 
+### Data Flow: Voice Memo (record → minutes)
+
+1. **Start** → `start_memo_recording` inserts a `memos` row and `memo.rs` (`MemoRecorder`) streams 16kHz mono audio to `<app data>/recordings/memo-<timestamp>-<id>.wav` via its own `StreamingCapture` (independent of hotkey recording; header flushed every 10s so a crash keeps the audio)
+2. **Stop** → `stop_memo_recording` finalizes the WAV and starts a background thread
+3. **Chunking** → the WAV is streamed through Silero VAD; `Chunker` cuts 15–28s chunks at pauses
+4. **ASR** → each chunk goes through `ASREngine::transcribe_samples` (engine lock taken per chunk, so dictation can run between chunks; it waits during a minutes LLM call) → `[MM:SS] text` transcript
+5. **Minutes** → `generate_minutes` asks the Qwen3 post-processor for 概要 / 議題と要点 / 決定事項 / アクションアイテム; transcripts over ~3500 chars are first reduced part-by-part into notes, then merged
+6. **Frontend** → `memo-progress` events drive `useMemos.ts` / `MemoSection.tsx` / `MemoModal.tsx`
+
+Memos left `recording`/`transcribing`/`summarizing` by an exit become `interrupted` at startup and can be re-processed from the UI.
+
 ### Key Patterns
 
 - **In-Process Engines (no sidecar)**: ASR and post-processing run natively in Rust via the `rust-asr` crate. `transcription.rs`'s `ASREngine` owns the loaded engines and dispatches by active model id. See "In-Process Rust ASR Engines" under Build & Release for details.
@@ -99,7 +110,7 @@ Three model families are supported with different MLX-Audio APIs:
 
 ### Post-Processing Pipeline
 
-Optional LLM-based cleanup using Qwen3-1.7B-4bit:
+Optional LLM-based cleanup using Qwen3.5-4B-4bit (default; Qwen3.5-2B and the older Qwen3 models are selectable):
 
 **Default behavior** (SYSTEM_PROMPT in `engine.py`):
 - Removes filler words (um, uh, like, あの, えーと, etc.)
@@ -126,7 +137,8 @@ Optional LLM-based cleanup using Qwen3-1.7B-4bit:
 - `src-tauri/src/continuous.rs` - Always-on pipeline: VAD state machine, segment detection, transcription worker
 - `src-tauri/src/vad.rs` - Silero VAD v5 wrapper (ONNX Runtime via `voice_activity_detector` crate)
 - `src-tauri/src/audio_capture.rs` - Audio recording (hotkey mode) + streaming capture (always-on mode, with rubato resampling)
-- `src-tauri/src/database.rs` - SQLite storage with FTS5 for transcription history
+- `src-tauri/src/database.rs` - SQLite storage with FTS5 for transcription history, plus the `memos` table
+- `src-tauri/src/memo.rs` - Voice memo: long recording to disk, VAD chunking, transcript + LLM meeting minutes
 - `src/hooks/useTranscription.ts` - React hook for hotkey transcription state
 - `src/hooks/useContinuousListening.ts` - React hook for always-on listening state
 - `src/hooks/useTranscriptionHistory.ts` - React hook for history queries (pagination, search)
@@ -216,9 +228,20 @@ mlx-rs port of Qwen3 (4-bit quantized: quantized_matmul + dequantize, GQA, RoPE,
 per-head q/k RMSNorm, SwiGLU, tied lm_head). It runs in **BF16** to match mlx-lm
 bit-for-bit (validated: identical cleaned output vs the Python postprocessor on
 the same model). `ASREngine.postprocess_text` / `summarize_transcriptions` /
-`*_postprocess_model` route to it; the Qwen3 chat template is applied manually
-with the `enable_thinking=False` empty-`<think>` priming for cleanup and thinking
-mode for summaries. Models: Qwen3-8B/4B/1.7B-4bit (default 4B).
+`*_postprocess_model` route to it; the Qwen chat template is applied manually
+with the `enable_thinking=False` empty-`<think>` priming. Models: Qwen3.5-4B/2B-4bit
+(default 4B) and the older Qwen3-8B/4B/1.7B-4bit.
+
+**Qwen3.5** (`llm/qwen3_5.rs`) is a different architecture from Qwen3
+(`llm/qwen3.rs`); `PostProcessor` picks the port from config.json's `model_type`.
+Three of every four layers are Gated DeltaNet linear attention (causal depthwise
+conv + gated delta-rule state, run as a custom Metal kernel in
+`llm/gated_delta.rs` via raw `mlx-sys`); every fourth is gated GQA attention with
+partial RoPE. The checkpoint's vision tower is not loaded. Qwen3.5 must not be
+run in thinking mode: under our greedy decoding its reasoning trace loops and
+never reaches the answer, so summaries and minutes use no-think (Qwen3 still
+summarizes in thinking mode). Qwen3.5-9B is not offered: its weights are split
+across two safetensors files, which the loader doesn't handle yet.
 
 With ASR (Whisper/Parakeet/Cohere) and post-processing (Qwen3) all in-process,
 the **Python sidecar is no longer needed** for the default experience — it stays
@@ -300,7 +323,7 @@ Required secrets:
 - ASR/post-processing engines live in `rust-asr/` (a path dependency of `src-tauri`); `transcription.rs` dispatches to them by model id
 - When adding an ASR model, implement it in `rust-asr/` + route it in `transcription.rs`, then update `src/lib/models.ts` (MODEL_ORDER/MODEL_SIZES)
 - After changing `rust-asr/` engine code, rebuild the app (`npm run tauri:dev`); the crate is a path dependency compiled into the binary
-- Post-processor uses Qwen3-1.7B-4bit with `/no_think` mode for fast cleanup (~100-300ms)
+- Post-processor defaults to Qwen3.5-4B-4bit in no-think mode (~1.2s per cleanup in a debug build)
 - Custom prompts are stored as `null` when they match the default to simplify version upgrades
 - Active app detection happens on hotkey press, providing context for both ASR and post-processing
 

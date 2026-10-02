@@ -30,12 +30,16 @@ const AVAILABLE_MODELS: [&str; 8] = [
 ];
 
 /// Post-processing LLMs (Qwen3) served by the in-process engine.
-const POSTPROCESS_MODELS: [&str; 3] = [
+/// Qwen3.5 is the current generation; the Qwen3 models stay selectable for
+/// installs that already have them downloaded.
+const POSTPROCESS_MODELS: [&str; 5] = [
+    "mlx-community/Qwen3.5-4B-4bit",
+    "mlx-community/Qwen3.5-2B-4bit",
     "mlx-community/Qwen3-8B-4bit",
     "mlx-community/Qwen3-4B-4bit",
     "mlx-community/Qwen3-1.7B-4bit",
 ];
-const DEFAULT_POSTPROCESS_MODEL: &str = "mlx-community/Qwen3-4B-4bit";
+const DEFAULT_POSTPROCESS_MODEL: &str = "mlx-community/Qwen3.5-4B-4bit";
 
 /// Cap for MLX's freed-buffer cache (see `ASREngine::start`).
 const MLX_CACHE_LIMIT_BYTES: usize = 512 * 1024 * 1024;
@@ -102,6 +106,15 @@ impl ASREngine {
             hub_dir: None,
             hf_token: None,
             vad: None,
+        }
+    }
+
+    /// Engine pointed at an existing HF hub cache, without a Tauri app.
+    #[cfg(test)]
+    pub(crate) fn with_hub(hub_dir: PathBuf) -> Self {
+        Self {
+            hub_dir: Some(hub_dir),
+            ..Self::new()
         }
     }
 
@@ -454,7 +467,7 @@ impl ASREngine {
             return Ok(self.postproc_status(true, None));
         }
         let hub = self.hub()?;
-        log::info!("Loading post-processor (Qwen3): {}", self.postproc_model);
+        log::info!("Loading post-processor: {}", self.postproc_model);
         match PostProcessor::load(&hub, &self.postproc_model) {
             Ok(pp) => {
                 self.postproc = Some(pp);
@@ -543,6 +556,27 @@ impl ASREngine {
                 error: Some(e.to_string()),
             }),
         }
+    }
+
+    /// Free-form LLM completion with the post-processing model (loaded on
+    /// demand). Used by voice-memo minutes generation.
+    pub fn llm_chat(
+        &mut self,
+        system: &str,
+        user: &str,
+        max_tokens: usize,
+    ) -> Result<String> {
+        if !self.postproc_loaded || self.postproc.is_none() {
+            let status = self.load_postprocess_model()?;
+            if let Some(e) = status.error {
+                return Err(anyhow!("Failed to load post-processor: {e}"));
+            }
+        }
+        let pp = self
+            .postproc
+            .as_ref()
+            .ok_or_else(|| anyhow!("Post-processor not loaded"))?;
+        pp.chat(system, user, max_tokens)
     }
 
     pub fn summarize_transcriptions(
@@ -704,5 +738,26 @@ mod in_process_tests {
             .postprocess_text("えーと、3時に、いや4時に会議があります。", None, None, None, None)
             .expect("postprocess");
         assert!(r.success && !r.processed_text.trim().is_empty());
+    }
+
+    /// Downloads Qwen3.5-4B-4bit (~3 GB) on first run:
+    /// `cargo test qwen3_5_postprocess -- --ignored --nocapture --test-threads=1`
+    #[test]
+    #[ignore]
+    fn qwen3_5_postprocess() {
+        let Some(mut engine) = engine_with_hub() else { return };
+        assert_eq!(engine.postproc_model, "mlx-community/Qwen3.5-4B-4bit");
+        let t = std::time::Instant::now();
+        assert!(engine.load_postprocess_model().expect("load").loaded);
+        println!("loaded in {:?}", t.elapsed());
+        for text in [
+            "えーと、3時に、いや4時に会議があります。",
+            "あの、資料はですね、まあ明日までに送ります。",
+            "um so I think we should uh ship it on Monday, no wait, Tuesday",
+        ] {
+            let r = engine.postprocess_text(text, None, None, None, None).expect("postprocess");
+            println!("in:  {text}\nout: {} ({:.0} ms)", r.processed_text, r.processing_time_ms.unwrap_or(0.0));
+            assert!(r.success && !r.processed_text.trim().is_empty());
+        }
     }
 }

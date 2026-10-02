@@ -9,6 +9,7 @@ use crate::database;
 use crate::export;
 use crate::handy_keys;
 use crate::input::EnigoState;
+use crate::memo;
 use crate::transcription::{ModelCacheStatus, ModelStatus, WarmupResult};
 use crate::types::*;
 
@@ -227,14 +228,18 @@ pub fn start_asr_engine(
     let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
 
     // Snapshot the bits we need from settings without holding the lock during sidecar spawn.
-    let (saved_model, hf_token) = {
+    let (saved_model, saved_postprocess_model, hf_token) = {
         let settings = state.settings.lock().map_err(|e| e.to_string())?;
         let token = if settings.gated_access.enabled {
             settings.gated_access.hf_token.clone()
         } else {
             None
         };
-        (settings.model_name.clone(), token)
+        (
+            settings.model_name.clone(),
+            settings.postprocess.model_name.clone(),
+            token,
+        )
     };
 
     asr_engine
@@ -259,6 +264,16 @@ pub fn start_asr_engine(
         }
     } else {
         log::info!("Applied model '{}' on engine start", model_name);
+    }
+
+    // Keep the post-processing model the user picked; without a saved choice
+    // the engine's default applies.
+    if let Some(name) = saved_postprocess_model {
+        if asr_engine.get_postprocess_status().map_err(|e| e.to_string())?.model_name != name {
+            if let Err(e) = asr_engine.set_postprocess_model(&name) {
+                log::warn!("Saved post-process model '{}' unavailable ({}); using default", name, e);
+            }
+        }
     }
 
     Ok(())
@@ -678,6 +693,144 @@ pub async fn summarize_recent_transcriptions(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+// ===== Voice memo commands =====
+
+/// Start recording a voice memo. Runs off the main thread: it waits for the
+/// input device to deliver its first audio.
+#[tauri::command(async)]
+pub fn start_memo_recording(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<database::Memo, String> {
+    let mut recorder = state.memo_recorder.lock().map_err(|e| e.to_string())?;
+    if recorder.is_some() {
+        return Err("Already recording a memo".to_string());
+    }
+    let device_name = state.settings.lock().map_err(|e| e.to_string())?.device_name.clone();
+    let dir = memo::recordings_dir(&app).map_err(|e| e.to_string())?;
+
+    let new_memo = {
+        let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
+        db.insert_memo(&dir).map_err(|e| e.to_string())?
+    };
+    let audio_path = std::path::Path::new(&new_memo.audio_path);
+    match memo::MemoRecorder::start(new_memo.id, device_name, audio_path) {
+        Ok(r) => {
+            *recorder = Some(r);
+            Ok(new_memo)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(audio_path);
+            let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
+            db.delete_memo(new_memo.id).map_err(|e| e.to_string())?;
+            Err(e.to_string())
+        }
+    }
+}
+
+/// Stop the memo recording and start transcribing it in the background
+/// (progress arrives as "memo-progress" events).
+#[tauri::command(async)]
+pub fn stop_memo_recording(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<database::Memo, String> {
+    let recorder = state
+        .memo_recorder
+        .lock()
+        .map_err(|e| e.to_string())?
+        .take()
+        .ok_or("Not recording a memo")?;
+    let (id, duration) = recorder.stop();
+    let started = (|| -> anyhow::Result<()> {
+        state
+            .transcription_db
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .set_memo_duration(id, duration)?;
+        memo::start_processing(&app, id, true)
+    })();
+    if let Err(e) = started {
+        // The recording is over; don't leave the row looking like it's live.
+        // The audio is on disk and the memo can be re-processed from the UI.
+        if let Ok(db) = state.transcription_db.lock() {
+            let _ = db.set_memo_status(id, database::MemoStatus::Error, Some(&format!("{e:#}")));
+        }
+        return Err(e.to_string());
+    }
+    get_memo(id, state)?.ok_or_else(|| "Memo not found".to_string())
+}
+
+/// Off the main thread: the recorder lock is held while a recording starts.
+#[tauri::command(async)]
+pub fn get_memo_recording_status(
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<memo::MemoRecordingStatus>, String> {
+    let recorder = state.memo_recorder.lock().map_err(|e| e.to_string())?;
+    Ok(recorder.as_ref().map(|r| r.status()))
+}
+
+#[tauri::command]
+pub fn list_memos(state: tauri::State<'_, AppState>) -> Result<Vec<database::MemoListItem>, String> {
+    let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
+    db.list_memos().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_memo(id: i64, state: tauri::State<'_, AppState>) -> Result<Option<database::Memo>, String> {
+    let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
+    db.get_memo(id).map_err(|e| e.to_string())
+}
+
+/// Delete a memo and its audio file. Refused while it is recording or processing.
+#[tauri::command]
+pub fn delete_memo(id: i64, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
+    let Some(existing) = db.get_memo(id).map_err(|e| e.to_string())? else {
+        return Ok(());
+    };
+    if existing.status == database::MemoStatus::Recording || existing.status.is_processing() {
+        return Err("Memo is still recording or being processed".to_string());
+    }
+    db.delete_memo(id).map_err(|e| e.to_string())?;
+    if let Err(e) = std::fs::remove_file(&existing.audio_path) {
+        log::warn!("Failed to remove memo audio {:?}: {}", existing.audio_path, e);
+    }
+    Ok(())
+}
+
+/// Re-run processing for a memo: minutes only, or (`retranscribe`) from the audio.
+#[tauri::command(async)]
+pub fn reprocess_memo(
+    id: i64,
+    retranscribe: bool,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let is_recording = state
+        .memo_recorder
+        .lock()
+        .map_err(|e| e.to_string())?
+        .as_ref()
+        .is_some_and(|r| r.status().memo_id == id);
+    if is_recording {
+        return Err("Memo is still recording".to_string());
+    }
+    memo::start_processing(&app, id, retranscribe).map_err(|e| e.to_string())
+}
+
+/// Show a memo's audio file in Finder.
+#[tauri::command]
+pub fn reveal_memo_audio(id: i64, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let audio_path = get_memo(id, state)?.ok_or("Memo not found")?.audio_path;
+    std::process::Command::new("open")
+        .arg("-R")
+        .arg(&audio_path)
+        .spawn()
+        .map_err(|e| format!("Failed to reveal {}: {}", audio_path, e))?;
+    Ok(())
 }
 
 /// Check if accessibility permissions are granted
