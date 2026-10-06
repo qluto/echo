@@ -197,7 +197,7 @@ fn run(
 
 /// Index in `[lo, hi)` (aligned to `probe`-sample steps) of the quietest
 /// `probe`-long stretch — the least likely place to be mid-word.
-fn quietest_cut(audio: &[f32], lo: usize, hi: usize, probe: usize) -> usize {
+pub(crate) fn quietest_cut(audio: &[f32], lo: usize, hi: usize, probe: usize) -> usize {
     let hi = hi.min(audio.len());
     let mut best = hi;
     let mut best_energy = f32::INFINITY;

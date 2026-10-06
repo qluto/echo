@@ -68,7 +68,7 @@ git push origin v0.x.x
 
 1. **Start** → `start_memo_recording` inserts a `memos` row and `memo.rs` (`MemoRecorder`) streams 16kHz mono audio to `<app data>/recordings/memo-<timestamp>-<id>.wav` via its own `StreamingCapture` (independent of hotkey recording; header flushed every 10s so a crash keeps the audio)
 2. **Stop** → `stop_memo_recording` finalizes the WAV and starts a background thread
-3. **Chunking** → the WAV is streamed through Silero VAD; `Chunker` cuts 15–28s chunks at pauses
+3. **Chunking** → the WAV is streamed and cut into contiguous 20–28s chunks at the quietest point (`quietest_cut`). No VAD: every sample reaches the engine, because Silero misses audible speech on some microphones and anything it drops is gone from the transcript
 4. **ASR** → each chunk goes through `ASREngine::transcribe_samples` (engine lock taken per chunk, so dictation can run between chunks; it waits during a minutes LLM call) → `[MM:SS] text` transcript
 5. **Minutes** → `generate_minutes` asks the Qwen3 post-processor for 概要 / 議題と要点 / 決定事項 / アクションアイテム; transcripts over ~3500 chars are first reduced part-by-part into notes, then merged
 6. **Frontend** → `memo-progress` events drive `useMemos.ts` / `MemoSection.tsx` / `MemoModal.tsx`
