@@ -74,6 +74,7 @@ impl VadProcessor {
     }
 
     /// Get the raw speech probability for a frame without threshold classification.
+    #[allow(dead_code)]
     pub fn predict(&mut self, audio: &[f32]) -> f32 {
         self.detector.predict(audio.iter().copied())
     }
