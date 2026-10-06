@@ -30,7 +30,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::audio_capture::StreamingCapture;
 use crate::database::{MemoStatus, TranscriptionDb};
 use crate::types::{AppState, TranscriptionSegment};
-use crate::vad::{VadEvent, VadProcessor, VAD_FRAME_SIZE, VAD_SAMPLE_RATE};
+use crate::vad::{VadProcessor, VAD_FRAME_SIZE, VAD_SAMPLE_RATE};
 
 /// How long to wait for the first audio frame before declaring the input dead.
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(3);
@@ -46,20 +46,28 @@ const fn frames(sec: f64) -> usize {
     (sec * VAD_SAMPLE_RATE as f64 / VAD_FRAME_SIZE as f64) as usize
 }
 
+/// A frame whose speech probability is above this starts a chunk.
+const SPEECH_THRESHOLD: f32 = 0.5;
+/// Only a frame below this counts as a pause. Trailing syllables, hesitations
+/// and quiet speech score well under `SPEECH_THRESHOLD`; treating them as
+/// silence would cut them out of the transcript.
+const SILENCE_THRESHOLD: f32 = 0.15;
+
 /// Audio kept from before speech onset so the first syllable isn't clipped.
-const PRE_ROLL_FRAMES: usize = frames(0.3);
-/// A pause this long always ends the chunk.
+const PRE_ROLL_FRAMES: usize = frames(0.5);
+/// A pause this long ends the chunk, and the silence after it is skipped.
 const LONG_PAUSE_FRAMES: usize = frames(2.0);
-/// Past this length, the chunk ends at the next clear pause…
+/// Past this length, the chunk is cut at the next clear pause…
 const TARGET_CHUNK_FRAMES: usize = frames(15.0);
 const TARGET_PAUSE_FRAMES: usize = frames(0.5);
 /// …past this one, at the next brief pause…
 const SOFT_MAX_CHUNK_FRAMES: usize = frames(22.0);
 const SOFT_MAX_PAUSE_FRAMES: usize = frames(0.2);
-/// …and here it is cut regardless (Whisper's window is 30 s).
+/// …and here it is cut regardless (Whisper's window is 30 s), at the quietest
+/// frame since the soft maximum.
 const HARD_MAX_CHUNK_FRAMES: usize = frames(28.0);
-/// Trailing silence kept at the end of a chunk.
-const KEEP_TAIL_FRAMES: usize = frames(0.2);
+/// Trailing silence kept at the end of a chunk that ends at a long pause.
+const KEEP_TAIL_FRAMES: usize = frames(0.5);
 /// Chunks with less speech than this are noise, not words.
 const MIN_SPEECH_FRAMES: usize = 5;
 
@@ -266,7 +274,9 @@ struct AudioChunk {
 
 /// Cuts a frame stream into ASR-sized chunks at pauses in the speech.
 ///
-/// Silence between utterances is skipped. Chunks are packed toward
+/// The VAD only decides *where* to cut, never what to keep: once speech has
+/// started, consecutive chunks are contiguous, and audio is skipped only
+/// across a pause of `LONG_PAUSE_FRAMES` or more. Chunks are packed toward
 /// `TARGET_CHUNK_FRAMES` rather than cut per utterance: Whisper pays for a
 /// full 30 s window per call regardless of chunk length, and longer chunks
 /// give every engine more context.
@@ -277,9 +287,10 @@ struct Chunker {
     active: bool,
     start_sample: usize,
     samples: Vec<f32>,
-    /// Consecutive non-speech frames at the end of the current chunk.
+    /// Speech probability of each frame in `samples`.
+    probs: Vec<f32>,
+    /// Consecutive silent frames at the end of the current chunk.
     silence_run: usize,
-    speech_frames: usize,
 }
 
 impl Chunker {
@@ -290,18 +301,19 @@ impl Chunker {
             active: false,
             start_sample: 0,
             samples: Vec::new(),
+            probs: Vec::new(),
             silence_run: 0,
-            speech_frames: 0,
         }
     }
 
-    /// Feed one VAD frame. Returns a chunk when one completes.
-    fn push(&mut self, frame: &[f32], is_speech: bool) -> Option<AudioChunk> {
+    /// Feed one VAD frame and its speech probability. Returns a chunk when
+    /// one completes.
+    fn push(&mut self, frame: &[f32], prob: f32) -> Option<AudioChunk> {
         let frame_start = self.pos;
         self.pos += frame.len();
 
         if !self.active {
-            if !is_speech {
+            if prob <= SPEECH_THRESHOLD {
                 self.pre_roll.push_back(frame.to_vec());
                 if self.pre_roll.len() > PRE_ROLL_FRAMES {
                     self.pre_roll.pop_front();
@@ -309,47 +321,70 @@ impl Chunker {
                 return None;
             }
             self.active = true;
+            self.probs = vec![0.0; self.pre_roll.len()];
             self.samples = self.pre_roll.drain(..).flatten().collect();
             self.start_sample = frame_start - self.samples.len();
-            self.samples.extend_from_slice(frame);
             self.silence_run = 0;
-            self.speech_frames = 1;
-            return None;
         }
 
         self.samples.extend_from_slice(frame);
-        if is_speech {
-            self.silence_run = 0;
-            self.speech_frames += 1;
-        } else {
+        self.probs.push(prob);
+        if prob < SILENCE_THRESHOLD {
             self.silence_run += 1;
+        } else {
+            self.silence_run = 0;
         }
 
-        let len = self.samples.len() / VAD_FRAME_SIZE;
-        let done = self.silence_run >= LONG_PAUSE_FRAMES
-            || (len >= TARGET_CHUNK_FRAMES && self.silence_run >= TARGET_PAUSE_FRAMES)
-            || (len >= SOFT_MAX_CHUNK_FRAMES && self.silence_run >= SOFT_MAX_PAUSE_FRAMES)
-            || len >= HARD_MAX_CHUNK_FRAMES;
-        if done {
-            self.finish()
+        let len = self.probs.len();
+        if self.silence_run >= LONG_PAUSE_FRAMES {
+            return self.finish();
+        }
+        let at_pause = (len >= TARGET_CHUNK_FRAMES && self.silence_run >= TARGET_PAUSE_FRAMES)
+            || (len >= SOFT_MAX_CHUNK_FRAMES && self.silence_run >= SOFT_MAX_PAUSE_FRAMES);
+        if at_pause {
+            // Mid-pause, so both sides keep some silence around the speech.
+            self.split(len - self.silence_run / 2)
+        } else if len >= HARD_MAX_CHUNK_FRAMES {
+            let tail = &self.probs[SOFT_MAX_CHUNK_FRAMES..];
+            let quietest = (0..tail.len()).rev().min_by(|&a, &b| tail[a].total_cmp(&tail[b]));
+            self.split(SOFT_MAX_CHUNK_FRAMES + quietest.unwrap_or(0))
         } else {
             None
         }
     }
 
-    /// Close the current chunk (also call at end of stream).
+    /// Emit the first `at` frames; the rest carries over as the next chunk,
+    /// so nothing is lost at the cut.
+    fn split(&mut self, at: usize) -> Option<AudioChunk> {
+        let rest_samples = self.samples.split_off(at * VAD_FRAME_SIZE);
+        let rest_probs = self.probs.split_off(at);
+        let head = self.take_chunk();
+        self.start_sample += at * VAD_FRAME_SIZE;
+        self.samples = rest_samples;
+        self.probs = rest_probs;
+        self.silence_run = self.silence_run.min(self.probs.len());
+        head
+    }
+
+    /// Close the current chunk at a long pause or the end of the stream,
+    /// dropping trailing silence beyond `KEEP_TAIL_FRAMES`.
     fn finish(&mut self) -> Option<AudioChunk> {
         if !self.active {
             return None;
         }
         self.active = false;
-        let mut samples = std::mem::take(&mut self.samples);
-        if self.speech_frames < MIN_SPEECH_FRAMES {
-            return None;
-        }
-        let trim = self.silence_run.saturating_sub(KEEP_TAIL_FRAMES) * VAD_FRAME_SIZE;
-        samples.truncate(samples.len() - trim);
-        Some(AudioChunk {
+        let keep = self.probs.len() - self.silence_run.saturating_sub(KEEP_TAIL_FRAMES);
+        self.samples.truncate(keep * VAD_FRAME_SIZE);
+        self.silence_run = 0;
+        self.take_chunk()
+    }
+
+    /// Take the buffered audio as a chunk, unless it holds too little speech.
+    fn take_chunk(&mut self) -> Option<AudioChunk> {
+        let samples = std::mem::take(&mut self.samples);
+        let probs = std::mem::take(&mut self.probs);
+        let speech_frames = probs.iter().filter(|&&p| p > SPEECH_THRESHOLD).count();
+        (speech_frames >= MIN_SPEECH_FRAMES).then_some(AudioChunk {
             start_sample: self.start_sample,
             samples,
         })
@@ -375,7 +410,7 @@ pub fn transcribe_wav_chunked(
     }
     let total_samples = (reader.duration() as usize).max(1);
 
-    let mut vad = VadProcessor::new(0.5)?;
+    let mut vad = VadProcessor::new(SPEECH_THRESHOLD)?;
     let mut chunker = Chunker::new();
     let mut segments = Vec::new();
     let mut run = |chunk: AudioChunk, segments: &mut Vec<TranscriptionSegment>| -> Result<()> {
@@ -406,8 +441,7 @@ pub fn transcribe_wav_chunked(
         if frame.len() < VAD_FRAME_SIZE {
             continue;
         }
-        let is_speech = matches!(vad.process_frame(&frame), VadEvent::Speech { .. });
-        if let Some(chunk) = chunker.push(&frame, is_speech) {
+        if let Some(chunk) = chunker.push(&frame, vad.predict(&frame)) {
             run(chunk, &mut segments)?;
             on_progress((chunker.pos as f64 / total_samples as f64).min(1.0));
         }
@@ -657,7 +691,7 @@ mod tests {
     /// Feed `n` frames of speech/silence, collecting completed chunks.
     fn feed(chunker: &mut Chunker, n: usize, is_speech: bool, out: &mut Vec<AudioChunk>) {
         for _ in 0..n {
-            out.extend(chunker.push(&FRAME, is_speech));
+            out.extend(chunker.push(&FRAME, if is_speech { 1.0 } else { 0.0 }));
         }
     }
 
@@ -698,6 +732,31 @@ mod tests {
         feed(&mut c, frames(1.0), false, &mut out);
         assert_eq!(out.len(), 1);
         assert!((16.0..17.0).contains(&secs(&out[0])), "{}", secs(&out[0]));
+    }
+
+    #[test]
+    fn chunker_keeps_weak_speech_and_cuts_without_gaps() {
+        let mut c = Chunker::new();
+        let mut out = Vec::new();
+        let mut total = 0;
+        // 40 s of speech whose phrase endings score between the two
+        // thresholds, as trailing syllables and hesitations do.
+        for _ in 0..10 {
+            feed(&mut c, frames(2.0), true, &mut out);
+            for _ in 0..frames(1.5) {
+                out.extend(c.push(&FRAME, 0.3));
+            }
+            feed(&mut c, frames(0.5), false, &mut out);
+            total += frames(2.0) + frames(1.5) + frames(0.5);
+        }
+        out.extend(c.finish());
+        assert!(out.len() >= 2);
+        assert_eq!(out[0].start_sample, 0);
+        for pair in out.windows(2) {
+            assert_eq!(pair[1].start_sample, pair[0].start_sample + pair[0].samples.len());
+        }
+        let kept: usize = out.iter().map(|ch| ch.samples.len()).sum();
+        assert_eq!(kept, total * VAD_FRAME_SIZE);
     }
 
     #[test]
