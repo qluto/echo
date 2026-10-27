@@ -29,17 +29,19 @@ const AVAILABLE_MODELS: [&str; 8] = [
     "CohereLabs/cohere-transcribe-03-2026",
 ];
 
-/// Post-processing LLMs (Qwen3) served by the in-process engine.
-/// Qwen3.5 is the current generation; the Qwen3 models stay selectable for
-/// installs that already have them downloaded.
-const POSTPROCESS_MODELS: [&str; 5] = [
+/// Post-processing LLMs served by the in-process engine. Gemma 4 E4B is the
+/// default: on Japanese cleanup it applies self-corrections that Qwen3.5-4B
+/// misses, and it is faster. The Qwen models stay selectable for installs
+/// that already have them downloaded.
+const POSTPROCESS_MODELS: [&str; 6] = [
+    "mlx-community/gemma-4-e4b-it-4bit",
     "mlx-community/Qwen3.5-4B-4bit",
     "mlx-community/Qwen3.5-2B-4bit",
     "mlx-community/Qwen3-8B-4bit",
     "mlx-community/Qwen3-4B-4bit",
     "mlx-community/Qwen3-1.7B-4bit",
 ];
-const DEFAULT_POSTPROCESS_MODEL: &str = "mlx-community/Qwen3.5-4B-4bit";
+const DEFAULT_POSTPROCESS_MODEL: &str = "mlx-community/gemma-4-e4b-it-4bit";
 
 /// Cap for MLX's freed-buffer cache (see `ASREngine::start`).
 const MLX_CACHE_LIMIT_BYTES: usize = 512 * 1024 * 1024;
@@ -740,13 +742,13 @@ mod in_process_tests {
         assert!(r.success && !r.processed_text.trim().is_empty());
     }
 
-    /// Downloads Qwen3.5-4B-4bit (~3 GB) on first run:
-    /// `cargo test qwen3_5_postprocess -- --ignored --nocapture --test-threads=1`
+    /// Downloads the default post-processor (Gemma 4 E4B, ~5 GB) on first run:
+    /// `cargo test default_postprocess -- --ignored --nocapture --test-threads=1`
     #[test]
     #[ignore]
-    fn qwen3_5_postprocess() {
+    fn default_postprocess() {
         let Some(mut engine) = engine_with_hub() else { return };
-        assert_eq!(engine.postproc_model, "mlx-community/Qwen3.5-4B-4bit");
+        assert_eq!(engine.postproc_model, DEFAULT_POSTPROCESS_MODEL);
         let t = std::time::Instant::now();
         assert!(engine.load_postprocess_model().expect("load").loaded);
         println!("loaded in {:?}", t.elapsed());

@@ -13,15 +13,16 @@
 use anyhow::{anyhow, Result};
 use mlx_rs::fast::{rms_norm, rope, scaled_dot_product_attention, ScaledDotProductAttentionMask};
 use mlx_rs::nn::{sigmoid, silu, softplus};
-use mlx_rs::ops::indexing::{argmax_axis, take_axis, IndexOp};
+use mlx_rs::ops::indexing::{take_axis, IndexOp};
 use mlx_rs::ops::{
-    concatenate_axis, conv1d, dequantize, exp, expand_dims, multiply, ones, quantized_matmul,
+    concatenate, conv1d, dequantize, exp, expand_dims, multiply, ones, quantized_matmul,
     reshape, zeros_dtype,
 };
 use mlx_rs::{Array, Dtype};
 
-use super::gated_delta::{step_ops, GatedDeltaKernel};
-use super::qwen3::{causal_mask, repeat_kv, Kv, QLinear, BITS, GROUP_SIZE};
+use super::decode;
+use super::gated_delta::GatedDeltaKernel;
+use super::qwen3::{Kv, QLinear, BITS, GROUP_SIZE};
 use crate::weights::Weights;
 
 const PREFIX: &str = "language_model.model";
@@ -194,13 +195,11 @@ impl Qwen3_5 {
 
     fn forward(&self, ids: &Array, caches: &mut [Cache], offset: i32) -> Result<Array> {
         let mut h = self.embed(ids)?;
-        let t = h.shape()[1];
-        let mask = if t > 1 { Some(causal_mask(t)?) } else { None };
         for (layer, cache) in self.layers.iter().zip(caches.iter_mut()) {
-            let hn = rms_norm(&h, &layer.input_ln, self.cfg.rms_eps)?;
+            let hn = rms_norm(&h, Some(&layer.input_ln), self.cfg.rms_eps)?;
             let r = match (&layer.mixer, cache) {
                 (Mixer::Attention(a), Cache::Attention(kv)) => {
-                    self.attention(a, &hn, kv, offset, mask.as_ref())?
+                    self.attention(a, &hn, kv, offset)?
                 }
                 (Mixer::Linear(g), Cache::Linear { conv, state }) => {
                     self.gated_delta_net(g, &hn, conv, state)?
@@ -208,13 +207,13 @@ impl Qwen3_5 {
                 _ => return Err(anyhow!("cache does not match layer type")),
             };
             h = &h + &r;
-            let hn = rms_norm(&h, &layer.post_ln, self.cfg.rms_eps)?;
+            let hn = rms_norm(&h, Some(&layer.post_ln), self.cfg.rms_eps)?;
             let mlp = layer
                 .down
                 .forward(&(&silu(&layer.gate.forward(&hn)?)? * &layer.up.forward(&hn)?))?;
             h = &h + &mlp;
         }
-        Ok(rms_norm(&h, &self.norm, self.cfg.rms_eps)?)
+        Ok(rms_norm(&h, Some(&self.norm), self.cfg.rms_eps)?)
     }
 
     fn attention(
@@ -223,7 +222,6 @@ impl Qwen3_5 {
         x: &Array,
         cache: &mut Option<Kv>,
         offset: i32,
-        mask: Option<&Array>,
     ) -> Result<Array> {
         let cfg = &self.cfg;
         let (b, t) = (x.shape()[0], x.shape()[1]);
@@ -238,8 +236,8 @@ impl Qwen3_5 {
         let k = reshape(&a.k_proj.forward(x)?, &[b, t, cfg.n_kv_heads, cfg.head_dim])?;
         let v = reshape(&a.v_proj.forward(x)?, &[b, t, cfg.n_kv_heads, cfg.head_dim])?;
 
-        let q = rms_norm(&q, &a.q_norm, cfg.rms_eps)?.transpose_axes(&[0, 2, 1, 3])?;
-        let k = rms_norm(&k, &a.k_norm, cfg.rms_eps)?.transpose_axes(&[0, 2, 1, 3])?;
+        let q = rms_norm(&q, Some(&a.q_norm), cfg.rms_eps)?.transpose_axes(&[0, 2, 1, 3])?;
+        let k = rms_norm(&k, Some(&a.k_norm), cfg.rms_eps)?.transpose_axes(&[0, 2, 1, 3])?;
         let mut v = v.transpose_axes(&[0, 2, 1, 3])?;
 
         // Partial RoPE: only the first `rope_dims` features rotate.
@@ -247,21 +245,18 @@ impl Qwen3_5 {
         let mut k = rope(&k, cfg.rope_dims, false, Some(cfg.rope_theta), 1.0, offset, None)?;
 
         if let Some(prev) = cache.as_ref() {
-            k = concatenate_axis(&[prev.k.clone(), k], 2)?;
-            v = concatenate_axis(&[prev.v.clone(), v], 2)?;
+            k = concatenate(&[prev.k.clone(), k], 2)?;
+            v = concatenate(&[prev.v.clone(), v], 2)?;
         }
         *cache = Some(Kv {
             k: k.clone(),
             v: v.clone(),
         });
 
-        let rep = cfg.n_heads / cfg.n_kv_heads;
-        let k = repeat_kv(&k, rep)?;
-        let v = repeat_kv(&v, rep)?;
-
+        // SDPA handles GQA (fewer kv heads) natively.
         let scale = (cfg.head_dim as f32).powf(-0.5);
-        let mask = mask.map(ScaledDotProductAttentionMask::Array);
-        let out = scaled_dot_product_attention(&q, &k, &v, scale, mask)?;
+        let mask = (t > 1).then_some(ScaledDotProductAttentionMask::Causal);
+        let out = scaled_dot_product_attention(&q, &k, &v, scale, mask, None)?;
         let out = reshape(
             &out.transpose_axes(&[0, 2, 1, 3])?,
             &[b, t, cfg.n_heads * cfg.head_dim],
@@ -298,7 +293,7 @@ impl Qwen3_5 {
             Some(s) => s,
             None => zeros_dtype(&[b, keep, conv_dim], qkv.dtype())?,
         };
-        let conv_input = concatenate_axis(&[conv_state, qkv], 1)?;
+        let conv_input = concatenate(&[conv_state, qkv], 1)?;
         *conv_cache = Some(conv_input.index((.., t.., ..)));
         let conv_out = silu(&conv1d(&conv_input, &g.conv_w, 1, 0, 1, conv_dim)?)?;
 
@@ -313,11 +308,11 @@ impl Qwen3_5 {
         let unit = ones::<f32>(&[dk])?.as_dtype(q.dtype())?;
         let l2_eps = 1e-6 * inv_scale * inv_scale;
         let q = multiply(
-            &rms_norm(&q, &unit, l2_eps)?,
+            &rms_norm(&q, Some(&unit), l2_eps)?,
             &Array::from_f32(inv_scale * inv_scale).as_dtype(q.dtype())?,
         )?;
         let k = multiply(
-            &rms_norm(&k, &unit, l2_eps)?,
+            &rms_norm(&k, Some(&unit), l2_eps)?,
             &Array::from_f32(inv_scale).as_dtype(k.dtype())?,
         )?;
 
@@ -328,27 +323,11 @@ impl Qwen3_5 {
             Some(s) => s,
             None => zeros_dtype(&[b, hv, dv, dk], Dtype::Float32)?,
         };
-        let (out, state) = if t == 1 {
-            let rep = hv / hk;
-            let step = |x: &Array| x.index((.., 0, ..));
-            let q1 = repeat_heads(&q.index((.., 0, .., ..)), rep)?;
-            let k1 = repeat_heads(&k.index((.., 0, .., ..)), rep)?;
-            let (y, state) = step_ops(
-                &q1,
-                &k1,
-                &v.index((.., 0, .., ..)),
-                &step(&decay),
-                &step(&beta),
-                &state,
-            )?;
-            (expand_dims(&y, 1)?, state)
-        } else {
-            self.kernel.apply(&q, &k, &v, &decay, &beta, &state)?
-        };
+        let (out, state) = self.kernel.apply(&q, &k, &v, &decay, &beta, &state)?;
         *state_cache = Some(state);
 
         // Gated RMSNorm: norm(out) * silu(z), in f32.
-        let normed = rms_norm(&out, &g.norm, cfg.rms_eps)?.as_dtype(Dtype::Float32)?;
+        let normed = rms_norm(&out, Some(&g.norm), cfg.rms_eps)?.as_dtype(Dtype::Float32)?;
         let gated = multiply(&silu(&z.as_dtype(Dtype::Float32)?)?, &normed)?.as_dtype(out.dtype())?;
         g.out_proj.forward(&reshape(&gated, &[b, t, hv * dv])?)
     }
@@ -357,32 +336,9 @@ impl Qwen3_5 {
     /// stopping at a stop token or max_tokens.
     pub fn generate(&self, prompt_ids: &[i32], max_tokens: usize) -> Result<Vec<i32>> {
         let mut caches = self.new_caches();
-        let prompt = Array::from_slice(prompt_ids, &[prompt_ids.len() as i32]);
-        let h = self.forward(&prompt, &mut caches, 0)?;
-        let mut next = argmax_axis(&self.lm_head_last(&h)?, 1, false)?.item::<u32>() as i32;
-
-        let mut out = Vec::new();
-        let mut pos = prompt_ids.len() as i32;
-        for _ in 0..max_tokens {
-            if self.cfg.stop_token_ids.contains(&next) {
-                break;
-            }
-            out.push(next);
-            let tok = Array::from_slice(&[next], &[1]);
-            let h = self.forward(&tok, &mut caches, pos)?;
-            next = argmax_axis(&self.lm_head_last(&h)?, 1, false)?.item::<u32>() as i32;
-            pos += 1;
-        }
-        Ok(out)
+        decode::greedy(prompt_ids, max_tokens, &self.cfg.stop_token_ids, |ids, offset| {
+            self.lm_head_last(&self.forward(ids, &mut caches, offset)?)
+        })
     }
 }
 
-/// [B, Hk, D] -> [B, Hk * rep, D], each key head repeated for its value heads.
-fn repeat_heads(x: &Array, rep: i32) -> Result<Array> {
-    if rep == 1 {
-        return Ok(x.clone());
-    }
-    let (b, h, d) = (x.shape()[0], x.shape()[1], x.shape()[2]);
-    let x = mlx_rs::ops::broadcast_to(&reshape(x, &[b, h, 1, d])?, &[b, h, rep, d])?;
-    Ok(reshape(&x, &[b, h * rep, d])?)
-}

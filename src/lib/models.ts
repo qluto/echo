@@ -98,9 +98,10 @@ export const getModelShortName = (name: string): string => {
   return `${family} · ${size}`;
 };
 
-// Post-processing LLMs (download size), in picker order. Qwen3.5 is the
-// current generation; Qwen3 stays for installs that already downloaded it.
+// Post-processing LLMs (download size), in picker order. Gemma 4 E4B is the
+// default; the Qwen models stay for installs that already downloaded them.
 export const POSTPROCESS_MODEL_SIZES: Record<string, string> = {
+  "mlx-community/gemma-4-e4b-it-4bit": "~5GB",
   "mlx-community/Qwen3.5-4B-4bit": "~3GB",
   "mlx-community/Qwen3.5-2B-4bit": "~1.7GB",
   "mlx-community/Qwen3-8B-4bit": "~5GB",
@@ -108,8 +109,13 @@ export const POSTPROCESS_MODEL_SIZES: Record<string, string> = {
   "mlx-community/Qwen3-1.7B-4bit": "~1.3GB",
 };
 
-/** "mlx-community/Qwen3.5-4B-4bit" → "Qwen3.5 4B" */
+/**
+ * "mlx-community/Qwen3.5-4B-4bit" → "Qwen3.5 4B",
+ * "mlx-community/gemma-4-e4b-it-4bit" → "Gemma 4 E4B"
+ */
 export function getPostprocessModelName(modelId: string): string {
-  const name = modelId.split("/").pop() ?? modelId;
-  return name.replace(/-4bit$/, "").replace("-", " ");
+  const name = (modelId.split("/").pop() ?? modelId).replace(/-4bit$/, "");
+  const gemma = name.match(/^gemma-(\d+)-(\w+?)-it$/);
+  if (gemma) return `Gemma ${gemma[1]} ${gemma[2].toUpperCase()}`;
+  return name.replace("-", " ");
 }

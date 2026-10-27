@@ -10,8 +10,9 @@ jobs:
   release:
     permissions:
       contents: write
-    # Use macos-14 for Apple Silicon (required for MLX)
-    runs-on: macos-14
+    # Apple Silicon (required for MLX) with the macOS 26 SDK: the app targets
+    # macOS 26.2 so that MLX compiles its M5 "NAX" kernels.
+    runs-on: macos-26
 
     steps:
       - name: Checkout repository
@@ -70,6 +71,19 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN_PATH"
 
           rm $RUNNER_TEMP/certificate.p12
+
+      # With an SDK older than 26.2, MLX only warns and silently builds
+      # without its NAX kernels, so fail instead.
+      - name: Select Xcode with the macOS 26.2+ SDK
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE"
+          SDK=$(xcrun --sdk macosx --show-sdk-version)
+          echo "Using $XCODE (macOS SDK $SDK)"
+          if [ "$(printf '%s\n' 26.2 "$SDK" | sort -V | head -1)" != "26.2" ]; then
+            echo "::error::macOS SDK $SDK is older than 26.2"
+            exit 1
+          fi
 
       # mlx-rs (the in-process Cohere ASR engine) compiles MLX C++ + Metal
       # kernels from source. On Xcode 16+ the Metal compiler is a separately

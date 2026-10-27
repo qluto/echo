@@ -43,12 +43,28 @@ fn parakeet_snapshot(hub: &str) -> Result<String> {
 /// max |a-b| and mean |a-b| between two f32 arrays.
 fn diff(a: &Array, b: &Array) -> Result<(f32, f32)> {
     let d = abs(&(a - b))?;
-    let mx = max(&d, None)?.item::<f32>();
-    let mn = mean(&d, None)?.item::<f32>();
+    let mx = max(&d, None)?.item_cast::<f32>();
+    let mn = mean(&d, None)?.item_cast::<f32>();
     Ok((mx, mn))
 }
 
+/// Prints `log` records at info level and above to stderr.
+struct StderrLogger;
+
+impl log::Log for StderrLogger {
+    fn enabled(&self, m: &log::Metadata) -> bool {
+        m.level() <= log::Level::Info
+    }
+    fn log(&self, r: &log::Record) {
+        if self.enabled(r.metadata()) {
+            eprintln!("[{}] {}", r.target(), r.args());
+        }
+    }
+    fn flush(&self) {}
+}
+
 fn main() -> Result<()> {
+    let _ = log::set_logger(&StderrLogger).map(|()| log::set_max_level(log::LevelFilter::Info));
     let args: Vec<String> = std::env::args().collect();
     let cmd = args.get(1).map(String::as_str).unwrap_or("smoke");
 
@@ -268,6 +284,49 @@ fn main() -> Result<()> {
             let out = pp.process(text, None, None, None, custom_prompt.as_deref())?;
             println!("in:  {text:?}");
             println!("out: {out:?} ({:?})", t.elapsed());
+            Ok(())
+        }
+        "ppbatch" => {
+            // Clean up each string of a JSON array: ppbatch <cases.json> [model_id]
+            // Prints {"in", "out", "sec"} per case as JSON lines.
+            let path = args.get(2).ok_or_else(|| anyhow!("usage: ppbatch <cases.json> [model]"))?;
+            let cases: Vec<String> = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+            let model = args
+                .get(3)
+                .map(String::as_str)
+                .unwrap_or("mlx-community/gemma-4-e4b-it-4bit");
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let pp = rust_asr::PostProcessor::load(std::path::Path::new(&hub), model)?;
+            pp.warmup()?;
+            for text in &cases {
+                let t = std::time::Instant::now();
+                let out = pp.process(text, None, None, None, None)?;
+                let sec = t.elapsed().as_secs_f64();
+                println!("{}", serde_json::json!({"in": text, "out": out, "sec": sec}));
+            }
+            Ok(())
+        }
+        "chat" => {
+            // Free-form completion: chat <system_file> <user_file> [model_id] [max_tokens]
+            let (sys, user) = match (args.get(2), args.get(3)) {
+                (Some(s), Some(u)) => (std::fs::read_to_string(s)?, std::fs::read_to_string(u)?),
+                _ => return Err(anyhow!("usage: chat <system_file> <user_file> [model] [max_tokens]")),
+            };
+            let model = args
+                .get(4)
+                .map(String::as_str)
+                .unwrap_or("mlx-community/Qwen3.5-4B-4bit");
+            let max_tokens = args.get(5).map(|s| s.parse()).transpose()?.unwrap_or(2048);
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let pp = rust_asr::PostProcessor::load(std::path::Path::new(&hub), model)?;
+            // Load the weights onto the GPU first, as the app does at startup.
+            pp.warmup()?;
+            let t = std::time::Instant::now();
+            let out = pp.chat(&sys, &user, max_tokens)?;
+            println!("{out}");
+            println!("--- {} chars in {:?}", out.chars().count(), t.elapsed());
             Ok(())
         }
         "whisper" => {

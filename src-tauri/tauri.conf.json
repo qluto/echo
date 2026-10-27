@@ -64,7 +64,7 @@
     ],
     "targets": "all",
     "macOS": {
-      "minimumSystemVersion": "14.0",
+      "minimumSystemVersion": "26.2",
       "entitlements": "entitlements.plist",
       "exceptionDomain": null,
       "frameworks": [],

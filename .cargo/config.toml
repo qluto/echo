@@ -1,0 +1,6 @@
+[env]
+# MLX builds its M5 "NAX" kernels (~3x faster prefill) only when the deployment
+# target is >= macOS 26.2; without this, plain `cargo build` targets the host OS
+# and the app ships whatever the build machine happened to run. `tauri build`
+# sets the same value from bundle.macOS.minimumSystemVersion.
+MACOSX_DEPLOYMENT_TARGET = "26.2"

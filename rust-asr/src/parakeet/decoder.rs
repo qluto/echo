@@ -10,7 +10,7 @@
 use anyhow::Result;
 use mlx_rs::nn::sigmoid;
 use mlx_rs::ops::indexing::{argmax, IndexOp};
-use mlx_rs::ops::{split, tanh};
+use mlx_rs::ops::{split_equal, tanh};
 use mlx_rs::Array;
 
 use crate::nn::linear;
@@ -107,8 +107,8 @@ impl Decoder {
             let logits = self.joint(&feature, &dec_out)?;
             let token_logits = logits.index(0..(BLANK_ID + 1)); // [3073]
             let dur_logits = logits.index((BLANK_ID + 1)..); // [5]
-            let pred_token = argmax(&token_logits, false)?.item::<u32>() as i32;
-            let decision = argmax(&dur_logits, false)?.item::<u32>() as usize;
+            let pred_token = argmax(&token_logits, false)?.item_cast::<u32>() as i32;
+            let decision = argmax(&dur_logits, false)?.item_cast::<u32>() as usize;
             let duration = DURATIONS[decision];
 
             if pred_token != BLANK_ID {
@@ -170,7 +170,7 @@ impl Decoder {
 /// One LSTM step. gates = x @ Wx^T + bias + h @ Wh^T; split i,f,g,o.
 fn lstm_step(layer: &LstmLayer, x: &Array, h: &Array, c: &Array) -> Result<(Array, Array)> {
     let gates = &(&(&x.matmul(&layer.wx.t())? + &layer.bias) + &h.matmul(&layer.wh.t())?);
-    let parts = split(gates, 4, -1)?; // [i, f, g, o] each [1, H]
+    let parts = split_equal(gates, 4, -1)?; // [i, f, g, o] each [1, H]
     let i = sigmoid(&parts[0])?;
     let f = sigmoid(&parts[1])?;
     let g = tanh(&parts[2])?;
