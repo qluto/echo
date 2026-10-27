@@ -7,7 +7,7 @@
 
 use anyhow::Result;
 use mlx_rs::ops::{
-    concatenate_axis, expand_dims, log as mlx_log, mean_axis, pad, sqrt, square, sum_axis,
+    concatenate, expand_dims, log as mlx_log, mean_axis, pad, sqrt, square, sum_axis,
 };
 use mlx_rs::ops::indexing::IndexOp;
 use mlx_rs::{Array, Dtype};
@@ -99,7 +99,7 @@ pub fn extract_features(waveform: &Array, fb: &Array) -> Result<Array> {
         let cur = waveform.index(1..l);
         let prev = waveform.index(0..(l - 1));
         let body = &cur - &(&prev * Array::from_f32(PREEMPH));
-        concatenate_axis(&[x0, body], 0)?
+        concatenate(&[x0, body], 0)?
     } else {
         waveform.clone()
     };

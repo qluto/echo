@@ -12,9 +12,9 @@ Echo is an offline voice input desktop application optimized for Apple Silicon. 
 - **Backend**: Tauri 2.x, Rust
 - **ASR Engine**: fully in-process Rust — Whisper (whisper.cpp via `whisper-rs`), Parakeet-JA + Cohere (Apple MLX via `mlx-rs`). No Python sidecar.
 - **VAD**: Silero VAD v5 via ONNX Runtime (`voice_activity_detector` crate), rubato for audio resampling
-- **Post-Processing**: MLX LLM (Qwen3.5-4B-4bit by default) for cleaning up transcription results and writing memo minutes
+- **Post-Processing**: MLX LLM (Gemma 4 E4B 4-bit by default) for cleaning up transcription results and writing memo minutes
 - **Database**: SQLite with FTS5 full-text search (`rusqlite` crate) for transcription history
-- **Target Platform**: macOS 14.0+ on Apple Silicon (M1/M2/M3/M4)
+- **Target Platform**: macOS 26.2+ on Apple Silicon (M1 or later; M5 gets MLX's NAX kernels)
 
 ## Common Commands
 
@@ -110,9 +110,9 @@ Three model families are supported with different MLX-Audio APIs:
 
 ### Post-Processing Pipeline
 
-Optional LLM-based cleanup using Qwen3.5-4B-4bit (default; Qwen3.5-2B and the older Qwen3 models are selectable):
+Optional LLM-based cleanup using Gemma 4 E4B (`mlx-community/gemma-4-e4b-it-4bit`, default; Qwen3.5-4B/2B and the older Qwen3 models are selectable):
 
-**Default behavior** (SYSTEM_PROMPT in `engine.py`):
+**Default behavior** (SYSTEM_PROMPT in `rust-asr/src/llm/mod.rs`):
 - Removes filler words (um, uh, like, あの, えーと, etc.)
 - Handles self-corrections ("3時に、いや4時に" → "4時に")
 - Applies user dictionary replacements
@@ -125,8 +125,10 @@ Optional LLM-based cleanup using Qwen3.5-4B-4bit (default; Qwen3.5-2B and the ol
 
 **Performance**:
 - Model auto-loads on app startup if post-processing enabled
-- Processing time: ~100-300ms on Apple Silicon
-- Uses `/no_think` mode for faster generation
+- Gemma 4 E4B (release build, M5): a one-sentence cleanup ~0.5–1 s, a 500-char dictation ~5 s;
+  decode ~42 tok/s, on par with mlx-lm
+- Always no-think. SYSTEM_PROMPT's leading `/no_think` is a Qwen directive; the Gemma
+  template drops it
 
 ### Important Files
 
@@ -223,14 +225,35 @@ Three ASR models run **fully in Rust in-process** (no Python sidecar) via the
 - **Cohere Transcribe** (gated, opt-in) → `CohereEngine`, a full-Rust MLX port
   (`mlx-rs` / Apple MLX). Gated checkpoint fetched via `hf-hub` with the HF token.
 
-**Post-processing** also runs in-process: `rust_asr::PostProcessor` is a full-Rust
-mlx-rs port of Qwen3 (4-bit quantized: quantized_matmul + dequantize, GQA, RoPE,
-per-head q/k RMSNorm, SwiGLU, tied lm_head). It runs in **BF16** to match mlx-lm
-bit-for-bit (validated: identical cleaned output vs the Python postprocessor on
-the same model). `ASREngine.postprocess_text` / `summarize_transcriptions` /
-`*_postprocess_model` route to it; the Qwen chat template is applied manually
-with the `enable_thinking=False` empty-`<think>` priming. Models: Qwen3.5-4B/2B-4bit
-(default 4B) and the older Qwen3-8B/4B/1.7B-4bit.
+**Post-processing** also runs in-process: `rust_asr::PostProcessor` holds one of
+three full-Rust mlx-rs LLM ports, picked from config.json's `model_type`:
+Gemma 4 (`llm/gemma4.rs`, the default E4B), Qwen3.5 (`llm/qwen3_5.rs`) and Qwen3
+(`llm/qwen3.rs`) — all 4-bit (quantized_matmul + dequantize, tied lm_head) and run
+in **BF16** to match mlx-lm. `ASREngine.postprocess_text` /
+`summarize_transcriptions` / `*_postprocess_model` route to it; each model's chat
+template is applied manually with thinking off. Models: Gemma 4 E4B (default),
+Qwen3.5-4B/2B-4bit and the older Qwen3-8B/4B/1.7B-4bit.
+
+All ports decode through `llm/decode.rs`, which mirrors mlx-lm's `generate_step`
+(chunked prefill of all but the last prompt token, argmax over log-probs,
+`async_eval`-pipelined decoding), so greedy output matches mlx-lm token for token
+— check new ports against `mlx_lm.generate` with `rust-asr ppbatch <cases.json>`.
+It also stops a generation that falls into a repetition loop (3 back-to-back
+copies of a ≥16-token block) instead of running to `max_tokens`. Attention layers
+use `llm/kv_cache.rs` (preallocated, written in place; sliding-window aware).
+Watch dtypes: mlx-rs's `gelu_approximate` uses f32 constants and silently
+promotes bf16 to f32 (which cost Gemma ~20% decode speed) — Gemma has its own
+bf16 GELU.
+
+**Gemma 4** (E2B/E4B "E" variants only — no MoE / k=v / double-wide MLP):
+sliding-window (512) layers alternate with full-attention layers (head_dim 512,
+proportional partial RoPE); the last `num_kv_shared_layers` layers reuse the K/V
+of the last earlier layer of the same type; per-layer embeddings (PLE) are gated
+into every layer; logits are soft-capped. The checkpoint's vision/audio towers
+are never loaded (the download is ~5 GB, of which the text model is used).
+Chosen over Qwen3.5-4B on Japanese dictation: Qwen3.5-4B left 3 of 7
+self-corrections in ("2件、3件", "500いや600ミリ秒"), Gemma 4 E4B fixed all and
+was faster (its 262k vocab needs fewer tokens for Japanese).
 
 **Qwen3.5** (`llm/qwen3_5.rs`) is a different architecture from Qwen3
 (`llm/qwen3.rs`); `PostProcessor` picks the port from config.json's `model_type`.
@@ -240,8 +263,9 @@ conv + gated delta-rule state, run as a custom Metal kernel in
 partial RoPE. The checkpoint's vision tower is not loaded. Qwen3.5 must not be
 run in thinking mode: under our greedy decoding its reasoning trace loops and
 never reaches the answer, so summaries and minutes use no-think (Qwen3 still
-summarizes in thinking mode). Qwen3.5-9B is not offered: its weights are split
-across two safetensors files, which the loader doesn't handle yet.
+summarizes in thinking mode). Qwen3.5-9B and Gemma 4 12B are not offered: their
+weights are split across two safetensors files, which the loader doesn't handle
+yet. (Both fixed every self-correction in testing but decode 2–3× slower than E4B.)
 
 With ASR (Whisper/Parakeet/Cohere) and post-processing (Qwen3) all in-process,
 the **Python sidecar is no longer needed** for the default experience — it stays
@@ -272,10 +296,21 @@ MetalToolchain` (~700 MB, one-time; CI does this in
 `.github/workflows/release.yml` before the Tauri build). `mlx-rs` uses
 `features = ["metal", "accelerate"]`, `whisper-rs` uses `features = ["metal"]`.
 
+**MLX version:** `mlx-rs` 0.32 / `mlx-sys` 0.6 (MLX 0.32). MLX 0.25 (mlx-rs 0.25)
+no longer builds on the Xcode 27 Metal toolchain (`fence.metal`:
+`thread_scope_system`). MLX's M5 "NAX" kernels (~3× faster prefill) are only
+compiled when the deployment target is ≥ macOS 26.2 (and the SDK is ≥ 26.2), so
+the app targets 26.2: `bundle.macOS.minimumSystemVersion` for `tauri build` and
+`.cargo/config.toml`'s `MACOSX_DEPLOYMENT_TARGET` for plain cargo builds. MLX
+picks NAX at runtime only on M5-class GPUs (`is_nax_available`: GPU gen ≥ 17);
+M1–M4 run the regular kernels from the same metallib.
+
 **MLX metallib bundling:** mlx-sys compiles the Metal kernels into `mlx.metallib`
-and bakes the *build directory's* absolute path into the binary as the default
-`METAL_PATH`. That path exists on the build machine (so `tauri dev` and the CI
-runner work) but **not** on an installed/distributed app, where MLX would abort
+and bakes a build-machine path into the binary as the default `METAL_PATH`
+(mlx-sys 0.6: `~/.mlx/lib/<mlx-c source hash>/mlx.metallib`, shared by every
+build on the machine; override with `MLX_RS_METAL_PATH`). That path exists on the
+build machine (so `tauri dev` and the CI runner work) but **not** on an
+installed/distributed app, where MLX would abort
 at engine init with `Failed to load the default metallib` — taking the whole app
 down on startup (the default model is MLX-backed). To fix this, MLX's runtime
 "colocated library" search looks next to the executable, so `mlx.metallib` is
@@ -323,7 +358,7 @@ Required secrets:
 - ASR/post-processing engines live in `rust-asr/` (a path dependency of `src-tauri`); `transcription.rs` dispatches to them by model id
 - When adding an ASR model, implement it in `rust-asr/` + route it in `transcription.rs`, then update `src/lib/models.ts` (MODEL_ORDER/MODEL_SIZES)
 - After changing `rust-asr/` engine code, rebuild the app (`npm run tauri:dev`); the crate is a path dependency compiled into the binary
-- Post-processor defaults to Qwen3.5-4B-4bit in no-think mode (~1.2s per cleanup in a debug build)
+- Post-processor defaults to Gemma 4 E4B (4-bit) in no-think mode; `rust-asr chat <system_file> <user_file> [model] [max_tokens]` and `rust-asr ppbatch <cases.json> [model]` run it from the CLI and log prompt tokens, time to first token and decode tok/s
 - Custom prompts are stored as `null` when they match the default to simplify version upgrades
 - Active app detection happens on hotkey press, providing context for both ASR and post-processing
 

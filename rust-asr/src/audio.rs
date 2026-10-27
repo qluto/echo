@@ -11,7 +11,7 @@
 use anyhow::Result;
 use mlx_rs::ops::indexing::IndexOp;
 use mlx_rs::ops::{
-    concatenate_axis, expand_dims, log as mlx_log, mean_axis, pad, reshape, sqrt, square,
+    concatenate, expand_dims, log as mlx_log, mean_axis, pad, reshape, sqrt, square,
     sum_axis,
 };
 use mlx_rs::{Array, Dtype};
@@ -34,7 +34,7 @@ pub fn extract_features(w: &Weights, waveform: &Array) -> Result<(Array, i32)> {
     let cur = waveform.index(1..l);
     let prev = waveform.index(0..(l - 1));
     let body = &cur - &(&prev * Array::from_f32(PREEMPH));
-    let x = concatenate_axis(&[x0, body], 0)?;
+    let x = concatenate(&[x0, body], 0)?;
 
     // --- window: checkpoint hann(400) padded symmetrically to 512 ---
     let win = w.f32("preprocessor.featurizer.window")?; // [400]

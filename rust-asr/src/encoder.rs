@@ -9,7 +9,7 @@ use anyhow::Result;
 use mlx_rs::fast::{scaled_dot_product_attention, ScaledDotProductAttentionMask};
 use mlx_rs::nn::{glu, relu, silu};
 use mlx_rs::ops::indexing::IndexOp;
-use mlx_rs::ops::{conv1d, conv2d, cos, expand_dims, pad, reshape, sin, stack_axis};
+use mlx_rs::ops::{conv1d, conv2d, cos, expand_dims, pad, reshape, sin, stack};
 use mlx_rs::Array;
 
 use crate::nn::{batch_norm_eval, layer_norm, linear};
@@ -271,7 +271,7 @@ fn rel_pos_encoding(t: i32, d: i32) -> Result<Array> {
     let s = sin(&angles)?;
     let c = cos(&angles)?;
     // interleave: stack on new last axis -> [len, half, 2] -> [len, d]
-    let stacked = stack_axis(&[s, c], -1)?;
+    let stacked = stack(&[s, c], -1)?;
     let pe = reshape(&stacked, &[len as i32, d])?;
     Ok(expand_dims(&pe, 0)?)
 }
@@ -318,6 +318,7 @@ fn self_attention(a: &Attn, x: &Array, pos_emb: &Array) -> Result<Array> {
         &v,
         scale,
         Some(ScaledDotProductAttentionMask::Array(&bd)),
+        None,
     )?;
     let out = reshape(&out.transpose_axes(&[0, 2, 1, 3])?, &[b, q_len, D_MODEL])?;
     linear(&out, &a.out_w, Some(&a.out_b))

@@ -7,12 +7,13 @@
 use anyhow::Result;
 use mlx_rs::fast::{rms_norm, rope, scaled_dot_product_attention, ScaledDotProductAttentionMask};
 use mlx_rs::nn::silu;
-use mlx_rs::ops::indexing::{argmax_axis, take_axis, IndexOp};
+use mlx_rs::ops::indexing::{take_axis, IndexOp};
 use mlx_rs::ops::{
-    broadcast_to, concatenate_axis, dequantize, expand_dims, quantized_matmul, reshape,
+    concatenate, dequantize, expand_dims, quantized_matmul, reshape,
 };
-use mlx_rs::{Array, Dtype};
+use mlx_rs::Array;
 
+use super::decode;
 use crate::weights::Weights;
 
 pub(super) const GROUP_SIZE: i32 = 64;
@@ -89,7 +90,7 @@ pub(super) struct Kv {
 }
 
 fn rmsnorm(x: &Array, weight: &Array, eps: f32) -> Result<Array> {
-    Ok(rms_norm(x, weight, eps)?)
+    Ok(rms_norm(x, Some(weight), eps)?)
 }
 
 impl Qwen3 {
@@ -147,10 +148,8 @@ impl Qwen3 {
 
     fn forward(&self, ids: &Array, caches: &mut [Option<Kv>], offset: i32) -> Result<Array> {
         let mut h = self.embed(ids)?;
-        let t = h.shape()[1];
-        let mask = if t > 1 { Some(causal_mask(t)?) } else { None };
         for (layer, cache) in self.layers.iter().zip(caches.iter_mut()) {
-            h = self.layer_forward(layer, &h, cache, offset, mask.as_ref())?;
+            h = self.layer_forward(layer, &h, cache, offset)?;
         }
         rmsnorm(&h, &self.norm, self.cfg.rms_eps)
     }
@@ -161,12 +160,11 @@ impl Qwen3 {
         h: &Array,
         cache: &mut Option<Kv>,
         offset: i32,
-        mask: Option<&Array>,
     ) -> Result<Array> {
         let cfg = &self.cfg;
         let (b, t) = (h.shape()[0], h.shape()[1]);
         let residual = h.clone();
-        let hn = rms_norm(h, &l.input_ln, cfg.rms_eps)?;
+        let hn = rms_norm(h, Some(&l.input_ln), cfg.rms_eps)?;
 
         // projections
         let q = reshape(&l.q_proj.forward(&hn)?, &[b, t, cfg.n_heads, cfg.head_dim])?;
@@ -185,22 +183,18 @@ impl Qwen3 {
 
         // KV cache
         if let Some(prev) = cache.as_ref() {
-            k = concatenate_axis(&[prev.k.clone(), k], 2)?;
-            v = concatenate_axis(&[prev.v.clone(), v], 2)?;
+            k = concatenate(&[prev.k.clone(), k], 2)?;
+            v = concatenate(&[prev.v.clone(), v], 2)?;
         }
         *cache = Some(Kv {
             k: k.clone(),
             v: v.clone(),
         });
 
-        // GQA: repeat kv heads to match q heads
-        let rep = cfg.n_heads / cfg.n_kv_heads;
-        let k = repeat_kv(&k, rep)?;
-        let v = repeat_kv(&v, rep)?;
-
+        // SDPA handles GQA (fewer kv heads) natively.
         let scale = (cfg.head_dim as f32).powf(-0.5);
-        let mask = mask.map(ScaledDotProductAttentionMask::Array);
-        let attn = scaled_dot_product_attention(&q, &k, &v, scale, mask)?;
+        let mask = (t > 1).then_some(ScaledDotProductAttentionMask::Causal);
+        let attn = scaled_dot_product_attention(&q, &k, &v, scale, mask, None)?;
         let attn = reshape(
             &attn.transpose_axes(&[0, 2, 1, 3])?,
             &[b, t, cfg.n_heads * cfg.head_dim],
@@ -218,50 +212,12 @@ impl Qwen3 {
     /// (excluding the prompt), stopping at EOS or max_tokens.
     pub fn generate(&self, prompt_ids: &[i32], max_tokens: usize) -> Result<Vec<i32>> {
         let mut caches: Vec<Option<Kv>> = (0..self.cfg.n_layers).map(|_| None).collect();
-        let prompt = Array::from_slice(prompt_ids, &[prompt_ids.len() as i32]);
-        let h = self.forward(&prompt, &mut caches, 0)?;
-        let mut next = argmax_axis(&self.lm_head_last(&h)?, 1, false)?.item::<u32>() as i32;
-
-        let mut out = Vec::new();
-        let mut pos = prompt_ids.len() as i32;
-        for _ in 0..max_tokens {
-            if next == self.cfg.eos_token_id {
-                break;
-            }
-            out.push(next);
-            let tok = Array::from_slice(&[next], &[1]);
-            let h = self.forward(&tok, &mut caches, pos)?;
-            next = argmax_axis(&self.lm_head_last(&h)?, 1, false)?.item::<u32>() as i32;
-            pos += 1;
-        }
-        Ok(out)
+        decode::greedy(prompt_ids, max_tokens, &[self.cfg.eos_token_id], |ids, offset| {
+            self.lm_head_last(&self.forward(ids, &mut caches, offset)?)
+        })
     }
 
     pub fn config(&self) -> &Config {
         &self.cfg
     }
-}
-
-pub(super) fn repeat_kv(x: &Array, rep: i32) -> Result<Array> {
-    if rep == 1 {
-        return Ok(x.clone());
-    }
-    let sh = x.shape().to_vec(); // [b, n_kv, t, hd]
-    let (b, n_kv, t, hd) = (sh[0], sh[1], sh[2], sh[3]);
-    let x = reshape(x, &[b, n_kv, 1, t, hd])?;
-    let x = broadcast_to(&x, &[b, n_kv, rep, t, hd])?;
-    Ok(reshape(&x, &[b, n_kv * rep, t, hd])?)
-}
-
-pub(super) fn causal_mask(s: i32) -> Result<Array> {
-    let n = s as usize;
-    let mut data = vec![0.0f32; n * n];
-    for i in 0..n {
-        for j in 0..n {
-            if j > i {
-                data[i * n + j] = -1e9;
-            }
-        }
-    }
-    Ok(Array::from_slice(&data, &[1, 1, s, s]).as_dtype(Dtype::Bfloat16)?)
 }

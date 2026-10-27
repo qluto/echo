@@ -18,7 +18,7 @@ Offline voice input desktop application optimized for Apple Silicon
 
 ## System Requirements
 
-- **OS**: macOS 14.0 (Sonoma) or later
+- **OS**: macOS 26.2 or later
 - **CPU**: Apple Silicon (M1/M2/M3/M4)
 - **Memory**: 8GB+ recommended
 - **Storage**: 2GB+ free space (varies by model size)
@@ -160,7 +160,7 @@ cd rust-asr && cargo build --release
 - **VAD**: Silero VAD v5 via ONNX Runtime, rubato for resampling
 - **Post-Processing**: Qwen3 (4-bit, default 4B) ported to `mlx-rs`, in-process
 - **Database**: SQLite with FTS5 full-text search (`rusqlite`)
-- **Platform**: macOS 14.0+ on Apple Silicon
+- **Platform**: macOS 26.2+ on Apple Silicon
 
 ## Architecture
 

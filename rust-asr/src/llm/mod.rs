@@ -3,7 +3,10 @@
 //! removal, self-correction, dictionary, app-context formatting) and
 //! summarizes transcription history.
 
+pub mod decode;
 pub mod gated_delta;
+pub mod gemma4;
+pub mod kv_cache;
 pub mod qwen3;
 pub mod qwen3_5;
 
@@ -11,6 +14,7 @@ use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::path::Path;
 
+use gemma4::Gemma4;
 use qwen3::{Config, Qwen3};
 use qwen3_5::Qwen3_5;
 use tokenizers::Tokenizer;
@@ -62,6 +66,7 @@ Do NOT include timestamps in the summary unless they are semantically important 
 enum Model {
     Qwen3(Qwen3),
     Qwen3_5(Qwen3_5),
+    Gemma4(Gemma4),
 }
 
 pub struct PostProcessor {
@@ -96,12 +101,14 @@ impl PostProcessor {
         let token_id = |t: &str| tokenizer.token_to_id(t).map(|id| id as i32);
         let config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config_path)?)?;
         let weights = crate::weights::Weights::load(st.to_str().ok_or_else(|| anyhow!("path"))?)?;
-        let model = if config.get("model_type").and_then(|v| v.as_str()) == Some("qwen3_5") {
-            // config.json's eos is <|endoftext|>; a chat turn ends at <|im_end|>.
-            let im_end = token_id("<|im_end|>").ok_or_else(|| anyhow!("no <|im_end|> token"))?;
-            Model::Qwen3_5(Qwen3_5::load(&weights, parse_config_3_5(&config, im_end)?)?)
-        } else {
-            Model::Qwen3(Qwen3::load(&weights, parse_config(&config)?)?)
+        let model = match config.get("model_type").and_then(|v| v.as_str()) {
+            Some("qwen3_5") => {
+                // config.json's eos is <|endoftext|>; a chat turn ends at <|im_end|>.
+                let im_end = token_id("<|im_end|>").ok_or_else(|| anyhow!("no <|im_end|> token"))?;
+                Model::Qwen3_5(Qwen3_5::load(&weights, parse_config_3_5(&config, im_end)?)?)
+            }
+            Some("gemma4") => Model::Gemma4(Gemma4::load(&weights, parse_config_gemma4(&config)?)?),
+            _ => Model::Qwen3(Qwen3::load(&weights, parse_config(&config)?)?),
         };
         let think_end_id = token_id("</think>");
         log::info!("Post-processor loaded: {model_id}");
@@ -127,7 +134,7 @@ impl PostProcessor {
         let system = custom_prompt.unwrap_or(SYSTEM_PROMPT);
         let user = build_user_message(text, app_name, app_bundle_id, dictionary);
         // No-think mode (matches Python enable_thinking=False) for fast cleanup.
-        let prompt = chat_prompt(system, &user, false);
+        let prompt = self.chat_prompt(system, &user, false);
         let max_tokens = text.chars().count() + 100;
         let out = self.run(&prompt, max_tokens)?;
         Ok(out)
@@ -156,14 +163,23 @@ impl PostProcessor {
         // Qwen3.5 doesn't: under greedy decoding its reasoning trace falls
         // into a repetition loop and never reaches the answer.
         let thinking = matches!(self.model, Model::Qwen3(_));
-        let prompt = chat_prompt(system, &user, thinking);
+        let prompt = self.chat_prompt(system, &user, thinking);
         self.run(&prompt, 2048)
     }
 
     /// Free-form completion (no thinking): system + user message → assistant
     /// text. Used for meeting-minutes generation.
     pub fn chat(&self, system: &str, user: &str, max_tokens: usize) -> Result<String> {
-        self.run(&chat_prompt(system, user, false), max_tokens)
+        self.run(&self.chat_prompt(system, user, false), max_tokens)
+    }
+
+    /// The model's chat template for one system + user turn, primed for the
+    /// assistant's reply.
+    fn chat_prompt(&self, system: &str, user: &str, thinking: bool) -> String {
+        match self.model {
+            Model::Gemma4(_) => gemma_chat_prompt(system, user),
+            Model::Qwen3(_) | Model::Qwen3_5(_) => chat_prompt(system, user, thinking),
+        }
     }
 
     fn run(&self, prompt: &str, max_tokens: usize) -> Result<String> {
@@ -175,6 +191,7 @@ impl PostProcessor {
         let gen = match &self.model {
             Model::Qwen3(m) => m.generate(&ids, max_tokens)?,
             Model::Qwen3_5(m) => m.generate(&ids, max_tokens)?,
+            Model::Gemma4(m) => m.generate(&ids, max_tokens)?,
         };
         // Keep only what follows the reasoning trace, if there is one.
         let answer = match self.think_end_id.and_then(|id| gen.iter().rposition(|&t| t == id)) {
@@ -207,6 +224,15 @@ fn chat_prompt(system: &str, user: &str, thinking: bool) -> String {
     } else {
         format!("{head}<think>\n\n</think>\n\n")
     }
+}
+
+/// Gemma 4 chat template (system + user) with thinking off, which matches
+/// `apply_chat_template(enable_thinking=False)`: the model turn starts with no
+/// thought block. Qwen's `/no_think` directive is dropped from the system
+/// prompt — it means nothing to Gemma.
+fn gemma_chat_prompt(system: &str, user: &str) -> String {
+    let system = system.strip_prefix("/no_think").unwrap_or(system).trim_start();
+    format!("<bos><|turn>system\n{system}<turn|>\n<|turn>user\n{user}<turn|>\n<|turn>model\n")
 }
 
 fn build_user_message(
@@ -304,6 +330,75 @@ fn parse_config_3_5(v: &serde_json::Value, im_end_id: i32) -> Result<qwen3_5::Co
         linear_k_dim: g("linear_key_head_dim")? as i32,
         linear_v_dim: g("linear_value_head_dim")? as i32,
         conv_kernel: g("linear_conv_kernel_dim")? as i32,
+        stop_token_ids,
+    })
+}
+
+fn parse_config_gemma4(v: &serde_json::Value) -> Result<gemma4::Config> {
+    let quant = v.get("quantization").ok_or_else(|| anyhow!("quantization"))?;
+    let bits = quant.get("bits").and_then(|x| x.as_i64());
+    let group_size = quant.get("group_size").and_then(|x| x.as_i64());
+    if (bits, group_size) != (Some(qwen3::BITS as i64), Some(qwen3::GROUP_SIZE as i64)) {
+        return Err(anyhow!("unsupported quantization: {quant}"));
+    }
+
+    let t = v.get("text_config").ok_or_else(|| anyhow!("text_config"))?;
+    let g = |k: &str| {
+        t.get(k)
+            .and_then(|x| x.as_i64())
+            .ok_or_else(|| anyhow!("text_config.{k}"))
+    };
+    // Only the dense per-layer-embedding ("E") variants are ported.
+    let flag = |k: &str| t.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
+    if flag("enable_moe_block") || flag("attention_k_eq_v") || flag("use_double_wide_mlp") {
+        return Err(anyhow!("unsupported Gemma 4 variant (MoE / k=v / double-wide MLP)"));
+    }
+    let ple_dim = t.get("hidden_size_per_layer_input").and_then(|x| x.as_i64()).unwrap_or(0);
+    if ple_dim <= 0 {
+        return Err(anyhow!("unsupported Gemma 4 variant (no per-layer embeddings)"));
+    }
+    let full_attention = t
+        .get("layer_types")
+        .and_then(|x| x.as_array())
+        .ok_or_else(|| anyhow!("text_config.layer_types"))?
+        .iter()
+        .map(|l| l.as_str() == Some("full_attention"))
+        .collect::<Vec<_>>();
+    if full_attention.len() != g("num_hidden_layers")? as usize {
+        return Err(anyhow!("layer_types does not match num_hidden_layers"));
+    }
+    let rope = |kind: &str, k: &str| {
+        t.get("rope_parameters")
+            .and_then(|r| r.get(kind))
+            .and_then(|r| r.get(k))
+            .and_then(|x| x.as_f64())
+    };
+    let stop_token_ids = match v.get("eos_token_id") {
+        Some(serde_json::Value::Array(ids)) => ids.iter().filter_map(|x| x.as_i64()).map(|x| x as i32).collect(),
+        Some(id) => id.as_i64().map(|x| vec![x as i32]).unwrap_or_default(),
+        None => vec![],
+    };
+    if stop_token_ids.is_empty() {
+        return Err(anyhow!("eos_token_id"));
+    }
+    Ok(gemma4::Config {
+        hidden_size: g("hidden_size")? as i32,
+        n_heads: g("num_attention_heads")? as i32,
+        n_kv_heads: g("num_key_value_heads")? as i32,
+        head_dim: g("head_dim")? as i32,
+        global_head_dim: g("global_head_dim")? as i32,
+        rms_eps: t.get("rms_norm_eps").and_then(|x| x.as_f64()).unwrap_or(1e-6) as f32,
+        sliding_window: g("sliding_window")? as i32,
+        full_attention,
+        n_kv_shared_layers: g("num_kv_shared_layers").unwrap_or(0) as usize,
+        ple_dim: ple_dim as i32,
+        sliding_rope_theta: rope("sliding_attention", "rope_theta").unwrap_or(10_000.0) as f32,
+        full_rope_theta: rope("full_attention", "rope_theta").unwrap_or(1_000_000.0) as f32,
+        full_partial_rotary: rope("full_attention", "partial_rotary_factor").unwrap_or(1.0) as f32,
+        final_logit_softcap: t
+            .get("final_logit_softcapping")
+            .and_then(|x| x.as_f64())
+            .map(|x| x as f32),
         stop_token_ids,
     })
 }

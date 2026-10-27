@@ -3,8 +3,8 @@
 //!
 //! Prompt prefill runs it as a custom Metal kernel — the same kernel source
 //! mlx-lm uses — because an op-by-op loop over thousands of tokens × 24 layers
-//! is far too slow. `step_ops` is the plain-ops reference for one timestep,
-//! used for single-token decode steps and to check the kernel.
+//! is far too slow; single-token decode steps use it too. `step_ops` is the
+//! plain-ops reference for one timestep, kept to check the kernel against.
 
 use anyhow::{anyhow, Result};
 use mlx_rs::ops::{expand_dims, multiply, subtract, sum_axis};
@@ -265,4 +265,55 @@ pub fn step_ops(
     let state = &state + &multiply(&k_row, &expand_dims(&delta, -1)?)?;
     let y = sum_axis(&multiply(&state, &expand_dims(q, -2)?)?, -1, false)?;
     Ok((y.as_dtype(q.dtype())?, state.as_dtype(Dtype::Float32)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mlx_rs::ops::indexing::IndexOp;
+    use mlx_rs::ops::{abs, broadcast_to, max, reshape, stack};
+    use mlx_rs::random::uniform;
+
+    /// The Metal kernel over T steps (with Hv = 2 × Hk) must match T
+    /// applications of `step_ops`, for prefill-sized and single-token inputs.
+    #[test]
+    fn kernel_matches_step_ops() -> Result<()> {
+        let (b, hk, hv, dk, dv) = (1, 2, 4, 32, 8);
+        let u = |shape: &[i32], lo: f32, hi: f32| uniform::<_, f32>(lo, hi, shape, None);
+        for t in [1, 5] {
+            let q = u(&[b, t, hk, dk], -1.0, 1.0)?;
+            let k = u(&[b, t, hk, dk], -1.0, 1.0)?;
+            let v = u(&[b, t, hv, dv], -1.0, 1.0)?;
+            let g = u(&[b, t, hv], 0.5, 1.0)?;
+            let beta = u(&[b, t, hv], 0.0, 1.0)?;
+            let state0 = u(&[b, hv, dv, dk], -0.5, 0.5)?;
+
+            let (y, state) = GatedDeltaKernel::new()?.apply(&q, &k, &v, &g, &beta, &state0)?;
+
+            // Repeat each key head for its value heads, as the kernel does.
+            let rep = |x: &Array| -> Result<Array> {
+                let x = broadcast_to(&reshape(x, &[b, hk, 1, dk])?, &[b, hk, hv / hk, dk])?;
+                Ok(reshape(&x, &[b, hv, dk])?)
+            };
+            let mut s = state0.clone();
+            let mut ys = Vec::new();
+            for i in 0..t {
+                let (yi, si) = step_ops(
+                    &rep(&q.index((.., i, .., ..)))?,
+                    &rep(&k.index((.., i, .., ..)))?,
+                    &v.index((.., i, .., ..)),
+                    &g.index((.., i, ..)),
+                    &beta.index((.., i, ..)),
+                    &s,
+                )?;
+                ys.push(yi);
+                s = si;
+            }
+            let y_ref = stack(&ys, 1)?;
+            let diff = |a: &Array, b: &Array| max(&abs(&(a - b))?, None).map(|m| m.item_cast::<f32>());
+            assert!(diff(&y, &y_ref)? < 1e-4, "y mismatch at T={t}");
+            assert!(diff(&state, &s)? < 1e-4, "state mismatch at T={t}");
+        }
+        Ok(())
+    }
 }

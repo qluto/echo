@@ -9,7 +9,7 @@ use anyhow::Result;
 use mlx_rs::fast::{scaled_dot_product_attention, ScaledDotProductAttentionMask};
 use mlx_rs::nn::relu;
 use mlx_rs::ops::indexing::{argmax_axis, take_axis, IndexOp};
-use mlx_rs::ops::{concatenate_axis, reshape};
+use mlx_rs::ops::{concatenate, reshape};
 use mlx_rs::Array;
 
 use crate::nn::{layer_norm, linear};
@@ -234,15 +234,15 @@ fn self_attention(
     let mut k = split_heads(&linear(hn, &a.k_w, Some(&a.k_b))?)?;
     let mut v = split_heads(&linear(hn, &a.v_w, Some(&a.v_b))?)?;
     if let Some(prev) = cache.as_ref() {
-        k = concatenate_axis(&[prev.k.clone(), k], 2)?;
-        v = concatenate_axis(&[prev.v.clone(), v], 2)?;
+        k = concatenate(&[prev.k.clone(), k], 2)?;
+        v = concatenate(&[prev.v.clone(), v], 2)?;
     }
     *cache = Some(Kv {
         k: k.clone(),
         v: v.clone(),
     });
     let mask = mask.map(ScaledDotProductAttentionMask::Array);
-    let out = scaled_dot_product_attention(&q, &k, &v, scale, mask)?;
+    let out = scaled_dot_product_attention(&q, &k, &v, scale, mask, None)?;
     linear(&merge_heads(&out, s)?, &a.o_w, Some(&a.o_b))
 }
 
@@ -263,7 +263,7 @@ fn cross_attention(a: &AttnW, hn: &Array, enc: &Array, cache: &mut Option<Kv>) -
         }
     };
     let no_mask: Option<ScaledDotProductAttentionMask> = None;
-    let out = scaled_dot_product_attention(&q, &k, &v, scale, no_mask)?;
+    let out = scaled_dot_product_attention(&q, &k, &v, scale, no_mask, None)?;
     linear(&merge_heads(&out, s)?, &a.o_w, Some(&a.o_b))
 }
 

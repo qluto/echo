@@ -68,7 +68,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [customPrompt, setCustomPrompt] = useState<string | null>(null);
   const [customSummaryPrompt, setCustomSummaryPrompt] = useState<string | null>(null);
-  const [postprocessModelName, setPostprocessModelName] = useState<string>("mlx-community/Qwen3.5-4B-4bit");
+  const [postprocessModelName, setPostprocessModelName] = useState<string>("mlx-community/gemma-4-e4b-it-4bit");
   const [availablePostprocessModels, setAvailablePostprocessModels] = useState<string[]>(
     Object.keys(POSTPROCESS_MODEL_SIZES)
   );
