@@ -1,7 +1,7 @@
 //! ASR engine — fully in-process (no Python sidecar).
 //!
 //! All speech recognition (Whisper via whisper.cpp, Parakeet-JA and Cohere via
-//! Apple MLX) and LLM post-processing (Qwen3 via MLX) run natively in Rust
+//! Apple MLX) and LLMs (post-processing, memo minutes, meeting notes; via MLX) run natively in Rust
 //! through the `rust-asr` crate. `ASREngine` owns the loaded engines and
 //! dispatches by the active model id. The dispatch is internal so all call
 //! sites (hotkey, commands, always-on pipeline) are unchanged.
@@ -10,6 +10,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager};
 
@@ -42,6 +43,45 @@ const POSTPROCESS_MODELS: [&str; 6] = [
     "mlx-community/Qwen3-1.7B-4bit",
 ];
 const DEFAULT_POSTPROCESS_MODEL: &str = "mlx-community/gemma-4-e4b-it-4bit";
+/// LLMs for voice-memo minutes and meeting notes, chosen separately from the
+/// dictation post-processor: these favor quality over speed. Qwen3.6-27B
+/// (Qwen3.5 architecture, ~16 GB) got 22/23 on the meeting-notes evaluation
+/// against 17 for Gemma 4 E4B, which left a real meeting's notes empty; it
+/// takes ~10–30 s per revision, too slow for dictation.
+const NOTES_ONLY_MODELS: [&str; 1] = ["mlx-community/Qwen3.6-27B-4bit"];
+
+fn notes_models() -> impl Iterator<Item = &'static str> {
+    NOTES_ONLY_MODELS.into_iter().chain(POSTPROCESS_MODELS)
+}
+
+/// Qwen3.6-27B where it fits next to ASR, a meeting app and the OS; Gemma 4
+/// E4B on smaller Macs.
+fn default_notes_model() -> &'static str {
+    const MIN_BYTES_FOR_27B: u64 = 32 * 1024 * 1024 * 1024;
+    if physical_memory().is_some_and(|m| m >= MIN_BYTES_FOR_27B) {
+        NOTES_ONLY_MODELS[0]
+    } else {
+        DEFAULT_POSTPROCESS_MODEL
+    }
+}
+
+fn physical_memory() -> Option<u64> {
+    extern "C" {
+        fn sysctlbyname(
+            name: *const std::ffi::c_char,
+            oldp: *mut std::ffi::c_void,
+            oldlenp: *mut usize,
+            newp: *mut std::ffi::c_void,
+            newlen: usize,
+        ) -> std::ffi::c_int;
+    }
+    let mut bytes: u64 = 0;
+    let mut len = std::mem::size_of::<u64>();
+    let ok = unsafe {
+        sysctlbyname(c"hw.memsize".as_ptr(), &mut bytes as *mut u64 as *mut _, &mut len, std::ptr::null_mut(), 0)
+    } == 0;
+    ok.then_some(bytes)
+}
 
 /// Cap for MLX's freed-buffer cache (see `ASREngine::start`).
 const MLX_CACHE_LIMIT_BYTES: usize = 512 * 1024 * 1024;
@@ -78,9 +118,13 @@ pub struct ASREngine {
     whisper_loaded: bool,
     parakeet: Option<ParakeetEngine>,
     parakeet_loaded: bool,
-    postproc: Option<PostProcessor>,
-    postproc_loaded: bool,
+    /// Loaded LLMs by model id: the post-processor's and the notes model's
+    /// (one instance when they are the same). Shared so a generation runs
+    /// without the engine lock — ASR keeps going meanwhile (rust-asr only
+    /// holds its GPU lock per decode step).
+    llms: HashMap<String, Arc<PostProcessor>>,
     postproc_model: String,
+    notes_model: String,
     /// Currently selected ASR model id (drives dispatch).
     active_model: String,
     /// HF hub cache root (`<appcache>/huggingface/hub`), captured at start().
@@ -101,9 +145,9 @@ impl ASREngine {
             whisper_loaded: false,
             parakeet: None,
             parakeet_loaded: false,
-            postproc: None,
-            postproc_loaded: false,
+            llms: HashMap::new(),
             postproc_model: DEFAULT_POSTPROCESS_MODEL.to_string(),
+            notes_model: default_notes_model().to_string(),
             active_model: String::new(),
             hub_dir: None,
             hf_token: None,
@@ -160,8 +204,7 @@ impl ASREngine {
         self.whisper_loaded = false;
         self.parakeet = None;
         self.parakeet_loaded = false;
-        self.postproc = None;
-        self.postproc_loaded = false;
+        self.llms.clear();
         rust_asr::release_unused_memory();
         Ok(())
     }
@@ -452,7 +495,7 @@ impl ASREngine {
         false
     }
 
-    // ===== Post-processing (in-process Qwen3) =====
+    // ===== LLMs: dictation post-processing, memo minutes / meeting notes =====
 
     fn postproc_status(&self, loaded: bool, error: Option<String>) -> crate::PostProcessModelStatus {
         crate::PostProcessModelStatus {
@@ -464,16 +507,71 @@ impl ASREngine {
         }
     }
 
+    /// Drop loaded LLMs that are no longer selected for anything.
+    fn prune_llms(&mut self) {
+        let before = self.llms.len();
+        let (pp, notes) = (&self.postproc_model, &self.notes_model);
+        self.llms.retain(|id, _| id == pp || id == notes);
+        if self.llms.len() < before {
+            rust_asr::release_unused_memory();
+        }
+    }
+
+    fn is_cached(&self, model: &str) -> bool {
+        let repo = format!("models--{}", model.replace('/', "--"));
+        self.hub_dir
+            .as_ref()
+            .is_some_and(|hub| hub.join(&repo).join("snapshots").exists())
+    }
+
+    /// The LLM `pick` selects, loaded (and downloaded) if needed without
+    /// holding the engine lock, so ASR is never stalled by an LLM.
+    fn shared_llm(engine: &Mutex<Self>, pick: fn(&Self) -> &str) -> Result<Arc<PostProcessor>> {
+        let (model, hub) = {
+            let e = engine.lock().map_err(|e| anyhow!("{e}"))?;
+            let model = pick(&e).to_string();
+            if let Some(llm) = e.llms.get(&model) {
+                return Ok(Arc::clone(llm));
+            }
+            (model, e.hub()?)
+        };
+        log::info!("Loading LLM: {model}");
+        let llm = Arc::new(PostProcessor::load(&hub, &model).map_err(|e| anyhow!("Failed to load {model}: {e}"))?);
+        let mut e = engine.lock().map_err(|e| anyhow!("{e}"))?;
+        // Another thread may have loaded it meanwhile: keep a single copy.
+        let llm = Arc::clone(e.llms.entry(model).or_insert(llm));
+        // If the selection changed during the load, this call still gets its model.
+        e.prune_llms();
+        Ok(llm)
+    }
+
+    /// The dictation post-processor.
+    pub fn postprocessor(engine: &Mutex<Self>) -> Result<Arc<PostProcessor>> {
+        Self::shared_llm(engine, |e| &e.postproc_model)
+    }
+
+    /// The LLM for voice-memo minutes and meeting notes. Generate with it after
+    /// the engine lock is released.
+    pub fn notes_llm(engine: &Mutex<Self>) -> Result<Arc<PostProcessor>> {
+        Self::shared_llm(engine, |e| &e.notes_model)
+    }
+
+    /// Free the notes model after a memo or meeting, unless dictation uses it too.
+    pub fn release_notes_model(&mut self) {
+        if self.notes_model != self.postproc_model && self.llms.remove(&self.notes_model).is_some() {
+            rust_asr::release_unused_memory();
+        }
+    }
+
     pub fn load_postprocess_model(&mut self) -> Result<crate::PostProcessModelStatus> {
-        if self.postproc_loaded && self.postproc.is_some() {
+        if self.llms.contains_key(&self.postproc_model) {
             return Ok(self.postproc_status(true, None));
         }
         let hub = self.hub()?;
         log::info!("Loading post-processor: {}", self.postproc_model);
         match PostProcessor::load(&hub, &self.postproc_model) {
             Ok(pp) => {
-                self.postproc = Some(pp);
-                self.postproc_loaded = true;
+                self.llms.insert(self.postproc_model.clone(), Arc::new(pp));
                 log::info!("Post-processor loaded");
                 Ok(self.postproc_status(true, None))
             }
@@ -486,20 +584,14 @@ impl ASREngine {
     }
 
     pub fn unload_postprocess_model(&mut self) -> Result<()> {
-        self.postproc = None;
-        self.postproc_loaded = false;
-        rust_asr::release_unused_memory();
+        if self.llms.remove(&self.postproc_model).is_some() {
+            rust_asr::release_unused_memory();
+        }
         Ok(())
     }
 
     pub fn is_postprocess_model_cached(&mut self) -> Result<crate::PostProcessModelStatus> {
-        let repo = format!("models--{}", self.postproc_model.replace('/', "--"));
-        let cached = self
-            .hub_dir
-            .as_ref()
-            .map(|hub| hub.join(&repo).join("snapshots").exists())
-            .unwrap_or(false);
-        Ok(self.postproc_status(cached, None))
+        Ok(self.postproc_status(self.is_cached(&self.postproc_model), None))
     }
 
     pub fn set_postprocess_model(
@@ -510,18 +602,38 @@ impl ASREngine {
             return Err(anyhow!("Unknown post-process model: {}", model_name));
         }
         self.postproc_model = model_name.to_string();
-        self.postproc = None;
-        self.postproc_loaded = false;
-        rust_asr::release_unused_memory();
-        Ok(self.postproc_status(false, None))
+        self.prune_llms();
+        Ok(self.postproc_status(self.llms.contains_key(model_name), None))
     }
 
     pub fn get_postprocess_status(&mut self) -> Result<crate::PostProcessModelStatus> {
-        Ok(self.postproc_status(self.postproc_loaded, None))
+        Ok(self.postproc_status(self.llms.contains_key(&self.postproc_model), None))
     }
 
+    /// Selected notes model; `loaded` reports whether it is downloaded.
+    pub fn notes_model_status(&self) -> crate::PostProcessModelStatus {
+        crate::PostProcessModelStatus {
+            model_name: self.notes_model.clone(),
+            loaded: self.is_cached(&self.notes_model),
+            loading: false,
+            error: None,
+            available_models: notes_models().map(String::from).collect(),
+        }
+    }
+
+    pub fn set_notes_model(&mut self, model_name: &str) -> Result<crate::PostProcessModelStatus> {
+        if !notes_models().any(|m| m == model_name) {
+            return Err(anyhow!("Unknown notes model: {}", model_name));
+        }
+        self.notes_model = model_name.to_string();
+        self.prune_llms();
+        Ok(self.notes_model_status())
+    }
+
+    /// Clean up dictated text with the post-processor. The generation runs
+    /// without the engine lock.
     pub fn postprocess_text(
-        &mut self,
+        engine: &Mutex<Self>,
         text: &str,
         app_name: Option<&str>,
         app_bundle_id: Option<&str>,
@@ -536,13 +648,7 @@ impl ASREngine {
                 error: None,
             });
         }
-        if !self.postproc_loaded || self.postproc.is_none() {
-            self.load_postprocess_model()?;
-        }
-        let pp = self
-            .postproc
-            .as_ref()
-            .ok_or_else(|| anyhow!("Post-processor not loaded"))?;
+        let pp = Self::postprocessor(engine)?;
         let start = std::time::Instant::now();
         match pp.process(text, app_name, app_bundle_id, dictionary, custom_prompt) {
             Ok(out) => Ok(crate::PostProcessResult {
@@ -560,29 +666,9 @@ impl ASREngine {
         }
     }
 
-    /// Free-form LLM completion with the post-processing model (loaded on
-    /// demand). Used by voice-memo minutes generation.
-    pub fn llm_chat(
-        &mut self,
-        system: &str,
-        user: &str,
-        max_tokens: usize,
-    ) -> Result<String> {
-        if !self.postproc_loaded || self.postproc.is_none() {
-            let status = self.load_postprocess_model()?;
-            if let Some(e) = status.error {
-                return Err(anyhow!("Failed to load post-processor: {e}"));
-            }
-        }
-        let pp = self
-            .postproc
-            .as_ref()
-            .ok_or_else(|| anyhow!("Post-processor not loaded"))?;
-        pp.chat(system, user, max_tokens)
-    }
-
+    /// Summarize history entries with the post-processor, without the engine lock.
     pub fn summarize_transcriptions(
-        &mut self,
+        engine: &Mutex<Self>,
         texts: &[crate::SummarizeEntry],
         language_hint: Option<&str>,
         custom_prompt: Option<&str>,
@@ -596,13 +682,7 @@ impl ASREngine {
                 entry_count: 0,
             });
         }
-        if !self.postproc_loaded || self.postproc.is_none() {
-            self.load_postprocess_model()?;
-        }
-        let pp = self
-            .postproc
-            .as_ref()
-            .ok_or_else(|| anyhow!("Post-processor not loaded"))?;
+        let pp = Self::postprocessor(engine)?;
         let entries: Vec<(String, String)> = texts
             .iter()
             .map(|e| (e.created_at.clone(), e.text.clone()))
@@ -736,10 +816,51 @@ mod in_process_tests {
             .set_postprocess_model("mlx-community/Qwen3-1.7B-4bit")
             .expect("set postproc");
         assert!(engine.load_postprocess_model().expect("load").loaded);
-        let r = engine
-            .postprocess_text("えーと、3時に、いや4時に会議があります。", None, None, None, None)
+        let engine = Mutex::new(engine);
+        let r = ASREngine::postprocess_text(&engine, "えーと、3時に、いや4時に会議があります。", None, None, None, None)
             .expect("postprocess");
         assert!(r.success && !r.processed_text.trim().is_empty());
+    }
+
+    /// Transcription through the engine mutex keeps going while the notes LLM
+    /// generates on another thread (as during a meeting round):
+    /// `cargo test --release transcription_continues_during_notes_llm -- --ignored --nocapture --test-threads=1`
+    #[test]
+    #[ignore]
+    fn transcription_continues_during_notes_llm() {
+        use std::time::{Duration, Instant};
+        let Some(mut engine) = engine_with_hub() else { return };
+        engine.set_model("mlx-community/parakeet-tdt_ctc-0.6b-ja").expect("set");
+        engine.load_model().expect("load");
+        let samples = rust_asr::read_wav_16k_mono(WAV).expect("wav");
+        engine.transcribe_samples(&samples, Some("ja"), false).expect("warm up");
+        let engine = Arc::new(Mutex::new(engine));
+        ASREngine::notes_llm(&engine).expect("notes llm"); // load before timing
+
+        let llm = {
+            let engine = Arc::clone(&engine);
+            std::thread::spawn(move || {
+                let t = Instant::now();
+                ASREngine::notes_llm(&engine)
+                    .and_then(|llm| llm.chat("Write a 30-item checklist.", "Japanese, one line each.", 300))
+                    .expect("chat");
+                t.elapsed()
+            })
+        };
+        std::thread::sleep(Duration::from_millis(500));
+        let mut worst = Duration::ZERO;
+        let mut chunks = 0;
+        while !llm.is_finished() {
+            let t = Instant::now();
+            engine.lock().unwrap().transcribe_samples(&samples, Some("ja"), false).expect("transcribe");
+            worst = worst.max(t.elapsed());
+            chunks += 1;
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        let llm_time = llm.join().unwrap();
+        println!("{chunks} chunks during a {llm_time:?} generation; slowest chunk {worst:?}");
+        assert!(chunks >= 2);
+        assert!(worst < Duration::from_secs(1), "transcription waited on the LLM: {worst:?}");
     }
 
     /// Downloads the default post-processor (Gemma 4 E4B, ~5 GB) on first run:
@@ -752,12 +873,13 @@ mod in_process_tests {
         let t = std::time::Instant::now();
         assert!(engine.load_postprocess_model().expect("load").loaded);
         println!("loaded in {:?}", t.elapsed());
+        let engine = Mutex::new(engine);
         for text in [
             "えーと、3時に、いや4時に会議があります。",
             "あの、資料はですね、まあ明日までに送ります。",
             "um so I think we should uh ship it on Monday, no wait, Tuesday",
         ] {
-            let r = engine.postprocess_text(text, None, None, None, None).expect("postprocess");
+            let r = ASREngine::postprocess_text(&engine, text, None, None, None, None).expect("postprocess");
             println!("in:  {text}\nout: {} ({:.0} ms)", r.processed_text, r.processing_time_ms.unwrap_or(0.0));
             assert!(r.success && !r.processed_text.trim().is_empty());
         }

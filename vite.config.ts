@@ -14,6 +14,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, "index.html"),
         float: resolve(__dirname, "float.html"),
+        meeting: resolve(__dirname, "meeting.html"),
       },
     },
   },

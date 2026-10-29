@@ -418,10 +418,13 @@ impl Gemma4 {
     /// Greedy generation. Returns generated token ids (excluding the prompt),
     /// stopping at a stop token or max_tokens.
     pub fn generate(&self, prompt_ids: &[i32], max_tokens: usize) -> Result<Vec<i32>> {
-        let mut caches: Vec<KvCache> = self.layers[..self.cfg.first_shared()]
-            .iter()
-            .map(|l| KvCache::new((!l.full).then_some(self.cfg.sliding_window)))
-            .collect();
+        let mut caches: Vec<KvCache> = {
+            let _gpu = crate::gpu::lock();
+            self.layers[..self.cfg.first_shared()]
+                .iter()
+                .map(|l| KvCache::new((!l.full).then_some(self.cfg.sliding_window)))
+                .collect()
+        };
         decode::greedy(prompt_ids, max_tokens, &self.cfg.stop_token_ids, |ids, offset| {
             self.logits_last(&self.forward(ids, &mut caches, offset)?)
         })

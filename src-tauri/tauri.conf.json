@@ -27,6 +27,17 @@
         "minHeight": 400
       },
       {
+        "label": "meeting",
+        "title": "Echo Meeting",
+        "url": "meeting.html",
+        "width": 780,
+        "height": 640,
+        "minWidth": 560,
+        "minHeight": 420,
+        "resizable": true,
+        "visible": false
+      },
+      {
         "label": "float",
         "title": "Echo Indicator",
         "url": "float.html",

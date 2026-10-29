@@ -12,6 +12,7 @@ pub mod hf;
 pub mod llm;
 pub mod nn;
 pub mod parakeet;
+mod gpu;
 pub mod tokenizer;
 pub mod weights;
 pub mod whisper;
@@ -106,6 +107,8 @@ impl CohereEngine {
     pub fn load(hub_cache_dir: &Path, hf_token: Option<&str>) -> Result<Self> {
         let (safetensors, tokenizer_json) = ensure_model_files(hub_cache_dir, hf_token)?;
 
+        // Downloaded; building the model needs the GPU.
+        let _gpu = crate::gpu::lock();
         let weights = Weights::load(safetensors.to_str().ok_or_else(|| anyhow!("bad path"))?)?;
         let encoder = Encoder::load(&weights)?;
         let decoder = Decoder::load(&weights)?;
@@ -121,6 +124,7 @@ impl CohereEngine {
 
     /// Transcribe mono 16 kHz f32 samples in [-1, 1].
     pub fn transcribe_samples(&self, samples: &[f32], language: &str) -> Result<Transcription> {
+        let _gpu = crate::gpu::lock();
         let lang = normalize_language(language);
         if samples.is_empty() {
             return Ok(Transcription {
@@ -157,6 +161,7 @@ impl CohereEngine {
     /// Run a tiny dummy inference to trigger Metal kernel compilation so the
     /// first real transcription is fast.
     pub fn warmup(&self) -> Result<()> {
+        let _gpu = crate::gpu::lock();
         let samples = vec![0.0f32; 16000 / 2]; // 0.5 s of silence
         let _ = self.transcribe_samples(&samples, "en")?;
         Ok(())

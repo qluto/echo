@@ -102,6 +102,9 @@ pub struct Qwen3_5 {
     embed_w: Array,
     embed_scales: Array,
     embed_biases: Array,
+    /// Separate output projection (`tie_word_embeddings: false`, e.g.
+    /// Qwen3.6-27B); `None` reuses the embedding (Qwen3.5-2B/4B).
+    lm_head: Option<QLinear>,
     layers: Vec<Layer>,
     norm: Array,
     kernel: GatedDeltaKernel,
@@ -149,6 +152,11 @@ impl Qwen3_5 {
             embed_w: w.raw(&format!("{PREFIX}.embed_tokens.weight"))?.clone(),
             embed_scales: w.raw(&format!("{PREFIX}.embed_tokens.scales"))?.clone(),
             embed_biases: w.raw(&format!("{PREFIX}.embed_tokens.biases"))?.clone(),
+            lm_head: if w.contains("language_model.lm_head.weight") {
+                Some(QLinear::load(w, "language_model.lm_head")?)
+            } else {
+                None
+            },
             layers,
             norm: w.raw(&format!("{PREFIX}.norm.weight"))?.clone(),
             kernel: GatedDeltaKernel::new()?,
@@ -165,10 +173,13 @@ impl Qwen3_5 {
         Ok(expand_dims(&e, 0)?)
     }
 
-    /// Tied lm_head: logits for the last position only. h: [1, T, hidden].
+    /// Logits for the last position only. h: [1, T, hidden].
     fn lm_head_last(&self, h: &Array) -> Result<Array> {
         let t = h.shape()[1];
         let last = h.index((.., t - 1, ..));
+        if let Some(head) = &self.lm_head {
+            return head.forward(&last);
+        }
         Ok(quantized_matmul(
             &last,
             &self.embed_w,
@@ -335,7 +346,10 @@ impl Qwen3_5 {
     /// Greedy generation. Returns generated token ids (excluding the prompt),
     /// stopping at a stop token or max_tokens.
     pub fn generate(&self, prompt_ids: &[i32], max_tokens: usize) -> Result<Vec<i32>> {
-        let mut caches = self.new_caches();
+        let mut caches = {
+            let _gpu = crate::gpu::lock();
+            self.new_caches()
+        };
         decode::greedy(prompt_ids, max_tokens, &self.cfg.stop_token_ids, |ids, offset| {
             self.lm_head_last(&self.forward(ids, &mut caches, offset)?)
         })

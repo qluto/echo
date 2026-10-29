@@ -37,6 +37,7 @@ import { formatHotkey } from "../lib/format";
 import { DEFAULT_POSTPROCESS_PROMPT, DEFAULT_SUMMARIZE_PROMPT } from "../lib/prompts";
 import { AppProfilesSection } from "./AppProfilesSection";
 import { DictionarySection } from "./DictionarySection";
+import { NotesModelSection } from "./NotesModelSection";
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -1129,6 +1130,9 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                   </div>
                 )}
               </section>
+
+              {/* Minutes & meeting notes LLM */}
+              <NotesModelSection />
 
               {/* Gated Models Section (Advanced) */}
               <section className="flex flex-col gap-3">

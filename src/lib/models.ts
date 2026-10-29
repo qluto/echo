@@ -101,6 +101,8 @@ export const getModelShortName = (name: string): string => {
 // Post-processing LLMs (download size), in picker order. Gemma 4 E4B is the
 // default; the Qwen models stay for installs that already downloaded them.
 export const POSTPROCESS_MODEL_SIZES: Record<string, string> = {
+  // Minutes / meeting notes only (too slow for dictation).
+  "mlx-community/Qwen3.6-27B-4bit": "~16GB",
   "mlx-community/gemma-4-e4b-it-4bit": "~5GB",
   "mlx-community/Qwen3.5-4B-4bit": "~3GB",
   "mlx-community/Qwen3.5-2B-4bit": "~1.7GB",

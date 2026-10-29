@@ -301,51 +301,47 @@ fn handle_hotkey_released(app: &AppHandle) {
                 {
                     log::info!("Post-processing enabled, applying...");
                     if let Some(state) = app_clone.try_state::<crate::AppState>() {
-                        if let Ok(mut asr_engine) = state.asr_engine.lock() {
-                            let app_info = active_app.as_ref();
-                            let dictionary = if postprocess_settings.dictionary.is_empty() {
-                                None
-                            } else {
-                                Some(&postprocess_settings.dictionary)
-                            };
+                        let app_info = active_app.as_ref();
+                        let dictionary = if postprocess_settings.dictionary.is_empty() {
+                            None
+                        } else {
+                            Some(&postprocess_settings.dictionary)
+                        };
 
-                            match asr_engine.postprocess_text(
-                                &result.text,
-                                app_info.and_then(|a| a.app_name.as_deref()),
+                        match crate::ASREngine::postprocess_text(
+                            &state.asr_engine,
+                            &result.text,
+                            app_info.and_then(|a| a.app_name.as_deref()),
+                            app_info.and_then(|a| a.bundle_id.as_deref()),
+                            dictionary,
+                            postprocess_settings.resolve_prompt(
                                 app_info.and_then(|a| a.bundle_id.as_deref()),
-                                dictionary,
-                                postprocess_settings.resolve_prompt(
-                                    app_info.and_then(|a| a.bundle_id.as_deref()),
-                                ),
-                            ) {
-                                Ok(pp_result) => {
-                                    if pp_result.success {
-                                        log::info!(
-                                            "Post-processing complete in {:?}ms: '{}' -> '{}'",
-                                            pp_result.processing_time_ms,
-                                            &result.text[..result.text.len().min(30)],
-                                            &pp_result.processed_text[..pp_result.processed_text.len().min(30)]
-                                        );
-                                        pp_result.processed_text
-                                    } else {
-                                        log::warn!(
-                                            "Post-processing failed: {:?}, using original text",
-                                            pp_result.error
-                                        );
-                                        result.text.clone()
-                                    }
-                                }
-                                Err(e) => {
-                                    log::error!(
-                                        "Post-processing error: {}, using original text",
-                                        e
+                            ),
+                        ) {
+                            Ok(pp_result) => {
+                                if pp_result.success {
+                                    log::info!(
+                                        "Post-processing complete in {:?}ms: '{}' -> '{}'",
+                                        pp_result.processing_time_ms,
+                                        &result.text[..result.text.len().min(30)],
+                                        &pp_result.processed_text[..pp_result.processed_text.len().min(30)]
+                                    );
+                                    pp_result.processed_text
+                                } else {
+                                    log::warn!(
+                                        "Post-processing failed: {:?}, using original text",
+                                        pp_result.error
                                     );
                                     result.text.clone()
                                 }
                             }
-                        } else {
-                            log::error!("Failed to lock ASR engine for post-processing");
-                            result.text.clone()
+                            Err(e) => {
+                                log::error!(
+                                    "Post-processing error: {}, using original text",
+                                    e
+                                );
+                                result.text.clone()
+                            }
                         }
                     } else {
                         result.text.clone()

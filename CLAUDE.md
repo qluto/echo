@@ -69,8 +69,8 @@ git push origin v0.x.x
 1. **Start** → `start_memo_recording` inserts a `memos` row and `memo.rs` (`MemoRecorder`) streams 16kHz mono audio to `<app data>/recordings/memo-<timestamp>-<id>.wav` via its own `StreamingCapture` (independent of hotkey recording; header flushed every 10s so a crash keeps the audio)
 2. **Stop** → `stop_memo_recording` finalizes the WAV and starts a background thread
 3. **Chunking** → the WAV is streamed and cut into contiguous 20–28s chunks at the quietest point (`quietest_cut`). No VAD: every sample reaches the engine, because Silero misses audible speech on some microphones and anything it drops is gone from the transcript
-4. **ASR** → each chunk goes through `ASREngine::transcribe_samples` (engine lock taken per chunk, so dictation can run between chunks; it waits during a minutes LLM call) → `[MM:SS] text` transcript
-5. **Minutes** → `generate_minutes` asks the Qwen3 post-processor for 概要 / 議題と要点 / 決定事項 / アクションアイテム; transcripts over ~3500 chars are first reduced part-by-part into notes, then merged
+4. **ASR** → each chunk goes through `ASREngine::transcribe_samples` (engine lock taken per chunk, so dictation can run between chunks) → `[MM:SS] text` transcript
+5. **Minutes** → `generate_minutes` asks the notes LLM (`ASREngine::notes_llm`, chosen separately from the dictation post-processor) for 概要 / 議題と要点 / 決定事項 / アクションアイテム; transcripts over ~3500 chars are first reduced part-by-part into notes, then merged
 6. **Frontend** → `memo-progress` events drive `useMemos.ts` / `MemoSection.tsx` / `MemoModal.tsx`
 
 Memos left `recording`/`transcribing`/`summarizing` by an exit become `interrupted` at startup and can be re-processed from the UI.
@@ -228,16 +228,30 @@ Three ASR models run **fully in Rust in-process** (no Python sidecar) via the
 **Post-processing** also runs in-process: `rust_asr::PostProcessor` holds one of
 three full-Rust mlx-rs LLM ports, picked from config.json's `model_type`:
 Gemma 4 (`llm/gemma4.rs`, the default E4B), Qwen3.5 (`llm/qwen3_5.rs`) and Qwen3
-(`llm/qwen3.rs`) — all 4-bit (quantized_matmul + dequantize, tied lm_head) and run
-in **BF16** to match mlx-lm. `ASREngine.postprocess_text` /
+(`llm/qwen3.rs`) — all 4-bit (quantized_matmul + dequantize; tied lm_head except
+Qwen3.6-27B's separate one) and run in **BF16** to match mlx-lm. Checkpoints split
+into shards are read via `model.safetensors.index.json`. `ASREngine.postprocess_text` /
 `summarize_transcriptions` / `*_postprocess_model` route to it; each model's chat
 template is applied manually with thinking off. Models: Gemma 4 E4B (default),
 Qwen3.5-4B/2B-4bit and the older Qwen3-8B/4B/1.7B-4bit.
+
+**Notes model** (voice-memo minutes, meeting notes) is chosen separately
+(`Settings.notes_model`, `ASREngine::notes_llm`) and favors quality over speed:
+**Qwen3.6-27B-4bit** (Qwen3.5 architecture, ~16 GB) by default on Macs with
+≥32 GB, else Gemma 4 E4B. Picked on a meeting-notes evaluation (2 synthetic
+meetings + 1 real one; mlx-lm, same prompt): Qwen3.6-27B 22/23, Gemma 4
+26B-A4B and Qwen3.6-35B-A3B (MoE, not ported) 20, Gemma 4 E4B 17 (it left a
+real meeting's notes empty), Qwen3.5-9B 15 (copied the prompt's example),
+Gemma 4 12B 12 (repetition loops). ~10–30 s per revision round; the meeting
+loads it at start, and it is released after a memo or meeting.
 
 All ports decode through `llm/decode.rs`, which mirrors mlx-lm's `generate_step`
 (chunked prefill of all but the last prompt token, argmax over log-probs,
 `async_eval`-pipelined decoding), so greedy output matches mlx-lm token for token
 — check new ports against `mlx_lm.generate` with `rust-asr ppbatch <cases.json>`.
+Prefill chunks are 512 tokens, not mlx-lm's 2048: a chunk is one GPU-lock hold,
+and a 2048-token Qwen3.6-27B chunk would stall ASR for ~4 s (512: ~1 s). Compare
+against mlx-lm with `prefill_step_size=512`.
 It also stops a generation that falls into a repetition loop (3 back-to-back
 copies of a ≥16-token block) instead of running to `max_tokens`. Attention layers
 use `llm/kv_cache.rs` (preallocated, written in place; sliding-window aware).
@@ -263,18 +277,22 @@ conv + gated delta-rule state, run as a custom Metal kernel in
 partial RoPE. The checkpoint's vision tower is not loaded. Qwen3.5 must not be
 run in thinking mode: under our greedy decoding its reasoning trace loops and
 never reaches the answer, so summaries and minutes use no-think (Qwen3 still
-summarizes in thinking mode). Qwen3.5-9B and Gemma 4 12B are not offered: their
-weights are split across two safetensors files, which the loader doesn't handle
-yet. (Both fixed every self-correction in testing but decode 2–3× slower than E4B.)
+summarizes in thinking mode). The same port runs Qwen3.6-27B (the notes model).
 
 With ASR (Whisper/Parakeet/Cohere) and post-processing (Qwen3) all in-process,
 the **Python sidecar is no longer needed** for the default experience — it stays
 only as an optional fallback for unported ASR models (e.g. Qwen3-ASR).
 
 Note: Whisper uses whisper.cpp's Metal backend while Parakeet/Cohere/Qwen3 use
-MLX's; both coexist in-process, serialized by the `ASREngine` mutex (concurrent
-Metal command encoding across the two backends is unsafe, so never run them in
-parallel — cargo tests for these must use `--test-threads=1`).
+MLX's; both coexist in-process. All GPU work goes through `rust-asr`'s FIFO
+GPU lock (`rust-asr/src/gpu.rs`): concurrent Metal command encoding across the
+two backends is unsafe, and MLX does no locking on the process-wide streams
+every thread shares (MLX 0.32 streams are thread-affine, so a model loaded on
+one thread would otherwise fail on another). ASR holds the lock per chunk, an
+LLM generation only per prefill chunk / decode step, and LLM calls run outside
+the `ASREngine` mutex on an `Arc<PostProcessor>` — so transcription keeps going
+while memo minutes or meeting notes are generated. Cargo tests that run models
+still use `--test-threads=1`; `rust-asr/tests/threads.rs` covers the threading.
 
 `ASREngine` in `transcription.rs` dispatches internally: for Whisper/Cohere it
 routes `load_model`/`transcribe`/`warmup`/status/cache to the in-process engine;

@@ -14,6 +14,8 @@ mod hotkey;
 mod partial;
 mod input;
 mod memo;
+mod meeting;
+mod system_audio;
 mod transcription;
 mod types;
 mod vad;
@@ -144,6 +146,7 @@ pub fn run() {
                 transcription_db: Arc::new(Mutex::new(db)),
                 continuous_pipeline: Mutex::new(None),
                 memo_recorder: Mutex::new(None),
+                meeting: Mutex::new(None),
             };
             app.manage(app_state);
 
@@ -219,7 +222,7 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if window.label() == "main" {
+            if window.label() == "main" || window.label() == "meeting" {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     if let Err(e) = window.hide() {
@@ -283,6 +286,14 @@ pub fn run() {
             commands::delete_memo,
             commands::reprocess_memo,
             commands::reveal_memo_audio,
+            commands::get_notes_model_status,
+            commands::set_notes_model,
+            commands::prepare_notes_model,
+            commands::start_meeting,
+            commands::stop_meeting,
+            commands::get_meeting_snapshot,
+            commands::get_meeting_status,
+            commands::open_meeting_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

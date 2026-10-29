@@ -52,6 +52,8 @@ export interface AppSettings {
   model_name: string | null;
   postprocess: PostProcessSettings;
   gated_access: GatedAccessSettings;
+  /** LLM for voice-memo minutes and meeting notes (set via setNotesModel). */
+  notes_model?: string | null;
 }
 
 // Tauri commands
@@ -344,6 +346,21 @@ export async function getPostprocessModelStatus(): Promise<PostProcessModelStatu
   return invoke("get_postprocess_model_status");
 }
 
+// Notes model: the LLM for voice-memo minutes and meeting notes, separate from
+// dictation post-processing. In these statuses `loaded` means "downloaded".
+export async function getNotesModelStatus(): Promise<PostProcessModelStatus> {
+  return invoke("get_notes_model_status");
+}
+
+export async function setNotesModel(modelName: string): Promise<PostProcessModelStatus> {
+  return invoke("set_notes_model", { modelName });
+}
+
+/** Download the notes model if it isn't yet. */
+export async function prepareNotesModel(): Promise<PostProcessModelStatus> {
+  return invoke("prepare_notes_model");
+}
+
 // Continuous listening types and commands
 export interface ContinuousListeningStatus {
   is_listening: boolean;
@@ -569,6 +586,115 @@ export function onMemoProgress(
   callback: (event: MemoProgressEvent) => void
 ): Promise<UnlistenFn> {
   return listen<MemoProgressEvent>("memo-progress", (event) => {
+    callback(event.payload);
+  });
+}
+
+// Meeting companion types and commands
+export type MeetingSource = "me" | "others";
+
+export interface MeetingLine {
+  id: number;
+  source: MeetingSource;
+  /** Seconds since the meeting started. */
+  start: number;
+  end: number;
+  text: string;
+}
+
+export type MeetingItemKind = "decision" | "action" | "open";
+export type MeetingItemChange = "added" | "updated" | "deleted";
+
+export interface MeetingItem {
+  id: string;
+  kind: MeetingItemKind;
+  text: string;
+  /** What happened to the item in the latest round; null = unchanged.
+   *  Items deleted in the latest round are still listed (as "deleted") until the next one. */
+  change: MeetingItemChange | null;
+  updated_round: number;
+}
+
+export type MeetingPhase = "running" | "finalizing" | "done" | "error";
+
+export interface MeetingSnapshot {
+  phase: MeetingPhase;
+  memo_id: number;
+  started_at: string;
+  /** Elapsed time, frozen once the meeting is stopped. */
+  duration_seconds: number;
+  lines: MeetingLine[];
+  items: MeetingItem[];
+  round: number;
+  warning: string | null;
+  error: string | null;
+}
+
+export interface MeetingStatus {
+  phase: MeetingPhase;
+  elapsed_seconds: number;
+  /** Input levels, 0.0–1.0. */
+  mic_level: number;
+  system_level: number;
+  /** True while an LLM update round is running. */
+  updating: boolean;
+  /** Seconds until the next update round, when scheduled. */
+  next_update_in: number | null;
+}
+
+export interface MeetingLineEvent extends MeetingLine {
+  memo_id: number;
+}
+
+export interface MeetingItemsEvent {
+  memo_id: number;
+  items: MeetingItem[];
+  round: number;
+}
+
+export interface MeetingStateEvent {
+  phase: MeetingPhase;
+  memo_id: number;
+  error: string | null;
+  warning: string | null;
+}
+
+export async function startMeeting(): Promise<MeetingSnapshot> {
+  return invoke("start_meeting");
+}
+
+/** Stops capture; the final update round runs before the phase becomes "done". */
+export async function stopMeeting(): Promise<MeetingSnapshot> {
+  return invoke("stop_meeting");
+}
+
+/** The current meeting, or the last finished one in this app session. */
+export async function getMeetingSnapshot(): Promise<MeetingSnapshot | null> {
+  return invoke("get_meeting_snapshot");
+}
+
+export async function getMeetingStatus(): Promise<MeetingStatus | null> {
+  return invoke("get_meeting_status");
+}
+
+export async function openMeetingWindow(): Promise<void> {
+  return invoke("open_meeting_window");
+}
+
+export function onMeetingLine(callback: (line: MeetingLineEvent) => void): Promise<UnlistenFn> {
+  return listen<MeetingLineEvent>("meeting-line", (event) => {
+    callback(event.payload);
+  });
+}
+
+export function onMeetingItems(callback: (event: MeetingItemsEvent) => void): Promise<UnlistenFn> {
+  return listen<MeetingItemsEvent>("meeting-items", (event) => {
+    callback(event.payload);
+  });
+}
+
+export function onMeetingState(callback: (event: MeetingStateEvent) => void): Promise<UnlistenFn> {
+  return listen<MeetingStateEvent>("meeting-state", (event) => {
     callback(event.payload);
   });
 }

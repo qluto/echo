@@ -50,6 +50,8 @@ impl ParakeetEngine {
             .map_err(|e| anyhow!("fetch model.safetensors: {e}"))?;
 
         let vocab = load_vocabulary(&config_path)?;
+        // Downloaded; building the model needs the GPU.
+        let _gpu = crate::gpu::lock();
         let weights = Weights::load(safetensors.to_str().ok_or_else(|| anyhow!("bad path"))?)?;
         let encoder = Encoder::load(&weights)?;
         let decoder = Decoder::load(&weights, vocab)?;
@@ -65,6 +67,7 @@ impl ParakeetEngine {
     /// Transcribe mono 16 kHz f32 samples. Parakeet-ja is Japanese-only; the
     /// language argument is ignored.
     pub fn transcribe_samples(&self, samples: &[f32], _language: &str) -> Result<Transcription> {
+        let _gpu = crate::gpu::lock();
         if samples.is_empty() {
             return Ok(Transcription {
                 text: String::new(),
@@ -94,6 +97,7 @@ impl ParakeetEngine {
     }
 
     pub fn warmup(&self) -> Result<()> {
+        let _gpu = crate::gpu::lock();
         let _ = self.transcribe_samples(&vec![0.0f32; 16000 / 2], "ja")?;
         Ok(())
     }

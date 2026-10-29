@@ -9,6 +9,8 @@ use crate::database;
 use crate::export;
 use crate::handy_keys;
 use crate::input::EnigoState;
+use crate::meeting;
+use crate::ASREngine;
 use crate::memo;
 use crate::transcription::{ModelCacheStatus, ModelStatus, WarmupResult};
 use crate::types::*;
@@ -154,6 +156,11 @@ pub fn update_settings(
         settings.gated_access.hf_token.as_ref().is_some_and(|t| !t.is_empty()),
     );
 
+    // The notes model is changed through `set_notes_model`; a settings object
+    // from an older UI state must not reset it.
+    let mut settings = settings;
+    settings.notes_model = state.settings.lock().map_err(|e| e.to_string())?.notes_model.clone();
+
     // Detect whether the effective HF token changed so we can push it into the sidecar.
     let new_effective_token = if settings.gated_access.enabled {
         settings.gated_access.hf_token.clone().filter(|t| !t.is_empty())
@@ -228,7 +235,7 @@ pub fn start_asr_engine(
     let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
 
     // Snapshot the bits we need from settings without holding the lock during sidecar spawn.
-    let (saved_model, saved_postprocess_model, hf_token) = {
+    let (saved_model, saved_postprocess_model, saved_notes_model, hf_token) = {
         let settings = state.settings.lock().map_err(|e| e.to_string())?;
         let token = if settings.gated_access.enabled {
             settings.gated_access.hf_token.clone()
@@ -238,6 +245,7 @@ pub fn start_asr_engine(
         (
             settings.model_name.clone(),
             settings.postprocess.model_name.clone(),
+            settings.notes_model.clone(),
             token,
         )
     };
@@ -273,6 +281,11 @@ pub fn start_asr_engine(
             if let Err(e) = asr_engine.set_postprocess_model(&name) {
                 log::warn!("Saved post-process model '{}' unavailable ({}); using default", name, e);
             }
+        }
+    }
+    if let Some(name) = saved_notes_model {
+        if let Err(e) = asr_engine.set_notes_model(&name) {
+            log::warn!("Saved notes model '{}' unavailable ({}); using default", name, e);
         }
     }
 
@@ -451,9 +464,8 @@ pub fn postprocess_text(
         .map(String::from);
     drop(settings);
 
-    let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
-    asr_engine
-        .postprocess_text(
+    ASREngine::postprocess_text(
+            &state.asr_engine,
             &text,
             app_name.as_deref(),
             app_bundle_id.as_deref(),
@@ -684,15 +696,57 @@ pub async fn summarize_recent_transcriptions(
     // Run summarization in blocking thread (LLM inference takes seconds)
     let asr_engine = Arc::clone(&state.asr_engine);
     tauri::async_runtime::spawn_blocking(move || {
-        let mut engine = asr_engine.lock().map_err(|e| e.to_string())?;
-        let mut result = engine
-            .summarize_transcriptions(&texts, language_hint.as_deref(), custom_summary_prompt.as_deref())
-            .map_err(|e| e.to_string())?;
+        let mut result = ASREngine::summarize_transcriptions(
+            &asr_engine,
+            &texts,
+            language_hint.as_deref(),
+            custom_summary_prompt.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
         result.entry_count = entry_count;
         Ok(result)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+// ===== Notes model (voice-memo minutes, meeting notes) =====
+
+#[tauri::command(async)]
+pub fn get_notes_model_status(state: tauri::State<'_, AppState>) -> Result<PostProcessModelStatus, String> {
+    let engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
+    Ok(engine.notes_model_status())
+}
+
+/// Select (and persist) the notes model. Does not download it: see `prepare_notes_model`.
+#[tauri::command(async)]
+pub fn set_notes_model(
+    model_name: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<PostProcessModelStatus, String> {
+    let status = state
+        .asr_engine
+        .lock()
+        .map_err(|e| e.to_string())?
+        .set_notes_model(&model_name)
+        .map_err(|e| e.to_string())?;
+    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+    settings.notes_model = Some(model_name);
+    let settings_clone = settings.clone();
+    drop(settings);
+    save_settings_to_store(&app, &settings_clone)?;
+    Ok(status)
+}
+
+/// Download the notes model if needed, so a memo or meeting doesn't wait for
+/// it. The engine lock is not held meanwhile; the model is not kept loaded.
+#[tauri::command(async)]
+pub fn prepare_notes_model(state: tauri::State<'_, AppState>) -> Result<PostProcessModelStatus, String> {
+    ASREngine::notes_llm(&state.asr_engine).map_err(|e| e.to_string())?;
+    let mut engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
+    engine.release_notes_model();
+    Ok(engine.notes_model_status())
 }
 
 // ===== Voice memo commands =====
@@ -815,7 +869,13 @@ pub fn reprocess_memo(
         .map_err(|e| e.to_string())?
         .as_ref()
         .is_some_and(|r| r.status().memo_id == id);
-    if is_recording {
+    let in_meeting = state
+        .meeting
+        .lock()
+        .map_err(|e| e.to_string())?
+        .as_ref()
+        .is_some_and(|m| m.is_active() && m.memo_id() == id);
+    if is_recording || in_meeting {
         return Err("Memo is still recording".to_string());
     }
     memo::start_processing(&app, id, retranscribe).map_err(|e| e.to_string())
@@ -933,4 +993,62 @@ pub fn open_accessibility_settings() -> Result<(), String> {
 #[tauri::command]
 pub fn restart_app(app: tauri::AppHandle) {
     app.restart();
+}
+
+// ===== Meeting companion commands =====
+
+/// Start a meeting (mic + system audio). Off the main thread: it waits for the
+/// microphone's first audio.
+#[tauri::command(async)]
+pub fn start_meeting(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<meeting::MeetingSnapshot, String> {
+    let mut current = state.meeting.lock().map_err(|e| e.to_string())?;
+    if current.as_ref().is_some_and(|m| m.is_active()) {
+        return Err("A meeting is already in progress".to_string());
+    }
+    let session = meeting::MeetingSession::start(&app).map_err(|e| format!("{e:#}"))?;
+    let snapshot = session.snapshot();
+    *current = Some(session);
+    Ok(snapshot)
+}
+
+/// Stop capturing; the final revision and saving finish in the background
+/// ("meeting-state" reports `done`).
+#[tauri::command(async)]
+pub fn stop_meeting(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<meeting::MeetingSnapshot, String> {
+    let mut current = state.meeting.lock().map_err(|e| e.to_string())?;
+    let session = current.as_mut().ok_or("No meeting in progress")?;
+    session.stop(&app);
+    Ok(session.snapshot())
+}
+
+/// Off the main thread: the meeting lock is held while a meeting starts.
+#[tauri::command(async)]
+pub fn get_meeting_snapshot(
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<meeting::MeetingSnapshot>, String> {
+    let current = state.meeting.lock().map_err(|e| e.to_string())?;
+    Ok(current.as_ref().map(|m| m.snapshot()))
+}
+
+#[tauri::command(async)]
+pub fn get_meeting_status(
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<meeting::MeetingStatus>, String> {
+    let current = state.meeting.lock().map_err(|e| e.to_string())?;
+    Ok(current.as_ref().map(|m| m.status()))
+}
+
+#[tauri::command]
+pub fn open_meeting_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("meeting")
+        .ok_or("Meeting window not found")?;
+    window.show().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())
 }
