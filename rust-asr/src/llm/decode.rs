@@ -10,6 +10,10 @@
 //!
 //! Greedy decoding can fall into a loop that repeats the same passage until
 //! `max_tokens`; that is cut off as soon as it is detected.
+//!
+//! The GPU lock is taken per prefill chunk and per decode step, never for the
+//! whole generation, so ASR on other threads gets in between steps instead of
+//! waiting out a minutes-long generation.
 
 use anyhow::Result;
 use mlx_rs::ops::indexing::argmax_axis;
@@ -18,8 +22,11 @@ use mlx_rs::transforms::async_eval;
 use mlx_rs::Array;
 use std::time::Instant;
 
-/// Prompt tokens fed per prefill forward pass (mlx-lm's default).
-const PREFILL_CHUNK: usize = 2048;
+/// Prompt tokens fed per prefill forward pass. mlx-lm's default is 2048, but
+/// one chunk is one GPU-lock hold: at 2048 a Qwen3.6-27B chunk stalls ASR on
+/// other threads for ~4 s, at 512 for ~1 s. (Greedy output matches mlx-lm run
+/// with `prefill_step_size=512`.)
+const PREFILL_CHUNK: usize = 512;
 
 /// A loop is the output ending in this many back-to-back copies of a block…
 const LOOP_REPEATS: usize = 3;
@@ -45,6 +52,7 @@ pub fn greedy(
     let start = Instant::now();
     let mut pos = 0;
     for chunk in head.chunks(PREFILL_CHUNK) {
+        let _gpu = crate::gpu::lock();
         let l = forward(&Array::from_slice(chunk, &[chunk.len() as i32]), pos)?;
         pos += chunk.len() as i32;
         // Materialize each chunk's caches before queuing the next one.
@@ -59,18 +67,24 @@ pub fn greedy(
         Ok(next)
     };
 
-    let mut next = step(&Array::from_slice(&[last], &[1]), pos)?;
+    let mut next = {
+        let _gpu = crate::gpu::lock();
+        step(&Array::from_slice(&[last], &[1]), pos)?
+    };
     pos += 1;
     let mut out = Vec::new();
     let mut first_token_at = None;
     while out.len() < max_tokens {
-        // Queue the following step on the still-lazy token before syncing.
-        let following = if out.len() + 1 < max_tokens {
-            Some(step(&reshape(&next, &[1])?, pos)?)
-        } else {
-            None
+        let (following, tok) = {
+            let _gpu = crate::gpu::lock();
+            // Queue the following step on the still-lazy token before syncing.
+            let following = if out.len() + 1 < max_tokens {
+                Some(step(&reshape(&next, &[1])?, pos)?)
+            } else {
+                None
+            };
+            (following, next.item_cast::<u32>() as i32)
         };
-        let tok = next.item_cast::<u32>() as i32;
         first_token_at.get_or_insert_with(Instant::now);
         if stop_ids.contains(&tok) {
             break;

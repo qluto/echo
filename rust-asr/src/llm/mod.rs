@@ -76,6 +76,11 @@ pub struct PostProcessor {
     think_end_id: Option<i32>,
 }
 
+// One model may serve two generations at once (dictation cleanup during a
+// meeting round). `&self` methods only read the weights and build per-call
+// graphs and caches, and every MLX call they make runs under `gpu::lock`.
+unsafe impl Sync for PostProcessor {}
+
 impl PostProcessor {
     pub fn load(hub_cache_dir: &Path, model_id: &str) -> Result<Self> {
         use hf_hub::api::sync::ApiBuilder;
@@ -92,15 +97,15 @@ impl PostProcessor {
             .map_err(|e| anyhow!("config: {e}"))?;
         let tok_path = crate::hf::fetch_small_file(hub_cache_dir, model_id, "tokenizer.json", None)
             .map_err(|e| anyhow!("tokenizer: {e}"))?;
-        let st = repo
-            .get("model.safetensors")
-            .map_err(|e| anyhow!("weights: {e}"))?;
+        let weight_files = weight_files(&repo, hub_cache_dir, model_id)?;
 
         let tokenizer =
             Tokenizer::from_file(&tok_path).map_err(|e| anyhow!("tokenizer load: {e}"))?;
         let token_id = |t: &str| tokenizer.token_to_id(t).map(|id| id as i32);
         let config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config_path)?)?;
-        let weights = crate::weights::Weights::load(st.to_str().ok_or_else(|| anyhow!("path"))?)?;
+        // Downloaded; building the model needs the GPU.
+        let _gpu = crate::gpu::lock();
+        let weights = crate::weights::Weights::load_all(&weight_files)?;
         let model = match config.get("model_type").and_then(|v| v.as_str()) {
             Some("qwen3_5") => {
                 // config.json's eos is <|endoftext|>; a chat turn ends at <|im_end|>.
@@ -210,6 +215,37 @@ impl PostProcessor {
         let _ = self.process("テスト", None, None, None, None)?;
         Ok(())
     }
+}
+
+/// The checkpoint's safetensors files: `model.safetensors`, or the shards
+/// listed in `model.safetensors.index.json` for larger models.
+fn weight_files(repo: &hf_hub::api::sync::ApiRepo, hub_cache_dir: &Path, model_id: &str) -> Result<Vec<std::path::PathBuf>> {
+    const INDEX: &str = "model.safetensors.index.json";
+    let index_cached = hub_cache_dir
+        .join("echo-direct")
+        .join(model_id.replace('/', "--"))
+        .join(INDEX)
+        .is_file();
+    if !index_cached {
+        if let Ok(single) = repo.get("model.safetensors") {
+            return Ok(vec![single]);
+        }
+    }
+    let index = crate::hf::fetch_small_file(hub_cache_dir, model_id, INDEX, None)
+        .map_err(|e| anyhow!("weights: no model.safetensors and no index ({e})"))?;
+    let index: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&index)?)?;
+    let mut shards: Vec<&str> = index["weight_map"]
+        .as_object()
+        .ok_or_else(|| anyhow!("{INDEX}: no weight_map"))?
+        .values()
+        .filter_map(|v| v.as_str())
+        .collect();
+    shards.sort_unstable();
+    shards.dedup();
+    shards
+        .into_iter()
+        .map(|f| repo.get(f).map_err(|e| anyhow!("weights {f}: {e}")))
+        .collect()
 }
 
 /// Qwen chat template (system + user). When `thinking` is false this matches

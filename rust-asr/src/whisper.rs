@@ -58,6 +58,8 @@ impl WhisperEngine {
             .get(file)
             .map_err(|e| anyhow!("fetch {file} from {GGML_REPO}: {e}"))?;
 
+        // Downloaded; only creating the Metal context needs the GPU.
+        let _gpu = crate::gpu::lock();
         let mut params = WhisperContextParameters::default();
         params.use_gpu(true);
         let ctx = WhisperContext::new_with_params(
@@ -71,6 +73,7 @@ impl WhisperEngine {
 
     /// Transcribe mono 16 kHz f32 samples in [-1, 1].
     pub fn transcribe_samples(&self, samples: &[f32], language: &str) -> Result<Transcription> {
+        let _gpu = crate::gpu::lock();
         let lang = language.trim().to_lowercase();
         if samples.is_empty() {
             return Ok(Transcription {
@@ -137,6 +140,7 @@ impl WhisperEngine {
 
     /// Warm up with a short silent buffer to compile Metal kernels.
     pub fn warmup(&self) -> Result<()> {
+        let _gpu = crate::gpu::lock();
         let _ = self.transcribe_samples(&vec![0.0f32; 16000], "en")?;
         Ok(())
     }

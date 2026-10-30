@@ -5,6 +5,7 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { TranscriptionHistory } from "./components/TranscriptionHistory";
 import { SummaryModal } from "./components/SummaryModal";
 import { MemoSection } from "./components/MemoSection";
+import { MeetingCard } from "./components/MeetingCard";
 import { useTranscription } from "./hooks/useTranscription";
 import { useContinuousListening } from "./hooks/useContinuousListening";
 import { useSummarize } from "./hooks/useSummarize";
@@ -568,6 +569,9 @@ function App() {
 
         {/* Voice memo: record, then transcript + minutes */}
         <MemoSection />
+
+        {/* Meeting companion: opens its own window */}
+        <MeetingCard />
 
         {/* Separator between mode cards and results */}
         <div className="h-px -mx-5" style={{ backgroundColor: "var(--border-subtle)" }} />

@@ -3,6 +3,7 @@ use tauri_plugin_store::StoreExt;
 
 use crate::continuous;
 use crate::database;
+use crate::meeting;
 use crate::memo;
 use crate::transcription::ASREngine;
 
@@ -18,6 +19,9 @@ pub struct Settings {
     pub postprocess: PostProcessSettings,
     #[serde(default)]
     pub gated_access: GatedAccessSettings,
+    /// LLM for voice-memo minutes and meeting notes. None = default.
+    #[serde(default)]
+    pub notes_model: Option<String>,
 }
 
 impl Default for Settings {
@@ -30,6 +34,7 @@ impl Default for Settings {
             model_name: None,
             postprocess: PostProcessSettings::default(),
             gated_access: GatedAccessSettings::default(),
+            notes_model: None,
         }
     }
 }
@@ -275,6 +280,8 @@ pub struct AppState {
     pub continuous_pipeline: Mutex<Option<continuous::ContinuousPipeline>>,
     /// The voice memo being recorded, if any.
     pub memo_recorder: Mutex<Option<memo::MemoRecorder>>,
+    /// The meeting in progress, or the last one this session (for its window).
+    pub meeting: Mutex<Option<meeting::MeetingSession>>,
 }
 
 /// Recording state

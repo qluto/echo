@@ -583,7 +583,7 @@ fn streaming_thread(
 /// When the device natively supports 16kHz, no resampling is needed.
 /// Otherwise, uses rubato's sinc interpolation for high-quality resampling
 /// (matching Python sounddevice's driver-level resampling quality).
-struct FrameAccumulator {
+pub(crate) struct FrameAccumulator {
     native_rate: u32,
     native_channels: usize,
     /// Buffer of 16kHz mono samples waiting to be emitted as 512-sample frames.
@@ -598,7 +598,7 @@ struct FrameAccumulator {
 }
 
 impl FrameAccumulator {
-    fn new(
+    pub(crate) fn new(
         native_rate: u32,
         native_channels: usize,
         frame_sender: crossbeam_channel::Sender<Vec<f32>>,
@@ -642,7 +642,7 @@ impl FrameAccumulator {
         })
     }
 
-    fn push_samples(&mut self, data: &[f32]) {
+    pub(crate) fn push_samples(&mut self, data: &[f32]) {
         // Convert to mono first
         let mono: Vec<f32> = if self.native_channels == 1 {
             data.to_vec()

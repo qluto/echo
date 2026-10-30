@@ -4,6 +4,8 @@
 <dict>
     <key>NSMicrophoneUsageDescription</key>
     <string>Echo uses the microphone to record audio for speech-to-text transcription.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Echo captures the audio of your calls (Zoom, Google Meet, ...) to transcribe the other participants in meeting mode.</string>
     <key>NSAccessibilityUsageDescription</key>
     <string>Echo needs accessibility access to register global hotkeys for voice recording and to auto-insert transcribed text.</string>
 </dict>

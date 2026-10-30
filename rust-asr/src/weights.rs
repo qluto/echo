@@ -14,6 +14,16 @@ impl Weights {
         Ok(Self { map })
     }
 
+    /// One checkpoint split across several safetensors files.
+    pub fn load_all(paths: &[std::path::PathBuf]) -> Result<Self> {
+        let mut map = HashMap::new();
+        for path in paths {
+            let path = path.to_str().ok_or_else(|| anyhow!("bad path {path:?}"))?;
+            map.extend(Self::load(path)?.map);
+        }
+        Ok(Self { map })
+    }
+
     /// Raw array as stored (BF16 for most cohere tensors).
     pub fn raw(&self, key: &str) -> Result<&Array> {
         self.map

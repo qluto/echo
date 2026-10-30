@@ -95,7 +95,7 @@ pub struct GatedDeltaKernel {
 }
 
 // The handle is an immutable kernel description; MLX kernels may be applied
-// from any thread (callers serialize GPU work through the engine mutex).
+// from any thread (callers serialize GPU work through `gpu::lock`).
 unsafe impl Send for GatedDeltaKernel {}
 unsafe impl Sync for GatedDeltaKernel {}
 
