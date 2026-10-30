@@ -49,7 +49,7 @@ const UPDATE_EVERY: Duration = Duration::from_secs(180);
 const UPDATE_OVERLAP_SEC: f64 = 60.0;
 /// A round is skipped while less than this much new text has come in.
 const MIN_NEW_CHARS: usize = 20;
-const ITEMS_MAX_TOKENS: usize = 1536;
+const ITEMS_MAX_TOKENS: usize = 2048;
 
 const fn samples(sec: f64) -> usize {
     (sec * VAD_SAMPLE_RATE as f64) as usize
@@ -82,9 +82,10 @@ const ECHO_MARGIN_SEC: f64 = 3.0;
 
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(3);
 
-const ITEMS_PROMPT: &str = "You keep the live notes of a meeting: its decisions, action items and open questions. Every few minutes you get the current notes and the newest part of the speech-recognition transcript, and you rewrite the notes so they are up to date.
+const ITEMS_PROMPT: &str = "You keep the live notes of a meeting: the main topics discussed, its decisions, action items and open questions. Every few minutes you get the current notes and the newest part of the speech-recognition transcript, and you rewrite the notes so they are up to date.
 
 ## Sections
+- TOPIC: a main subject the meeting talked about, with the gist of what was said about it (key points, proposals, concerns, conclusions). One item per subject, one or two sentences. Every substantial discussion belongs here, even when nothing was decided, so this section is rarely empty.
 - DECISION: what the participants agreed on, including agreed dates and schedules. Not a topic or a mere proposal.
 - ACTION: a concrete task someone will do. Include the owner and deadline only if they were said.
 - OPEN: a specific question or issue that was raised and still needs an answer. Not the meeting's agenda or a topic in general.
@@ -94,10 +95,11 @@ const ITEMS_PROMPT: &str = "You keep the live notes of a meeting: its decisions,
 - Transcript lines: `[MM:SS] <speaker>: <utterance>`. 自分 is the user; 相手 is everyone else (several people share it). Lines under \"Already reviewed\" are context only; work from the lines under \"New\". Expect recognition errors.
 
 ## Output
-First `Facts:`: one short line for every decision, task, open question, correction, retraction and answer in the New lines (`- none` if there is none).
-Then `Notes:`: the complete updated notes, in the same format as the input, with all three sections.
+First `Facts:`: one short line for every subject discussed and every decision, task, open question, correction, retraction and answer in the New lines (`- none` if there is none).
+Then `Notes:`: the complete updated notes, in the same format as the input, with all four sections.
 - Copy every current item that is still valid, with its [id], unchanged unless the New lines change it.
 - When the New lines revise an item (a changed date, a new owner, a reversed decision), rewrite that item's text and keep its [id]. Never keep both an old and a new version.
+- When the New lines go on with a subject already under TOPIC, keep its [id] and rewrite its text to cover the new points. Add a TOPIC only for a new subject. Never leave out a TOPIC: a subject that was settled or dropped was still discussed.
 - When an OPEN item is answered, move it (with its [id]) to DECISION or ACTION and rewrite it as the answer.
 - Leave out an item only when it was retracted, said to be wrong, cancelled or found unnecessary, or is an ACTION reported as done.
 - The outcome that settles an item is itself a DECISION: when a question or task is closed because, say, something turned out unnecessary, write that outcome as a DECISION rather than only dropping the item.
@@ -106,11 +108,13 @@ Then `Notes:`: the complete updated notes, in the same format as the input, with
 
 ## Rules
 - Use ONLY what was said. Never invent decisions, tasks, owners, deadlines, numbers or names.
-- One short sentence per item, in the transcript's language. Never put ids in the text. For an owner, use the name if it was said; otherwise write 自分 for the user and 相手 for the other side (they are labels: no さん).
+- One short sentence per item (a TOPIC may take two), in the transcript's language. Never put ids in the text. For an owner, use the name if it was said; otherwise write 自分 for the user and 相手 for the other side (they are labels: no さん).
 - No comments or explanations.
 
 ## Example
 Current notes:
+TOPIC:
+- [T1] 次回デモの日程と準備の分担を確認した
 DECISION:
 - [D1] 次回のデモは10日に行う
 ACTION:
@@ -124,6 +128,8 @@ New lines:
 [12:35] 相手: デモ環境は山田さんではなく佐藤さんが準備します。来週までにお願いします。
 [12:41] 相手: 会場はオンラインにするので予約は不要です。
 [12:50] 相手: 資料は誰が作りますか。
+[13:05] 相手: 別件ですが、問い合わせが増えていてサポートの負荷が高くなっています。
+[13:20] 自分: FAQを充実させれば減らせるかもしれませんね。
 Output:
 Facts:
 - デモは10日から12日に変更
@@ -131,7 +137,11 @@ Facts:
 - デモ環境の準備は佐藤さんに変更、期限は来週
 - 会場はオンラインで予約不要
 - 資料の作成者が未定
+- 問い合わせ増加でサポート負荷が高い、FAQ充実で減らせるかもしれない
 Notes:
+TOPIC:
+- [T1] 次回デモの日程、参加者、準備の分担と会場を見直した
+- [new] 問い合わせの増加でサポートの負荷が高く、FAQの充実で減らせるかもしれないという話が出た
 DECISION:
 - [D1] 次回のデモは12日に行う
 - [Q1] デモは顧客を呼ばず社内だけで行う
@@ -176,16 +186,18 @@ pub struct MeetingLine {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ItemKind {
+    Topic,
     Decision,
     Action,
     Open,
 }
 
 impl ItemKind {
-    const ALL: [Self; 3] = [Self::Decision, Self::Action, Self::Open];
+    const ALL: [Self; 4] = [Self::Topic, Self::Decision, Self::Action, Self::Open];
 
     fn keyword(self) -> &'static str {
         match self {
+            Self::Topic => "TOPIC",
             Self::Decision => "DECISION",
             Self::Action => "ACTION",
             Self::Open => "OPEN",
@@ -194,6 +206,7 @@ impl ItemKind {
 
     fn id_prefix(self) -> char {
         match self {
+            Self::Topic => 'T',
             Self::Decision => 'D',
             Self::Action => 'A',
             Self::Open => 'Q',
@@ -202,6 +215,7 @@ impl ItemKind {
 
     fn heading(self) -> &'static str {
         match self {
+            Self::Topic => "主に話されたこと",
             Self::Decision => "決定事項",
             Self::Action => "ネクストアクション",
             Self::Open => "残論点",
@@ -219,7 +233,7 @@ pub enum ItemChange {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MeetingItem {
-    /// `D1`, `A2`, `Q3`, …: stable for the item's lifetime.
+    /// `T1`, `D1`, `A2`, `Q3`, …: stable for the item's lifetime.
     pub id: String,
     pub kind: ItemKind,
     pub text: String,
@@ -442,7 +456,7 @@ enum Op {
 fn clean_id(raw: &str) -> Option<String> {
     let id = raw.trim_matches(|c: char| !c.is_ascii_alphanumeric()).to_ascii_uppercase();
     let mut chars = id.chars();
-    let valid = matches!(chars.next(), Some('D' | 'A' | 'Q'))
+    let valid = matches!(chars.next(), Some('T' | 'D' | 'A' | 'Q'))
         && id.len() > 1
         && chars.all(|c| c.is_ascii_digit());
     valid.then_some(id)
@@ -533,7 +547,7 @@ fn normalized(text: &str) -> String {
 #[derive(Debug, Default)]
 struct ItemBoard {
     items: Vec<MeetingItem>,
-    next_number: [u32; 3],
+    next_number: [u32; ItemKind::ALL.len()],
     round: u32,
 }
 
@@ -1400,6 +1414,8 @@ mod tests {
     fn notes_are_parsed_leniently() {
         let out = "Facts:\n- ACTION: these are scratch notes\n\
                    ## Notes:\n\
+                   TOPIC:\n\
+                   - [T1] リリース日程を話した\n\
                    **DECISION:**\n\
                    - [D1] リリースは来週木曜\n\
                    - [Q1]: 予算は100万円\n\
@@ -1412,6 +1428,7 @@ mod tests {
         assert_eq!(
             parse_notes(out).unwrap(),
             vec![
+                NoteLine { id: Some("T1".into()), kind: ItemKind::Topic, text: "リリース日程を話した".into() },
                 NoteLine { id: Some("D1".into()), kind: ItemKind::Decision, text: "リリースは来週木曜".into() },
                 NoteLine { id: Some("Q1".into()), kind: ItemKind::Decision, text: "予算は100万円".into() },
                 NoteLine { id: None, kind: ItemKind::Action, text: "鈴木さんがリリースノートを書く".into() },
@@ -1478,7 +1495,7 @@ mod tests {
         );
         assert_eq!(
             board.listing(),
-            "DECISION:\n- [D1] リリースは来週月曜\nACTION:\n- [A1] 金曜までに見積もりを作る\nOPEN:\n- none"
+            "TOPIC:\n- none\nDECISION:\n- [D1] リリースは来週月曜\nACTION:\n- [A1] 金曜までに見積もりを作る\nOPEN:\n- none"
         );
 
         // Next round: the deleted item is gone and flags reset; ids keep counting.
@@ -1509,7 +1526,7 @@ mod tests {
 
         assert_eq!(
             board.markdown(),
-            "## 決定事項\n- リリースは来週月曜\n- 予算は100万円\n\n## ネクストアクション\n- 木曜までに見積もりを作る\n\n## 残論点\nなし"
+            "## 主に話されたこと\nなし\n\n## 決定事項\n- リリースは来週月曜\n- 予算は100万円\n\n## ネクストアクション\n- 木曜までに見積もりを作る\n\n## 残論点\nなし"
         );
     }
 
@@ -1661,7 +1678,7 @@ mod tests {
         let input = revision_input(&board, &lines, 2, Some("ja")).unwrap();
         assert_eq!(
             input,
-            "## Current notes\nDECISION:\n- none\nACTION:\n- none\nOPEN:\n- none\n\n## Transcript\n\
+            "## Current notes\nTOPIC:\n- none\nDECISION:\n- none\nACTION:\n- none\nOPEN:\n- none\n\n## Transcript\n\
              ### Already reviewed\n[01:40] 相手: 前回までに確認済みの直近の発言です\n\
              ### New\n[02:00] 相手: 新しい発言その一、リリースは来週\n\
              [02:10] 自分: 新しい発言その二、見積もりは金曜まで\n\n(Primary language: ja)"

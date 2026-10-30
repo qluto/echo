@@ -63,7 +63,7 @@ export function MeetingCard() {
             <span
               className="text-[10px] leading-tight truncate"
               style={{ color: "var(--text-tertiary)" }}
-              title="Transcribe both sides of a call and keep decisions, actions and open questions up to date"
+              title="Transcribe both sides of a call and keep topics, decisions, actions and open questions up to date"
             >
               Live notes for calls
             </span>

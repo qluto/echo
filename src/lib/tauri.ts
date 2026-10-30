@@ -602,7 +602,7 @@ export interface MeetingLine {
   text: string;
 }
 
-export type MeetingItemKind = "decision" | "action" | "open";
+export type MeetingItemKind = "topic" | "decision" | "action" | "open";
 export type MeetingItemChange = "added" | "updated" | "deleted";
 
 export interface MeetingItem {
