@@ -8,6 +8,7 @@ import { MeetingItem, MeetingItemChange, MeetingItemKind, MeetingSource, Meeting
 const STICK_THRESHOLD = 40;
 
 const SECTIONS: { kind: MeetingItemKind; title: string; empty: string }[] = [
+  { kind: "topic", title: "主に話されたこと", empty: "まだ話題はありません" },
   { kind: "decision", title: "決定事項", empty: "まだ決まったことはありません" },
   { kind: "action", title: "ネクストアクション", empty: "まだアクションはありません" },
   { kind: "open", title: "残論点", empty: "未解決の論点はありません" },
@@ -24,7 +25,7 @@ const CHANGE_STYLES: Record<MeetingItemChange, { label: string; color: string; t
   deleted: { label: "削除", color: "var(--text-tertiary)", tint: "transparent" },
 };
 
-/** The three lists as Markdown; items deleted in the latest round are left out. */
+/** The lists as Markdown; items deleted in the latest round are left out. */
 const itemsToMarkdown = (items: MeetingItem[]) =>
   SECTIONS.map(({ kind, title }) => {
     const live = items.filter((i) => i.kind === kind && i.change !== "deleted");
@@ -266,7 +267,7 @@ export default function MeetingApp() {
           )}
         </section>
 
-        {/* Decisions / actions / open questions */}
+        {/* Topics / decisions / actions / open questions */}
         <section className="flex-1 min-w-0 flex flex-col rounded-xl bg-surface border border-subtle shadow-sm overflow-hidden">
           <div className="flex items-center px-4 py-2 border-b border-subtle shrink-0">
             <h2 className="text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
