@@ -40,3 +40,7 @@ whisper-rs = { version = "0.14", features = ["metal"] }
 
 [profile.release]
 opt-level = 3
+
+# Keep in sync with src-tauri/Cargo.toml (see the note there).
+[profile.dev.package."*"]
+debug = "line-tables-only"
