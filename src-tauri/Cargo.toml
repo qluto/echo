@@ -7,7 +7,6 @@ edition = "2021"
 
 [lib]
 name = "echo_lib"
-crate-type = ["lib", "cdylib", "staticlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
@@ -63,3 +62,8 @@ objc = "0.2"
 
 [lints.rust]
 unexpected_cfgs = "allow"
+
+# Keep backtraces, drop the full debug info of dependencies. Keep in sync with
+# rust-asr/Cargo.toml so the shared target dir reuses the same artifacts.
+[profile.dev.package."*"]
+debug = "line-tables-only"

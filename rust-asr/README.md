@@ -59,7 +59,7 @@ homophone/kanji-vs-kana greedy choices — not a bug.
 
 ```bash
 cargo build --release
-./target/release/rust-asr run /path/to/audio_16k_mono.wav ja
+../src-tauri/target/release/rust-asr run /path/to/audio_16k_mono.wav ja
 ```
 
 Other subcommands (parity harness): `smoke`, `audio <gt_dir>`,

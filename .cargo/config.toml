@@ -1,3 +1,8 @@
+[build]
+# src-tauri and rust-asr are separate workspaces; sharing one target dir keeps
+# them from compiling MLX and whisper.cpp twice. Relative to the repo root.
+target-dir = "src-tauri/target"
+
 [env]
 # MLX builds its M5 "NAX" kernels (~3x faster prefill) only when the deployment
 # target is >= macOS 26.2; without this, plain `cargo build` targets the host OS

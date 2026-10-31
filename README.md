@@ -147,9 +147,9 @@ The in-process engines can be exercised directly via the `rust-asr` crate:
 
 ```bash
 cd rust-asr && cargo build --release
-./target/release/rust-asr run <audio_16k.wav> <lang>   # Whisper
-./target/release/rust-asr pk-run <audio.wav>           # Parakeet-JA
-./target/release/rust-asr pp "<text>" [qwen3-model]    # Post-processing
+../src-tauri/target/release/rust-asr run <audio_16k.wav> <lang>   # Whisper
+../src-tauri/target/release/rust-asr pk-run <audio.wav>           # Parakeet-JA
+../src-tauri/target/release/rust-asr pp "<text>" [qwen3-model]    # Post-processing
 ```
 
 ## Tech Stack

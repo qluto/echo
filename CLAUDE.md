@@ -31,9 +31,9 @@ npm run dev               # Start Vite dev server (no Tauri)
 
 # Rust ASR engine (standalone CLI / parity harness in rust-asr/)
 cd rust-asr && cargo build --release
-./target/release/rust-asr run <audio_16k.wav> <lang>      # Whisper
-./target/release/rust-asr pk-run <audio.wav>              # Parakeet-JA
-./target/release/rust-asr pp "<text>" [qwen3-model]       # Post-processing
+../src-tauri/target/release/rust-asr run <audio_16k.wav> <lang>      # Whisper
+../src-tauri/target/release/rust-asr pk-run <audio.wav>              # Parakeet-JA
+../src-tauri/target/release/rust-asr pp "<text>" [qwen3-model]       # Post-processing
 
 # Release (creates tag and triggers GitHub Actions)
 git tag -a v0.x.x -m "Release v0.x.x - description"
@@ -379,6 +379,7 @@ Required secrets:
 - Post-processor defaults to Gemma 4 E4B (4-bit) in no-think mode; `rust-asr chat <system_file> <user_file> [model] [max_tokens]` and `rust-asr ppbatch <cases.json> [model]` run it from the CLI and log prompt tokens, time to first token and decode tok/s
 - Custom prompts are stored as `null` when they match the default to simplify version upgrades
 - Active app detection happens on hotkey press, providing context for both ASR and post-processing
+- Before a Rust build, check `du -sh src-tauri/target` (`src-tauri` and `rust-asr` share this directory). Cargo never removes stale artifacts, so if it is over 15 GB, run `cargo clean` in `src-tauri/` first, then build. A clean debug build takes ~5 min. Delete a leftover `rust-asr/target` too; it is no longer used
 
 ### Always-On Pipeline Notes
 
