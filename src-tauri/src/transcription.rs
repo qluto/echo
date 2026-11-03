@@ -1,7 +1,7 @@
 //! ASR engine — fully in-process (no Python sidecar).
 //!
-//! All speech recognition (Whisper via whisper.cpp, Parakeet-JA and Cohere via
-//! Apple MLX) and LLMs (post-processing, memo minutes, meeting notes; via MLX) run natively in Rust
+//! All speech recognition (Whisper via whisper.cpp, Parakeet-JA, Haas-JA and
+//! Cohere via Apple MLX) and LLMs (post-processing, memo minutes, meeting notes; via MLX) run natively in Rust
 //! through the `rust-asr` crate. `ASREngine` owns the loaded engines and
 //! dispatches by the active model id. The dispatch is internal so all call
 //! sites (hotkey, commands, always-on pipeline) are unchanged.
@@ -14,12 +14,12 @@ use std::sync::{Arc, Mutex};
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager};
 
-use rust_asr::{CohereEngine, ParakeetEngine, PostProcessor, WhisperEngine};
+use rust_asr::{CohereEngine, HaasEngine, ParakeetEngine, PostProcessor, WhisperEngine};
 
 use crate::{TranscriptionResult, TranscriptionSegment};
 
 /// ASR models the picker offers; all are served in-process.
-const AVAILABLE_MODELS: [&str; 8] = [
+const AVAILABLE_MODELS: [&str; 9] = [
     "mlx-community/whisper-large-v3-turbo",
     "mlx-community/whisper-large-v3",
     "mlx-community/whisper-medium",
@@ -27,6 +27,7 @@ const AVAILABLE_MODELS: [&str; 8] = [
     "mlx-community/whisper-base",
     "mlx-community/whisper-tiny",
     "mlx-community/parakeet-tdt_ctc-0.6b-ja",
+    rust_asr::haas::HAAS_MODEL_ID,
     "CohereLabs/cohere-transcribe-03-2026",
 ];
 
@@ -118,6 +119,8 @@ pub struct ASREngine {
     whisper_loaded: bool,
     parakeet: Option<ParakeetEngine>,
     parakeet_loaded: bool,
+    haas: Option<HaasEngine>,
+    haas_loaded: bool,
     /// Loaded LLMs by model id: the post-processor's and the notes model's
     /// (one instance when they are the same). Shared so a generation runs
     /// without the engine lock — ASR keeps going meanwhile (rust-asr only
@@ -145,6 +148,8 @@ impl ASREngine {
             whisper_loaded: false,
             parakeet: None,
             parakeet_loaded: false,
+            haas: None,
+            haas_loaded: false,
             llms: HashMap::new(),
             postproc_model: DEFAULT_POSTPROCESS_MODEL.to_string(),
             notes_model: default_notes_model().to_string(),
@@ -204,6 +209,8 @@ impl ASREngine {
         self.whisper_loaded = false;
         self.parakeet = None;
         self.parakeet_loaded = false;
+        self.haas = None;
+        self.haas_loaded = false;
         self.llms.clear();
         rust_asr::release_unused_memory();
         Ok(())
@@ -235,6 +242,8 @@ impl ASREngine {
             self.whisper_loaded
         } else if rust_asr::is_parakeet_model(&self.active_model) {
             self.parakeet_loaded
+        } else if rust_asr::is_haas_model(&self.active_model) {
+            self.haas_loaded
         } else if rust_asr::is_cohere_model(&self.active_model) {
             self.cohere_loaded
         } else {
@@ -250,6 +259,8 @@ impl ASREngine {
             Some("models--ggerganov--whisper.cpp")
         } else if rust_asr::is_parakeet_model(name) {
             Some("models--mlx-community--parakeet-tdt_ctc-0.6b-ja")
+        } else if rust_asr::is_haas_model(name) {
+            Some("models--mrjnzzz--Haas-ja-v1.0-mlx")
         } else {
             None
         }
@@ -278,7 +289,7 @@ impl ASREngine {
         if !Self::is_supported(model_name) {
             return Err(anyhow!(
                 "Model '{}' is not supported by the in-process engine. \
-                 Choose Whisper, Parakeet (JA) or Cohere.",
+                 Choose Whisper, Parakeet (JA), Haas (JA) or Cohere.",
                 model_name
             ));
         }
@@ -290,6 +301,8 @@ impl ASREngine {
         self.whisper_loaded = false;
         self.parakeet = None;
         self.parakeet_loaded = false;
+        self.haas = None;
+        self.haas_loaded = false;
         // Return the freed model's GPU buffers to the OS (MLX caches them).
         rust_asr::release_unused_memory();
         Ok(self.status(false))
@@ -298,6 +311,7 @@ impl ASREngine {
     fn is_supported(name: &str) -> bool {
         rust_asr::is_whisper_model(name)
             || rust_asr::is_parakeet_model(name)
+            || rust_asr::is_haas_model(name)
             || rust_asr::is_cohere_model(name)
     }
 
@@ -321,6 +335,11 @@ impl ASREngine {
                 ParakeetEngine::load(&hub).map_err(|e| anyhow!("Failed to load Parakeet: {e}"))?;
             self.parakeet = Some(eng);
             self.parakeet_loaded = true;
+        } else if rust_asr::is_haas_model(&model) {
+            log::info!("Loading Haas (full Rust / MLX): {model}");
+            let eng = HaasEngine::load(&hub).map_err(|e| anyhow!("Failed to load Haas: {e}"))?;
+            self.haas = Some(eng);
+            self.haas_loaded = true;
         } else if rust_asr::is_cohere_model(&model) {
             log::info!("Loading Cohere (full Rust / MLX): {model}");
             let eng = CohereEngine::load(&hub, self.hf_token.as_deref())
@@ -358,6 +377,8 @@ impl ASREngine {
         let result: Result<()> = if let Some(e) = self.whisper.as_ref() {
             e.warmup().map_err(Into::into)
         } else if let Some(e) = self.parakeet.as_ref() {
+            e.warmup().map_err(Into::into)
+        } else if let Some(e) = self.haas.as_ref() {
             e.warmup().map_err(Into::into)
         } else if let Some(e) = self.cohere.as_ref() {
             e.warmup().map_err(Into::into)
@@ -425,6 +446,8 @@ impl ASREngine {
             e.transcribe_samples(samples, lang)
         } else if let Some(e) = self.parakeet.as_ref() {
             e.transcribe_samples(samples, lang)
+        } else if let Some(e) = self.haas.as_ref() {
+            e.transcribe_samples(samples, lang)
         } else if let Some(e) = self.cohere.as_ref() {
             e.transcribe_samples(samples, lang)
         } else {
@@ -452,7 +475,8 @@ impl ASREngine {
     /// in-progress (partial) decoding. whisper.cpp is too slow per call and
     /// hallucinates on truncated audio; the MLX encoder models are fine.
     pub fn supports_partial(&self) -> bool {
-        self.whisper.is_none() && (self.parakeet.is_some() || self.cohere.is_some())
+        self.whisper.is_none()
+            && (self.parakeet.is_some() || self.haas.is_some() || self.cohere.is_some())
     }
 
     /// Run Silero VAD over the whole 16 kHz clip; speech if enough frames clear
@@ -782,6 +806,19 @@ mod in_process_tests {
         engine
             .set_model("mlx-community/parakeet-tdt_ctc-0.6b-ja")
             .expect("set");
+        assert!(engine.load_model().expect("load").loaded);
+        assert!(engine.transcribe(WAV, Some("ja")).expect("transcribe").success);
+    }
+
+    #[test]
+    fn haas_routes_in_process() {
+        let Some(mut engine) = engine_with_hub() else { return };
+        let repo = ASREngine::cache_repo(rust_asr::haas::HAAS_MODEL_ID).expect("haas repo");
+        if !engine.hub_dir.as_ref().unwrap().join(repo).exists() {
+            eprintln!("skipping: haas not cached");
+            return;
+        }
+        engine.set_model(rust_asr::haas::HAAS_MODEL_ID).expect("set");
         assert!(engine.load_model().expect("load").loaded);
         assert!(engine.transcribe(WAV, Some("ja")).expect("transcribe").success);
     }
