@@ -4,6 +4,10 @@
 //! layout (no transpose), there is no inter-conv length masking (single
 //! utterance), and rel-pos encoding scales the input by sqrt(d_model)
 //! (xscaling=True). d_model 1024, 24 layers, 8 heads, 80-mel input.
+//!
+//! Haas-ja (`crate::haas`) uses this encoder too: 128-mel input, no biases in
+//! the conformer layers (`use_bias: false`), and subsampling convs keyed
+//! `pre_encode.convs.0..4`. Both layouts are detected from the weights.
 
 use anyhow::Result;
 use mlx_rs::fast::{scaled_dot_product_attention, ScaledDotProductAttentionMask};
@@ -24,36 +28,36 @@ const XSCALE: f32 = 32.0; // sqrt(1024)
 
 struct Attn {
     q_w: Array,
-    q_b: Array,
+    q_b: Option<Array>,
     k_w: Array,
-    k_b: Array,
+    k_b: Option<Array>,
     v_w: Array,
-    v_b: Array,
+    v_b: Option<Array>,
     pos_w: Array,
     out_w: Array,
-    out_b: Array,
+    out_b: Option<Array>,
     bias_u: Array,
     bias_v: Array,
 }
 
 struct ConvMod {
     pw1_w: Array,
-    pw1_b: Array,
+    pw1_b: Option<Array>,
     dw_w: Array,
-    dw_b: Array,
+    dw_b: Option<Array>,
     bn_w: Array,
     bn_b: Array,
     bn_rm: Array,
     bn_rv: Array,
     pw2_w: Array,
-    pw2_b: Array,
+    pw2_b: Option<Array>,
 }
 
 struct Ff {
     l1_w: Array,
-    l1_b: Array,
+    l1_b: Option<Array>,
     l2_w: Array,
-    l2_b: Array,
+    l2_b: Option<Array>,
 }
 
 struct Layer {
@@ -85,12 +89,18 @@ pub struct Encoder {
 
 impl Encoder {
     pub fn load(w: &Weights) -> Result<Self> {
-        let p = "encoder.pre_encode.conv";
+        // The five subsampling convs: NeMo's Sequential indices (ReLUs in
+        // between) in Parakeet-ja, renumbered 0..4 in the Haas-ja conversion.
+        // Conv weights are already in MLX layout in both checkpoints.
+        let names: Vec<String> = if w.contains("encoder.pre_encode.conv.0.weight") {
+            [0, 2, 3, 5, 6].iter().map(|i| format!("encoder.pre_encode.conv.{i}")).collect()
+        } else {
+            (0..5).map(|i| format!("encoder.pre_encode.convs.{i}")).collect()
+        };
         let mut sub_w = Vec::new();
-        for idx in [0usize, 2, 3, 5, 6] {
-            // conv weights are already in MLX layout in this checkpoint.
-            let wt = w.f32(&format!("{p}.{idx}.weight"))?;
-            let b = w.f32(&format!("{p}.{idx}.bias"))?;
+        for p in &names {
+            let wt = w.f32(&format!("{p}.weight"))?;
+            let b = w.f32(&format!("{p}.bias"))?;
             sub_w.push((wt, b));
         }
         let sub_groups = vec![1, 256, 1, 256, 1];
@@ -101,27 +111,28 @@ impl Encoder {
         for i in 0..N_LAYERS {
             let lp = format!("encoder.layers.{i}");
             let g = |s: &str| w.f32(&format!("{lp}.{s}"));
+            let opt = |s: &str| optional(w, &format!("{lp}.{s}"));
             layers.push(Layer {
                 n_ff1_w: g("norm_feed_forward1.weight")?,
                 n_ff1_b: g("norm_feed_forward1.bias")?,
                 ff1: Ff {
                     l1_w: g("feed_forward1.linear1.weight")?,
-                    l1_b: g("feed_forward1.linear1.bias")?,
+                    l1_b: opt("feed_forward1.linear1.bias")?,
                     l2_w: g("feed_forward1.linear2.weight")?,
-                    l2_b: g("feed_forward1.linear2.bias")?,
+                    l2_b: opt("feed_forward1.linear2.bias")?,
                 },
                 n_att_w: g("norm_self_att.weight")?,
                 n_att_b: g("norm_self_att.bias")?,
                 attn: Attn {
                     q_w: g("self_attn.linear_q.weight")?,
-                    q_b: g("self_attn.linear_q.bias")?,
+                    q_b: opt("self_attn.linear_q.bias")?,
                     k_w: g("self_attn.linear_k.weight")?,
-                    k_b: g("self_attn.linear_k.bias")?,
+                    k_b: opt("self_attn.linear_k.bias")?,
                     v_w: g("self_attn.linear_v.weight")?,
-                    v_b: g("self_attn.linear_v.bias")?,
+                    v_b: opt("self_attn.linear_v.bias")?,
                     pos_w: g("self_attn.linear_pos.weight")?,
                     out_w: g("self_attn.linear_out.weight")?,
-                    out_b: g("self_attn.linear_out.bias")?,
+                    out_b: opt("self_attn.linear_out.bias")?,
                     bias_u: g("self_attn.pos_bias_u")?,
                     bias_v: g("self_attn.pos_bias_v")?,
                 },
@@ -129,23 +140,23 @@ impl Encoder {
                 n_conv_b: g("norm_conv.bias")?,
                 conv: ConvMod {
                     pw1_w: g("conv.pointwise_conv1.weight")?,
-                    pw1_b: g("conv.pointwise_conv1.bias")?,
+                    pw1_b: opt("conv.pointwise_conv1.bias")?,
                     dw_w: g("conv.depthwise_conv.weight")?,
-                    dw_b: g("conv.depthwise_conv.bias")?,
+                    dw_b: opt("conv.depthwise_conv.bias")?,
                     bn_w: g("conv.batch_norm.weight")?,
                     bn_b: g("conv.batch_norm.bias")?,
                     bn_rm: g("conv.batch_norm.running_mean")?,
                     bn_rv: g("conv.batch_norm.running_var")?,
                     pw2_w: g("conv.pointwise_conv2.weight")?,
-                    pw2_b: g("conv.pointwise_conv2.bias")?,
+                    pw2_b: opt("conv.pointwise_conv2.bias")?,
                 },
                 n_ff2_w: g("norm_feed_forward2.weight")?,
                 n_ff2_b: g("norm_feed_forward2.bias")?,
                 ff2: Ff {
                     l1_w: g("feed_forward2.linear1.weight")?,
-                    l1_b: g("feed_forward2.linear1.bias")?,
+                    l1_b: opt("feed_forward2.linear1.bias")?,
                     l2_w: g("feed_forward2.linear2.weight")?,
-                    l2_b: g("feed_forward2.linear2.bias")?,
+                    l2_b: opt("feed_forward2.linear2.bias")?,
                 },
                 n_out_w: g("norm_out.weight")?,
                 n_out_b: g("norm_out.bias")?,
@@ -165,7 +176,20 @@ impl Encoder {
 
     /// mel [1, T, 80] -> encoder hidden states [1, T', 1024]
     pub fn forward(&self, mel: &Array) -> Result<Array> {
+        self.forward_valid(mel, None)
+    }
+
+    /// As [`forward`](Self::forward), for features padded past `valid_frames`
+    /// mel frames (NeMo's `pad_to`): the encoder frames computed from the
+    /// padding are dropped after subsampling. NeMo masks them in attention and
+    /// convolution; for a single utterance, dropping them is the same.
+    pub fn forward_valid(&self, mel: &Array, valid_frames: Option<i32>) -> Result<Array> {
         let mut x = self.subsample(mel)?;
+        if let Some(n) = valid_frames {
+            // NeMo calc_length for three stride-2 convs (kernel 3, pad 1).
+            let t = (0..3).fold(n, |n, _| (n - 1) / 2 + 1);
+            x = x.index((.., 0..t, ..));
+        }
         let pos_emb = rel_pos_encoding(x.shape()[1], D_MODEL)?;
         // xscaling: the input (not pos_emb) is scaled by sqrt(d_model)
         x = &x * Array::from_f32(XSCALE);
@@ -232,9 +256,9 @@ fn self_attention(a: &Attn, x: &Array, pos_emb: &Array) -> Result<Array> {
     let scale = (HEAD_DIM as f32).powf(-0.5);
     let p = linear(pos_emb, &a.pos_w, None)?;
     let pos_len = p.shape()[1];
-    let q = reshape(&linear(x, &a.q_w, Some(&a.q_b))?, &[b, q_len, N_HEADS, HEAD_DIM])?;
-    let k = reshape(&linear(x, &a.k_w, Some(&a.k_b))?, &[b, q_len, N_HEADS, HEAD_DIM])?;
-    let v = reshape(&linear(x, &a.v_w, Some(&a.v_b))?, &[b, q_len, N_HEADS, HEAD_DIM])?;
+    let q = reshape(&linear(x, &a.q_w, a.q_b.as_ref())?, &[b, q_len, N_HEADS, HEAD_DIM])?;
+    let k = reshape(&linear(x, &a.k_w, a.k_b.as_ref())?, &[b, q_len, N_HEADS, HEAD_DIM])?;
+    let v = reshape(&linear(x, &a.v_w, a.v_b.as_ref())?, &[b, q_len, N_HEADS, HEAD_DIM])?;
     let p = reshape(&p, &[1, pos_len, N_HEADS, HEAD_DIM])?;
     let q_u = (&q + &a.bias_u).transpose_axes(&[0, 2, 1, 3])?;
     let q_v = (&q + &a.bias_v).transpose_axes(&[0, 2, 1, 3])?;
@@ -254,25 +278,42 @@ fn self_attention(a: &Attn, x: &Array, pos_emb: &Array) -> Result<Array> {
         None,
     )?;
     let out = reshape(&out.transpose_axes(&[0, 2, 1, 3])?, &[b, q_len, D_MODEL])?;
-    linear(&out, &a.out_w, Some(&a.out_b))
+    linear(&out, &a.out_w, a.out_b.as_ref())
 }
 
 fn conv_module(c: &ConvMod, x: &Array) -> Result<Array> {
     let x = conv1d(x, &c.pw1_w, Some(1), Some(0), Some(1), Some(1))?;
-    let x = &x + &c.pw1_b;
+    let x = add_bias(x, c.pw1_b.as_ref());
     let x = glu(&x, 2)?;
     let x = conv1d(&x, &c.dw_w, Some(1), Some(4), Some(1), Some(D_MODEL))?;
-    let x = &x + &c.dw_b;
+    let x = add_bias(x, c.dw_b.as_ref());
     let x = batch_norm_eval(&x, &c.bn_w, &c.bn_b, &c.bn_rm, &c.bn_rv, BN_EPS)?;
     let x = silu(&x)?;
     let x = conv1d(&x, &c.pw2_w, Some(1), Some(0), Some(1), Some(1))?;
-    Ok(&x + &c.pw2_b)
+    Ok(add_bias(x, c.pw2_b.as_ref()))
+}
+
+fn add_bias(x: Array, b: Option<&Array>) -> Array {
+    match b {
+        Some(b) => &x + b,
+        None => x,
+    }
+}
+
+/// A bias that only some checkpoints carry (Haas-ja is trained with
+/// `use_bias: false`; Parakeet-ja has them).
+fn optional(w: &Weights, key: &str) -> Result<Option<Array>> {
+    if w.contains(key) {
+        Ok(Some(w.f32(key)?))
+    } else {
+        Ok(None)
+    }
 }
 
 fn feed_forward(f: &Ff, x: &Array) -> Result<Array> {
-    let h = linear(x, &f.l1_w, Some(&f.l1_b))?;
+    let h = linear(x, &f.l1_w, f.l1_b.as_ref())?;
     let h = silu(&h)?;
-    linear(&h, &f.l2_w, Some(&f.l2_b))
+    linear(&h, &f.l2_w, f.l2_b.as_ref())
 }
 
 fn conformer_layer(l: &Layer, x: &Array, pos_emb: &Array) -> Result<Array> {

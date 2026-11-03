@@ -144,6 +144,64 @@ fn main() -> Result<()> {
             println!("text: {:?} in {:?}", out.text, t.elapsed());
             Ok(())
         }
+        "haas-run" => {
+            // usage: haas-run <wav> [<wav> ...] — load once, transcribe each.
+            if args.len() < 3 {
+                return Err(anyhow!("usage: haas-run <wav> [<wav> ...]"));
+            }
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let t = std::time::Instant::now();
+            let eng = rust_asr::HaasEngine::load(std::path::Path::new(&hub))?;
+            println!("haas loaded in {:?}", t.elapsed());
+            eng.warmup()?;
+            for wav in &args[2..] {
+                let t = std::time::Instant::now();
+                let out = eng.transcribe_wav(wav, "ja")?;
+                println!("{wav}: {:?} in {:?}", out.text, t.elapsed());
+            }
+            Ok(())
+        }
+        "batch" => {
+            // usage: batch <haas|parakeet> <list.txt>
+            // Transcribes every wav path listed (one per line) with one model
+            // load; prints `<path>\t<text>` per file and the total time.
+            let (engine, list) = match (args.get(2), args.get(3)) {
+                (Some(e), Some(l)) => (e.as_str(), l),
+                _ => return Err(anyhow!("usage: batch <haas|parakeet> <list.txt>")),
+            };
+            let home = std::env::var("HOME").unwrap_or_default();
+            let hub = format!("{home}/Library/Caches/io.qluto.echo/huggingface/hub");
+            let hub = std::path::Path::new(&hub);
+            let run: Box<dyn Fn(&[f32]) -> Result<String>> = match engine {
+                "haas" => {
+                    let e = rust_asr::HaasEngine::load(hub)?;
+                    e.warmup()?;
+                    Box::new(move |s| Ok(e.transcribe_samples(s, "ja")?.text))
+                }
+                "parakeet" => {
+                    let e = rust_asr::ParakeetEngine::load(hub)?;
+                    e.warmup()?;
+                    Box::new(move |s| Ok(e.transcribe_samples(s, "ja")?.text))
+                }
+                other => return Err(anyhow!("unknown engine {other}")),
+            };
+            let (mut audio_s, mut infer) = (0.0f64, std::time::Duration::ZERO);
+            for path in std::fs::read_to_string(list)?.lines().filter(|l| !l.is_empty()) {
+                let samples = rust_asr::read_wav_16k_mono(path)?;
+                audio_s += samples.len() as f64 / 16000.0;
+                let t = std::time::Instant::now();
+                let text = run(&samples)?;
+                infer += t.elapsed();
+                println!("{path}\t{text}");
+            }
+            eprintln!(
+                "{engine}: {audio_s:.0}s audio in {:.1}s (RTFx {:.0})",
+                infer.as_secs_f64(),
+                audio_s / infer.as_secs_f64()
+            );
+            Ok(())
+        }
         "pk-loop" => {
             // Reproduce the always-on memory growth: transcribe variable-length
             // slices of <wav> repeatedly and watch MLX active/cache memory.

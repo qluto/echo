@@ -33,6 +33,7 @@ npm run dev               # Start Vite dev server (no Tauri)
 cd rust-asr && cargo build --release
 ../src-tauri/target/release/rust-asr run <audio_16k.wav> <lang>      # Whisper
 ../src-tauri/target/release/rust-asr pk-run <audio.wav>              # Parakeet-JA
+../src-tauri/target/release/rust-asr haas-run <audio.wav>...         # Haas-JA
 ../src-tauri/target/release/rust-asr pp "<text>" [qwen3-model]       # Post-processing
 
 # Release (creates tag and triggers GitHub Actions)
@@ -210,7 +211,7 @@ This ensures models are removed when the app is uninstalled. The following envir
 
 ### In-Process Rust ASR Engines (`rust-asr/`)
 
-Three ASR models run **fully in Rust in-process** (no Python sidecar) via the
+Four ASR models run **fully in Rust in-process** (no Python sidecar) via the
 `rust-asr` crate:
 - **Whisper** (the non-gated **default**) → `WhisperEngine`, backed by
   whisper.cpp through `whisper-rs` on Metal. Downloads a ggml model from
@@ -222,6 +223,19 @@ Three ASR models run **fully in Rust in-process** (no Python sidecar) via the
   JSUT), ~160 ms inference. The FastConformer encoder shares the Cohere port's
   building blocks; the TDT decoder is a hand-rolled 2-layer LSTM prediction net
   + joint net + greedy transducer loop. f32 weights, no quantization.
+- **Haas-ja-v1.0 (JA)** → `HaasEngine` (`rust-asr/src/haas/`), Third
+  Intelligence's Parakeet-TDT variant (Apache-2.0, non-gated): the same
+  FastConformer encoder as Parakeet (`parakeet/encoder.rs`; 128-mel input, no
+  biases) and a TDT decoder whose prediction net is 2 layers of Kimi Delta
+  Attention instead of an LSTM (recurrent form only, `haas/kda.rs`, following
+  fla 0.5.2's naive reference). Weights: the unofficial MLX conversion
+  `mrjnzzz/Haas-ja-v1.0-mlx`, **pinned to a commit** (`HAAS_REVISION`) since it
+  is a personal repo; run in f32. Vocab is read from SentencePiece
+  `tokenizer.model` (`haas/spm.rs`, byte fallback). Audio over 30 s is cut at
+  quiet points (the model was trained on ≤30 s). On FLEURS ja test it beats
+  Parakeet-ja by 1.8 pt CER (published: 3.67 vs 5.50 strict); most of its
+  benchmark gain is kanji/kana choice (flex/kana CER ≈ Parakeet's). Check with
+  `rust-asr haas-run <wav>...` / `rust-asr batch <haas|parakeet> <list.txt>`.
 - **Cohere Transcribe** (gated, opt-in) → `CohereEngine`, a full-Rust MLX port
   (`mlx-rs` / Apple MLX). Gated checkpoint fetched via `hf-hub` with the HF token.
 
