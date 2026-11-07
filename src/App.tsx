@@ -37,6 +37,26 @@ type LoadingPhase =
   | "ready"
   | "error";
 
+type Tab = "input" | "log" | "memos";
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: "input", label: "Input" },
+  { id: "log", label: "Log" },
+  { id: "memos", label: "Memos" },
+];
+
+const TAB_KEY = "echo.mainTab";
+
+const loadTab = (): Tab => {
+  try {
+    const saved = localStorage.getItem(TAB_KEY);
+    if (TABS.some((t) => t.id === saved)) return saved as Tab;
+  } catch {
+    // storage unavailable: use the default
+  }
+  return "input";
+};
+
 const LOADING_MESSAGES: Record<LoadingPhase, string> = {
   idle: "Initializing...",
   starting_engine: "Starting engine...",
@@ -70,6 +90,15 @@ function App() {
   const [summaryWindowMinutes, setSummaryWindowMinutes] = useState(30);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [tab, setTab] = useState<Tab>(loadTab);
+  const selectTab = useCallback((next: Tab) => {
+    setTab(next);
+    try {
+      localStorage.setItem(TAB_KEY, next);
+    } catch {
+      // not remembered: fine
+    }
+  }, []);
   const [loadingPhase, setLoadingPhase] = useState<LoadingPhase>("idle");
   const [modelName, setModelName] = useState<string>("mlx-community/whisper-large-v3-turbo");
   const [hotkey, setHotkey] = useState<string>("command+shift+space");
@@ -511,12 +540,91 @@ function App() {
         </div>
       </header>
 
-      {/* Content */}
-      <main className="flex-1 px-5 py-5 flex flex-col gap-6 overflow-auto">
-        {/* Mode Cards */}
-        <div className="flex gap-3">
+      {/* Tabs */}
+      <nav className="flex gap-1 px-5 pt-3 flex-shrink-0" role="tablist">
+        {TABS.map(({ id, label }) => (
+          <button
+            key={id}
+            role="tab"
+            aria-selected={tab === id}
+            onClick={() => selectTab(id)}
+            className="flex-1 h-7 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors"
+            style={{
+              backgroundColor: tab === id ? "var(--surface)" : "transparent",
+              color: tab === id ? "var(--text-primary)" : "var(--text-tertiary)",
+              boxShadow: tab === id ? "0 1px 2px rgba(0, 0, 0, 0.06)" : "none",
+            }}
+          >
+            {label}
+            {id === "log" && isListening && (
+              <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: "var(--glow-idle)" }} aria-label="Always-on is on" />
+            )}
+          </button>
+        ))}
+      </nav>
+
+      {/* Content: every tab stays mounted so its hooks keep running */}
+      <main className="flex-1 min-h-0 flex flex-col">
+        {/* Hotkey Error */}
+        {hotkeyError && (
+          <div className="px-5 pt-3 flex-shrink-0">
+            <div
+              className="px-3 py-2.5 rounded-lg text-xs flex flex-col gap-2.5"
+              style={{
+                backgroundColor: "rgba(198, 125, 99, 0.15)",
+                color: "var(--glow-recording)",
+              }}
+            >
+              <div className="flex items-start gap-2">
+                <svg className="w-4 h-4 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+                </svg>
+                <span>
+                  {showRestartPrompt
+                    ? "Permission granted? Restart to apply."
+                    : "Accessibility permission required for hotkey"}
+                </span>
+              </div>
+              <div className="flex gap-2">
+                {!showRestartPrompt ? (
+                  <button
+                    onClick={async () => {
+                      await requestAccessibilityPermission();
+                      await openAccessibilitySettings();
+                      setShowRestartPrompt(true);
+                    }}
+                    className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+                    style={{ backgroundColor: "var(--glow-recording)", color: "white" }}
+                  >
+                    Open System Settings
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => restartApp()}
+                      className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+                      style={{ backgroundColor: "var(--glow-idle)", color: "white" }}
+                    >
+                      Restart App
+                    </button>
+                    <button
+                      onClick={() => openAccessibilitySettings()}
+                      className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors border"
+                      style={{ borderColor: "var(--border-subtle)", color: "var(--text-secondary)" }}
+                    >
+                      Open Settings
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Input: hotkey dictation */}
+        <div className={`flex-1 min-h-0 overflow-y-auto px-5 py-4 flex-col gap-4 ${tab === "input" ? "flex" : "hidden"}`}>
           {/* Quick Input Card */}
-          <div className="flex-1 min-w-0 flex items-center gap-2 rounded-xl bg-surface px-3 py-2.5 border shadow-sm" style={{ borderColor: "#E8E4DF" }}>
+          <div className="flex items-center gap-2 rounded-xl bg-surface px-3 py-2.5 border shadow-sm" style={{ borderColor: "#E8E4DF" }}>
             <div className="flex flex-col min-w-0 flex-1">
               <span className="text-[13px] font-semibold leading-tight truncate" style={{ color: "var(--text-primary)" }}>
                 Quick Input
@@ -534,10 +642,83 @@ function App() {
                 {formatHotkey(hotkey)}
               </span>
             </div>
-          </div>
+        </div>
 
+          {/* Last Input Section */}
+          <div className="flex flex-col gap-2">
+            <span
+              className="text-[11px] font-semibold tracking-wide"
+              style={{ color: "var(--text-tertiary)" }}
+            >
+              Last input
+            </span>
+
+            <div className="flex flex-col rounded-[14px] bg-surface p-3.5 gap-3 shadow-sm border" style={{ borderColor: "#E8E4DF" }}>
+              {error ? (
+                <p className="text-sm" style={{ color: "var(--glow-recording)" }}>{error}</p>
+              ) : result?.text ? (
+                <>
+                  {result.raw_text ? (
+                    <div className="flex flex-col gap-2.5">
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-semibold tracking-wide" style={{ color: "var(--text-tertiary)" }}>
+                            元の書き起こし
+                          </span>
+                          <div className="flex items-center gap-2">
+                            {result.language && (
+                              <span className="font-mono text-[10px] capitalize px-1.5 py-0.5 rounded-md" style={{ color: "var(--text-tertiary)", backgroundColor: "var(--surface-muted)" }}>
+                                {result.language}
+                              </span>
+                            )}
+                            {copyButton(result.raw_text, "raw")}
+                          </div>
+                        </div>
+                        <p className="text-sm leading-relaxed" style={{ color: "var(--text-tertiary)" }}>
+                          {result.raw_text}
+                        </p>
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-semibold tracking-wide" style={{ color: "var(--text-tertiary)" }}>
+                            AI 整形後（コピー対象）
+                          </span>
+                          {copyButton(result.text, "proc")}
+                        </div>
+                        <p className="text-sm leading-relaxed" style={{ color: "var(--text-primary)" }}>
+                          {result.text}
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center justify-end gap-2">
+                        {result.language && (
+                          <span className="font-mono text-[10px] capitalize px-1.5 py-0.5 rounded-md" style={{ color: "var(--text-tertiary)", backgroundColor: "var(--surface-muted)" }}>
+                            {result.language}
+                          </span>
+                        )}
+                        {copyButton(result.text, "single")}
+                      </div>
+                      <p className="text-sm leading-relaxed" style={{ color: "var(--text-primary)" }}>
+                        {result.text}
+                      </p>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p className="text-xs text-center py-2" style={{ color: "var(--text-tertiary)" }}>
+                  Press and hold the hotkey to transcribe
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Log: always-on + history */}
+        <div className={`flex-1 min-h-0 px-5 py-4 flex-col gap-4 ${tab === "log" ? "flex" : "hidden"}`}>
           {/* Always-on Card */}
-          <div className="flex-1 min-w-0 flex items-center gap-2 rounded-xl bg-surface px-3 py-2.5 border shadow-sm" style={{ borderColor: "#E8E4DF" }}>
+          <div className="flex items-center gap-2 rounded-xl bg-surface px-3 py-2.5 border shadow-sm" style={{ borderColor: "#E8E4DF" }}>
             <div className="flex flex-col min-w-0 flex-1">
               <span className="text-[13px] font-semibold leading-tight truncate" style={{ color: "var(--text-primary)" }}>
                 Always-on
@@ -566,160 +747,33 @@ function App() {
                 }}
               />
             </button>
-          </div>
         </div>
 
-        {/* Voice memo: record, then transcript + minutes */}
-        <MemoSection />
+          {/* Listening Error */}
+          {listeningError && (
+            <div
+              className="px-3 py-2 rounded-lg text-xs"
+              style={{ backgroundColor: "rgba(198, 125, 99, 0.15)", color: "var(--glow-recording)" }}
+            >
+              {listeningError}
+            </div>
+          )}
 
-        {/* Meeting companion: opens its own window */}
-        <MeetingCard />
-
-        {/* Separator between mode cards and results */}
-        <div className="h-px -mx-5" style={{ backgroundColor: "var(--border-subtle)" }} />
-
-        {/* Hotkey Error */}
-        {hotkeyError && (
-          <div
-            className="px-3 py-2.5 rounded-lg text-xs flex flex-col gap-2.5"
-            style={{
-              backgroundColor: "rgba(198, 125, 99, 0.15)",
-              color: "var(--glow-recording)",
+          {/* Transcription History */}
+          <TranscriptionHistory
+            onSummarize={(minutes) => {
+              setSummaryWindowMinutes(minutes);
+              summarize(minutes);
             }}
-          >
-            <div className="flex items-start gap-2">
-              <svg className="w-4 h-4 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
-              </svg>
-              <span>
-                {showRestartPrompt
-                  ? "Permission granted? Restart to apply."
-                  : "Accessibility permission required for hotkey"}
-              </span>
-            </div>
-            <div className="flex gap-2">
-              {!showRestartPrompt ? (
-                <button
-                  onClick={async () => {
-                    await requestAccessibilityPermission();
-                    await openAccessibilitySettings();
-                    setShowRestartPrompt(true);
-                  }}
-                  className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
-                  style={{ backgroundColor: "var(--glow-recording)", color: "white" }}
-                >
-                  Open System Settings
-                </button>
-              ) : (
-                <>
-                  <button
-                    onClick={() => restartApp()}
-                    className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
-                    style={{ backgroundColor: "var(--glow-idle)", color: "white" }}
-                  >
-                    Restart App
-                  </button>
-                  <button
-                    onClick={() => openAccessibilitySettings()}
-                    className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors border"
-                    style={{ borderColor: "var(--border-subtle)", color: "var(--text-secondary)" }}
-                  >
-                    Open Settings
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Listening Error */}
-        {listeningError && (
-          <div
-            className="px-3 py-2 rounded-lg text-xs"
-            style={{ backgroundColor: "rgba(198, 125, 99, 0.15)", color: "var(--glow-recording)" }}
-          >
-            {listeningError}
-          </div>
-        )}
-
-        {/* Last Input Section */}
-        <div className="flex flex-col gap-2">
-          <span
-            className="text-[11px] font-semibold tracking-wide"
-            style={{ color: "var(--text-tertiary)" }}
-          >
-            Last input
-          </span>
-
-          <div className="flex flex-col rounded-[14px] bg-surface p-3.5 gap-3 shadow-sm border" style={{ borderColor: "#E8E4DF" }}>
-            {error ? (
-              <p className="text-sm" style={{ color: "var(--glow-recording)" }}>{error}</p>
-            ) : result?.text ? (
-              <>
-                {result.raw_text ? (
-                  <div className="flex flex-col gap-2.5">
-                    <div className="flex flex-col gap-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-semibold tracking-wide" style={{ color: "var(--text-tertiary)" }}>
-                          元の書き起こし
-                        </span>
-                        <div className="flex items-center gap-2">
-                          {result.language && (
-                            <span className="font-mono text-[10px] capitalize px-1.5 py-0.5 rounded-md" style={{ color: "var(--text-tertiary)", backgroundColor: "var(--surface-muted)" }}>
-                              {result.language}
-                            </span>
-                          )}
-                          {copyButton(result.raw_text, "raw")}
-                        </div>
-                      </div>
-                      <p className="text-sm leading-relaxed" style={{ color: "var(--text-tertiary)" }}>
-                        {result.raw_text}
-                      </p>
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-semibold tracking-wide" style={{ color: "var(--text-tertiary)" }}>
-                          AI 整形後（コピー対象）
-                        </span>
-                        {copyButton(result.text, "proc")}
-                      </div>
-                      <p className="text-sm leading-relaxed" style={{ color: "var(--text-primary)" }}>
-                        {result.text}
-                      </p>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex flex-col gap-1">
-                    <div className="flex items-center justify-end gap-2">
-                      {result.language && (
-                        <span className="font-mono text-[10px] capitalize px-1.5 py-0.5 rounded-md" style={{ color: "var(--text-tertiary)", backgroundColor: "var(--surface-muted)" }}>
-                          {result.language}
-                        </span>
-                      )}
-                      {copyButton(result.text, "single")}
-                    </div>
-                    <p className="text-sm leading-relaxed" style={{ color: "var(--text-primary)" }}>
-                      {result.text}
-                    </p>
-                  </div>
-                )}
-              </>
-            ) : (
-              <p className="text-xs text-center py-2" style={{ color: "var(--text-tertiary)" }}>
-                Press and hold the hotkey to transcribe
-              </p>
-            )}
-          </div>
+            isSummarizing={isSummarizing}
+          />
         </div>
 
-        {/* Transcription History */}
-        <TranscriptionHistory
-          onSummarize={(minutes) => {
-            setSummaryWindowMinutes(minutes);
-            summarize(minutes);
-          }}
-          isSummarizing={isSummarizing}
-        />
+        {/* Memos: voice memos + meeting companion */}
+        <div className={`flex-1 min-h-0 overflow-y-auto px-5 py-4 flex-col gap-4 ${tab === "memos" ? "flex" : "hidden"}`}>
+          <MeetingCard />
+          <MemoSection />
+        </div>
       </main>
 
       {/* Footer */}

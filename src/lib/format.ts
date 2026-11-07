@@ -4,6 +4,8 @@
 
 export const formatHotkey = (hotkey: string): string => {
   return hotkey
+    // Legacy format, before "command" below turns it into "⌘Or⌃"
+    .replace(/commandorcontrol/gi, "⌘")
     // Remove fn when combined with function keys (fn+f12 -> f12)
     .replace(/\bfn\+?(f(?:[1-9]|1[0-9]|2[0-4]))\b/gi, "$1")
     .replace(/command/gi, "⌘")
@@ -21,8 +23,6 @@ export const formatHotkey = (hotkey: string): string => {
     .replace(/tab/gi, "⇥")
     // Function keys - uppercase for readability
     .replace(/\b(f[1-9]|f1[0-9]|f2[0-4])\b/gi, (match) => match.toUpperCase())
-    // Legacy format support
-    .replace("CommandOrControl", "⌘")
     .replace(/\+/g, "");
 };
 

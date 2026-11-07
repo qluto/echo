@@ -26,7 +26,7 @@ use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, WindowEvent,
+    AppHandle, Emitter, Manager, RunEvent, WindowEvent,
 };
 
 pub use input::EnigoState;
@@ -296,8 +296,34 @@ pub fn run() {
             commands::get_meeting_status,
             commands::open_meeting_window,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Clicking the Dock icon brings the (hidden) main window back.
+            #[cfg(target_os = "macos")]
+            if let RunEvent::Reopen { .. } = event {
+                show_main_window(app);
+            }
+        });
+}
+
+/// Bring the main window back, wherever it went: hidden by its close
+/// button, minimized, or behind other apps.
+fn show_main_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        log::error!("Main window not found");
+        return;
+    };
+    log::info!("Showing main window");
+    if let Err(e) = window.unminimize() {
+        log::warn!("Failed to unminimize main window: {e}");
+    }
+    if let Err(e) = window.show() {
+        log::error!("Failed to show main window: {e}");
+    }
+    if let Err(e) = window.set_focus() {
+        log::warn!("Failed to focus main window: {e}");
+    }
 }
 
 /// Setup system tray icon and menu
@@ -315,12 +341,7 @@ fn setup_system_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>>
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            }
+            "show" => show_main_window(app),
             "quit" => {
                 log::info!("Quit requested from tray menu");
                 app.exit(0);
@@ -328,16 +349,14 @@ fn setup_system_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>>
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
+            // Act on mouse down, as macOS menu bar items do.
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
+                button_state: MouseButtonState::Down,
                 ..
             } = event
             {
-                if let Some(window) = tray.app_handle().get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+                show_main_window(tray.app_handle());
             }
         })
         .build(app)?;
