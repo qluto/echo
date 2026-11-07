@@ -3,23 +3,18 @@
 //! This module handles global hotkey registration and events
 //! using tauri-plugin-global-shortcut.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
-/// Flag to track whether continuous listening was active when hotkey was pressed.
-/// Used to auto-resume after hotkey transcription completes.
-static WAS_LISTENING: AtomicBool = AtomicBool::new(false);
-
-/// Register a global hotkey
-#[allow(dead_code)]
 /// Draft decoder for the recording in progress (hotkey held).
 static PARTIAL_DECODER: std::sync::Mutex<Option<crate::partial::PartialDecoder>> =
     std::sync::Mutex::new(None);
 
+/// Register a global hotkey
+#[allow(dead_code)]
 pub fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<()> {
     // Unregister all existing hotkeys first
     if let Err(e) = app.global_shortcut().unregister_all() {
@@ -62,16 +57,8 @@ pub fn trigger_hotkey_released(app: &AppHandle) {
 fn handle_hotkey_pressed(app: &AppHandle) {
     log::info!("Hotkey pressed - starting recording");
 
-    // Pause continuous listening if active
-    if let Some(state) = app.try_state::<crate::AppState>() {
-        if let Ok(mut pipeline) = state.continuous_pipeline.lock() {
-            if let Some(mut p) = pipeline.take() {
-                log::info!("Pausing continuous listening for hotkey recording");
-                p.stop();
-                WAS_LISTENING.store(true, Ordering::SeqCst);
-            }
-        }
-    }
+    // Always-on logging must not transcribe the dictation too.
+    crate::continuous::set_muted(crate::continuous::Mute::Dictation, true);
 
     app.emit(
         "recording-state-change",
@@ -194,7 +181,9 @@ fn handle_hotkey_released(app: &AppHandle) {
     let app_clone = app.clone();
     std::thread::spawn(move || {
         // Stop recording
-        if let Err(e) = crate::audio_capture::stop_recording() {
+        let stopped = crate::audio_capture::stop_recording();
+        crate::continuous::set_muted(crate::continuous::Mute::Dictation, false);
+        if let Err(e) = stopped {
             log::error!("Failed to stop recording: {}", e);
             crate::TranscriptionStatusEvent::emit(
                 &app_clone,
@@ -454,48 +443,6 @@ fn handle_hotkey_released(app: &AppHandle) {
                 serde_json::json!({"state": "idle"}),
             )
             .ok();
-
-        // Resume continuous listening if it was active before hotkey press
-        if WAS_LISTENING.swap(false, Ordering::SeqCst) {
-            log::info!("Resuming continuous listening after hotkey transcription");
-            if let Some(state) = app_clone.try_state::<crate::AppState>() {
-                let settings = state.settings.lock().ok();
-                let language = settings
-                    .as_ref()
-                    .map(|s| {
-                        if s.language == "auto" {
-                            None
-                        } else {
-                            Some(s.language.clone())
-                        }
-                    })
-                    .unwrap_or(None);
-                let device_name = settings.and_then(|s| s.device_name.clone());
-
-                let asr_engine = Arc::clone(&state.asr_engine);
-                let db = Arc::clone(&state.transcription_db);
-
-                match crate::continuous::ContinuousPipeline::start(
-                    app_clone.clone(),
-                    asr_engine,
-                    db,
-                    language,
-                    device_name,
-                    1.5,
-                    60,
-                ) {
-                    Ok(pipeline) => {
-                        if let Ok(mut p) = state.continuous_pipeline.lock() {
-                            *p = Some(pipeline);
-                        }
-                        log::info!("Continuous listening resumed");
-                    }
-                    Err(e) => {
-                        log::error!("Failed to resume continuous listening: {}", e);
-                    }
-                }
-            }
-        }
     });
 }
 

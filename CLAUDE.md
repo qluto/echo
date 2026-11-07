@@ -56,14 +56,14 @@ git push origin v0.x.x
 
 ### Data Flow: Always-On Transcription Mode
 
-1. **Start listening** → `continuous.rs` launches the pipeline
-2. **Audio capture** → `audio_capture.rs` (`StreamingCapture`) captures at 16kHz mono via cpal, sends 512-sample frames over crossbeam channel. Prefers native 16kHz capture; falls back to sinc resampling (rubato) if device doesn't support it.
-3. **VAD** → `vad.rs` runs Silero VAD v5 (ONNX Runtime) per frame on a dedicated thread, classifying speech vs silence
-4. **Segment detection** → `VadStateMachine` in `continuous.rs` manages speech onset/offset with 0.3s pre-buffer, 1.5s silence timeout, 60s max segment duration
-5. **WAV save** → Completed segments saved to temp WAV files (16kHz mono 16-bit PCM)
-6. **ASR** → Transcription worker thread calls the in-process engine (same as hotkey mode)
-7. **Storage** → Results saved to SQLite via `database.rs` (FTS5 full-text search enabled)
-8. **Frontend** → `continuous-transcription` Tauri event emitted, rendered in `TranscriptionHistory.tsx`
+Built on the same live capture as the meeting companion (`live.rs`), without speaker labels, recording or LLM notes.
+
+1. **Start listening** → `start_continuous_listening` → `ContinuousPipeline::start` (`continuous.rs`). `live::start_captures` starts the mic (`StreamingCapture`) and the system audio tap (`SystemAudioCapture`), and fails if the mic delivers no first frame within 3 s. If system audio can't start, it logs the mic only and `status().warning` says why
+2. **Chunking** → `live::audio_loop` cuts each source into 4–15 s chunks at pauses. There is no VAD segmentation. A chunk reaches ASR only if it is not silent and either stands out from the noise floor or (`vad_gate`) the VAD hears speech in it
+3. **ASR** → `live::asr_worker` calls `ASREngine::transcribe_samples`, taking the engine lock per chunk. A mic line said while system audio was loud is held, then dropped if it is an echo of the other side's transcript
+4. **Storage** → each line becomes one `transcriptions` row (`database.rs`, FTS5), and `continuous-transcription` is emitted to `TranscriptionHistory.tsx`
+5. **Muting** → `continuous::set_muted` stops transcription of the mic during hotkey dictation, a voice memo or a meeting, and of system audio too during a meeting. The pipeline keeps running; the chunk in progress is cut where muting starts
+6. **Stop** → closes the captures and returns at once; queued chunks are transcribed and saved in the background
 
 ### Data Flow: Voice Memo (record → minutes)
 
@@ -84,8 +84,8 @@ Memos left `recording`/`transcribing`/`summarizing` by an exit become `interrupt
 - **Dual Transcription Paths**: Transcription can be triggered via hotkey (handled entirely in Rust) or manual stop (via frontend hook).
 - **Model Switching**: Users can switch between Whisper and Qwen3-ASR models at runtime via Settings panel.
 - **Context-Aware Post-Processing**: Active app detection (via NSWorkspace API in `active_app.rs`) provides context for LLM-based cleanup. Customizable system prompts in Advanced Settings.
-- **Always-On Pipeline**: `continuous.rs` orchestrates a 3-thread pipeline (audio capture → VAD → transcription worker). Audio is streamed as 512-sample (32ms) frames at 16kHz via crossbeam channels. Silero VAD (ONNX, `vad.rs`) classifies each frame; `VadStateMachine` tracks speech state with pre-buffering. LSTM state is reset between segments (matching Python CLI behavior). Resampling uses rubato sinc interpolation when native 16kHz is unavailable.
-- **Transcription History DB**: `database.rs` provides SQLite storage with FTS5 full-text search for always-on transcriptions. Schema is compatible with echo-cli's Python implementation.
+- **Live Capture (`live.rs`)**: shared by always-on and the meeting companion. It captures mic + system audio as 512-sample (32 ms) 16 kHz frames and runs an audio thread that chunks at pauses and never waits on ASR (the chunk channel is unbounded). An ASR worker thread does the echo check. Callers plug in through `AudioObserver` (levels, muting) and the `on_line` callback.
+- **Transcription History DB**: `database.rs` provides SQLite storage with FTS5 full-text search for always-on transcriptions.
 
 ### ASR Model Support
 
@@ -137,7 +137,8 @@ Optional LLM-based cleanup using Gemma 4 E4B (`mlx-community/gemma-4-e4b-it-4bit
 - `src-tauri/src/hotkey.rs` - Hotkey press/release handling, coordinates recording + transcription
 - `src-tauri/src/transcription.rs` - `ASREngine`: owns + dispatches the in-process Rust engines (ASR + post-processing)
 - `src-tauri/src/active_app.rs` - Active application detection via NSWorkspace API
-- `src-tauri/src/continuous.rs` - Always-on pipeline: VAD state machine, segment detection, transcription worker
+- `src-tauri/src/live.rs` - Live capture shared by always-on and meetings: mic + system audio, chunking at pauses, ASR worker with echo check
+- `src-tauri/src/continuous.rs` - Always-on logging on `live.rs`: history rows, muting while dictation / memo / meeting use the audio
 - `src-tauri/src/vad.rs` - Silero VAD v5 wrapper (ONNX Runtime via `voice_activity_detector` crate)
 - `src-tauri/src/audio_capture.rs` - Audio recording (hotkey mode) + streaming capture (always-on mode, with rubato resampling)
 - `src-tauri/src/database.rs` - SQLite storage with FTS5 for transcription history, plus the `memos` table
@@ -397,13 +398,8 @@ Required secrets:
 
 ### Always-On Pipeline Notes
 
-- VAD and ASR run on separate threads — VAD must never block on ASR
-- Silero VAD LSTM state is reset after each segment finalization (matching Python CLI's `vad.reset_states()`)
-- VAD threshold comparison uses strict `>` (not `>=`) to match Python behavior
-- `StreamingCapture` prefers native 16kHz device capture; uses rubato sinc interpolation as fallback for resampling (replaces earlier linear interpolation)
-- VAD segments are saved as 16kHz mono 16-bit PCM WAV files in `~/Library/Caches/echo/vad_segments/`
-- Segments shorter than 0.5s are discarded (noise filtering)
-- Pre-buffer (0.3s / 9 frames) preserves speech onset that would otherwise be clipped
-- Maximum segment duration is 60s, after which a forced split occurs
-- The echo-cli Python implementation (`echo-cli/`) served as the reference for all VAD parameters and behavior
-- Database schema in `database.rs` is compatible with echo-cli's Python database for potential data migration
+- The audio thread must never block on ASR: frames go cpal callback → bounded(256) channel → audio thread, and chunks go audio thread → unbounded channel → ASR worker
+- Chunking constants (4–15 s, pause = 0.5 s at 18 dB below speech, −55 dBFS silence, prominence of 15 dB over the 30 s noise floor) live in `live.rs` and are shared with meetings
+- No temp WAV files: chunks go to `transcribe_samples` from memory
+- The `continuous-activity` event (`{active}`) drives the float window's ambient indicator. An unmuted frame above −40 dBFS turns it on, and it stays on for 0.8 s
+- Check changes with `cargo test live_end_to_end -- --ignored --nocapture` against a two-track recording (see the test's doc comment)

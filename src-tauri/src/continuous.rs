@@ -1,31 +1,66 @@
-//! Continuous listening pipeline: streaming audio → VAD → segment detection → ASR → DB.
+//! Always-on logging: the microphone and system audio, transcribed
+//! continuously into the transcription history.
 //!
-//! Ports echo-cli's recorder.py + listener.py logic to Rust.
-//! ASR runs fully in-process via `ASREngine` (no Python sidecar).
+//! Same capture → chunk → ASR pipeline as the meeting companion (`live`):
+//! chunks are cut at pauses (4–15 s) rather than picked out by a VAD, and the
+//! other side's voice picked up by the mic is dropped as echo. Unlike a
+//! meeting there are no speaker labels, no recording and no LLM notes: each
+//! transcribed chunk becomes one history row.
+//!
+//! The mic is muted (its audio not transcribed) while hotkey dictation, a
+//! voice memo or a meeting has it; system audio too during a meeting, which
+//! transcribes it itself.
 
-use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::cell::{Cell, RefCell};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
+use std::thread;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use crossbeam_channel as channel;
-use hound::{SampleFormat as HoundSampleFormat, WavSpec, WavWriter};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-use crate::audio_capture::StreamingCapture;
 use crate::database::{TranscriptionDb, TranscriptionEntry};
+use crate::live::{self, AudioObserver, Captures, Chunk, Source};
 use crate::transcription::ASREngine;
 use crate::types::{StatusKind, StatusSource, TranscriptionStatusEvent};
-use crate::vad::{VadEvent, VadProcessor, VAD_FRAME_SIZE, VAD_SAMPLE_RATE};
 
-/// A speech segment detected by VAD, ready for transcription.
-struct SpeechSegment {
-    audio_path: PathBuf,
-    duration_seconds: f64,
+/// Something else is using the audio always-on would transcribe.
+#[derive(Debug, Clone, Copy)]
+pub enum Mute {
+    /// Hotkey dictation (mic).
+    Dictation = 1,
+    /// A voice memo (mic).
+    Memo = 2,
+    /// A meeting (mic and system audio).
+    Meeting = 4,
 }
+
+/// Bit set of active `Mute` reasons. Global so that muting works whether or
+/// not always-on is running (it may start mid-meeting).
+static MUTED: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_muted(reason: Mute, on: bool) {
+    if on {
+        MUTED.fetch_or(reason as u8, Ordering::SeqCst);
+    } else {
+        MUTED.fetch_and(!(reason as u8), Ordering::SeqCst);
+    }
+}
+
+fn is_muted(source: Source) -> bool {
+    let muted = MUTED.load(Ordering::SeqCst);
+    match source {
+        Source::Me => muted != 0,
+        Source::Others => muted & Mute::Meeting as u8 != 0,
+    }
+}
+
+/// A frame this loud counts as sound for the activity indicator…
+const ACTIVE_DBFS: f32 = -40.0;
+/// …which stays on this many frames (~0.8 s) after the last one.
+const ACTIVE_HOLD_FRAMES: u32 = 25;
 
 /// Event emitted to frontend when a continuous transcription completes.
 #[derive(Debug, Clone, Serialize)]
@@ -42,504 +77,178 @@ pub struct ContinuousTranscriptionEvent {
 #[derive(Debug, Clone, Serialize)]
 pub struct ContinuousListeningStatus {
     pub is_listening: bool,
+    /// Lines saved since listening started.
     pub segment_count: u32,
+    /// System audio is captured along with the mic.
+    pub system_audio: bool,
+    /// Why system audio isn't captured, if it couldn't start.
+    pub warning: Option<String>,
 }
 
-/// The continuous listening pipeline.
-///
-/// Architecture:
-/// ```text
-/// [cpal callback thread]  →  channel<Vec<f32>>  →  [VAD processor thread]
-///   captures audio                                    runs Silero VAD per frame
-///   resamples to 16kHz                                detects speech segments
-///                                                     saves WAV files
-///                                                  →  channel<SpeechSegment>  →  [transcription worker]
-///                                                                                  calls in-process ASR
-///                                                                                  saves to DB
-///                                                                                  emits events
-/// ```
+impl ContinuousListeningStatus {
+    pub fn idle() -> Self {
+        Self { is_listening: false, segment_count: 0, system_audio: false, warning: None }
+    }
+}
+
+/// Always-on listening in progress.
 pub struct ContinuousPipeline {
-    streaming_capture: Option<StreamingCapture>,
-    vad_handle: Option<JoinHandle<()>>,
-    worker_handle: Option<JoinHandle<()>>,
-    stop_flag: Arc<AtomicBool>,
-    segment_count: Arc<AtomicU32>,
+    captures: Captures,
+    line_count: Arc<AtomicU32>,
+    warning: Option<String>,
 }
 
 impl ContinuousPipeline {
-    /// Start the continuous listening pipeline.
+    /// Start capturing and transcribing. Fails if the microphone delivers no
+    /// audio; without system audio it logs the mic only (see `status().warning`).
     pub fn start(
         app: AppHandle,
         asr_engine: Arc<Mutex<ASREngine>>,
         db: Arc<Mutex<TranscriptionDb>>,
         language: Option<String>,
         device_name: Option<String>,
-        silence_sec: f64,
-        max_segment_sec: u32,
     ) -> Result<Self> {
-        let stop_flag = Arc::new(AtomicBool::new(false));
-        let segment_count = Arc::new(AtomicU32::new(0));
+        let (captures, inputs, system_error) = live::start_captures(device_name)?;
+        let warning = system_error.map(|e| format!("システム音声を取得できないため、マイクのみ記録します: {e}"));
+        let line_count = Arc::new(AtomicU32::new(0));
 
-        // Create temp directory for speech segment WAV files
-        let tmp_dir = dirs::cache_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("echo")
-            .join("vad_segments");
-        std::fs::create_dir_all(&tmp_dir)?;
-
-        // Channels
-        let (frame_tx, frame_rx) = channel::bounded::<Vec<f32>>(256);
-        let (segment_tx, segment_rx) = channel::bounded::<SpeechSegment>(10);
-
-        // 1. Start streaming audio capture
-        let capture = StreamingCapture::start(device_name, frame_tx)?;
-
-        // 2. Start VAD processor thread
-        let vad_stop = Arc::clone(&stop_flag);
-        let vad_tmp_dir = tmp_dir.clone();
-        let vad_app = app.clone();
-        let vad_handle = thread::Builder::new()
-            .name("echo-vad".into())
-            .spawn(move || {
-                if let Err(e) = vad_thread(
-                    frame_rx,
-                    segment_tx,
-                    vad_stop,
-                    vad_app,
-                    silence_sec,
-                    max_segment_sec,
-                    &vad_tmp_dir,
-                ) {
-                    log::error!("VAD thread error: {}", e);
+        let (chunk_tx, chunk_rx) = channel::unbounded::<Chunk>();
+        {
+            let app = app.clone();
+            thread::Builder::new().name("echo-always-on-audio".into()).spawn(move || {
+                let observer = Activity::new(app);
+                if let Err(e) = live::audio_loop(inputs, chunk_tx, None, &observer) {
+                    log::error!("Always-on audio thread failed: {e:#}");
                 }
+                observer.set_active(false);
             })?;
-
-        // 3. Start transcription worker thread
-        let worker_stop = Arc::clone(&stop_flag);
-        let worker_count = Arc::clone(&segment_count);
-        let worker_handle = thread::Builder::new()
-            .name("echo-transcribe-worker".into())
-            .spawn(move || {
-                transcription_worker(
-                    segment_rx,
-                    asr_engine,
-                    db,
-                    language,
-                    worker_stop,
-                    worker_count,
-                    app,
+        }
+        {
+            let line_count = Arc::clone(&line_count);
+            thread::Builder::new().name("echo-always-on-asr".into()).spawn(move || {
+                // Set while the engine is locked for a chunk, read when its line is saved.
+                let model_name: RefCell<Option<String>> = RefCell::new(None);
+                live::asr_worker(
+                    chunk_rx,
+                    |samples, vad_gate| {
+                        // Lock per chunk so hotkey dictation can run in between.
+                        let mut engine = asr_engine.lock().map_err(|e| anyhow!("{e}"))?;
+                        *model_name.borrow_mut() = Some(engine.active_model_name().to_string()).filter(|m| !m.is_empty());
+                        let result = engine.transcribe_samples(samples, language.as_deref(), vad_gate);
+                        if let Err(e) = &result {
+                            TranscriptionStatusEvent::emit(&app, StatusSource::Continuous, StatusKind::AsrError, Some(format!("{e:#}")));
+                        }
+                        Ok(result?.text)
+                    },
+                    |line| {
+                        if save_line(&app, &db, &line, language.as_deref(), model_name.borrow().clone()) {
+                            line_count.fetch_add(1, Ordering::SeqCst);
+                        }
+                    },
                 );
             })?;
+        }
 
-        log::info!("Continuous pipeline started (silence={}s, max_segment={}s)", silence_sec, max_segment_sec);
-
-        Ok(Self {
-            streaming_capture: Some(capture),
-            vad_handle: Some(vad_handle),
-            worker_handle: Some(worker_handle),
-            stop_flag,
-            segment_count,
-        })
+        log::info!("Always-on listening started (system audio: {})", captures.has_system());
+        Ok(Self { captures, line_count, warning })
     }
 
-    /// Stop the pipeline and wait for threads to finish.
-    /// Returns the number of segments transcribed.
-    pub fn stop(&mut self) -> u32 {
-        self.stop_flag.store(true, Ordering::SeqCst);
-
-        // Stop audio capture first (no more frames)
-        if let Some(mut capture) = self.streaming_capture.take() {
-            capture.stop();
-        }
-
-        // Wait for threads
-        if let Some(handle) = self.vad_handle.take() {
-            let _ = handle.join();
-        }
-        if let Some(handle) = self.worker_handle.take() {
-            let _ = handle.join();
-        }
-
-        let count = self.segment_count.load(Ordering::SeqCst);
-        log::info!("Continuous pipeline stopped, {} segments transcribed", count);
+    /// Stop capturing and return the number of lines saved so far. What is
+    /// still queued is transcribed and saved in the background.
+    pub fn stop(mut self) -> u32 {
+        self.captures.stop();
+        let count = self.line_count.load(Ordering::SeqCst);
+        log::info!("Always-on listening stopped ({count} lines so far; finishing the rest)");
         count
     }
 
-    /// Get the current segment count.
-    pub fn segment_count(&self) -> u32 {
-        self.segment_count.load(Ordering::SeqCst)
+    pub fn status(&self) -> ContinuousListeningStatus {
+        ContinuousListeningStatus {
+            is_listening: true,
+            segment_count: self.line_count.load(Ordering::SeqCst),
+            system_audio: self.captures.has_system(),
+            warning: self.warning.clone(),
+        }
     }
 }
 
-impl Drop for ContinuousPipeline {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
-// ---------------------------------------------------------------------------
-// VAD thread: receives audio frames, detects speech segments, saves WAV files
-// ---------------------------------------------------------------------------
-
-fn vad_thread(
-    frame_rx: channel::Receiver<Vec<f32>>,
-    segment_tx: channel::Sender<SpeechSegment>,
-    stop_flag: Arc<AtomicBool>,
+/// Mutes per `MUTED` and drives the frontend's activity indicator
+/// (`continuous-activity`: some unmuted source is making sound).
+struct Activity {
     app: AppHandle,
-    silence_sec: f64,
-    max_segment_sec: u32,
-    tmp_dir: &Path,
-) -> Result<()> {
-    let mut vad = VadProcessor::new(0.5)?;
-    let mut state = VadStateMachine::new(silence_sec, max_segment_sec);
-    let mut was_speaking = false;
-
-    loop {
-        if stop_flag.load(Ordering::SeqCst) {
-            // Flush remaining speech on stop
-            if state.is_speaking {
-                if let Some(segment) = state.finalize_segment(tmp_dir) {
-                    let _ = segment_tx.send(segment);
-                }
-                // Reset VAD LSTM state after segment (matches Python's vad.reset_states())
-                vad.reset();
-            }
-            break;
-        }
-
-        match frame_rx.recv_timeout(std::time::Duration::from_millis(100)) {
-            Ok(frame) => {
-                let event = vad.process_frame(&frame);
-                if let Some(segment) = state.process(event, frame, tmp_dir) {
-                    // Reset VAD LSTM state after each segment (matches Python's vad.reset_states())
-                    vad.reset();
-                    if segment_tx.send(segment).is_err() {
-                        log::warn!("Segment channel closed, stopping VAD");
-                        break;
-                    }
-                }
-
-                // Emit VAD state change on transitions only
-                if state.is_speaking != was_speaking {
-                    was_speaking = state.is_speaking;
-                    let _ = app.emit("continuous-vad-state", serde_json::json!({
-                        "is_speech": state.is_speaking
-                    }));
-                }
-            }
-            Err(channel::RecvTimeoutError::Timeout) => continue,
-            Err(channel::RecvTimeoutError::Disconnected) => break,
-        }
-    }
-
-    log::info!("VAD thread exiting");
-    Ok(())
+    /// Frames left before each source counts as quiet.
+    hold: [Cell<u32>; 2],
+    active: Cell<bool>,
 }
 
-/// VAD state machine: IDLE → SPEAKING → SEGMENT_COMPLETE.
-/// Mirrors echo-cli recorder.py logic.
-struct VadStateMachine {
-    is_speaking: bool,
-    silence_count: u32,
-    silence_threshold: u32,
-    max_frames: u32,
-    speech_frames: Vec<Vec<f32>>,
-    pre_buffer: VecDeque<Vec<f32>>,
-    pre_buffer_max: usize,
-    speech_frame_count: u32,
-    segment_counter: u32,
-}
-
-impl VadStateMachine {
-    fn new(silence_sec: f64, max_segment_sec: u32) -> Self {
-        let frames_per_sec = VAD_SAMPLE_RATE as f64 / VAD_FRAME_SIZE as f64;
-        let pre_buffer_sec = 0.3;
-
-        Self {
-            is_speaking: false,
-            silence_count: 0,
-            silence_threshold: (silence_sec * frames_per_sec) as u32,
-            max_frames: (max_segment_sec as f64 * frames_per_sec) as u32,
-            speech_frames: Vec::new(),
-            pre_buffer: VecDeque::new(),
-            pre_buffer_max: (pre_buffer_sec * frames_per_sec) as usize,
-            speech_frame_count: 0,
-            segment_counter: 0,
-        }
+impl Activity {
+    fn new(app: AppHandle) -> Self {
+        Self { app, hold: [Cell::new(0), Cell::new(0)], active: Cell::new(false) }
     }
 
-    /// Process a VAD event for one frame. Returns a segment if one completes.
-    fn process(
-        &mut self,
-        event: VadEvent,
-        frame: Vec<f32>,
-        tmp_dir: &Path,
-    ) -> Option<SpeechSegment> {
-        let is_speech = matches!(event, VadEvent::Speech { .. });
-
-        if !self.is_speaking {
-            // Maintain pre-buffer
-            self.pre_buffer.push_back(frame.clone());
-            if self.pre_buffer.len() > self.pre_buffer_max {
-                self.pre_buffer.pop_front();
+    fn set_active(&self, active: bool) {
+        if self.active.replace(active) != active {
+            if let Err(e) = self.app.emit("continuous-activity", serde_json::json!({ "active": active })) {
+                log::warn!("Failed to emit continuous-activity: {e}");
             }
+        }
+    }
+}
 
-            if is_speech {
-                // Speech started
-                self.is_speaking = true;
-                self.silence_count = 0;
-                self.speech_frame_count = 0;
-
-                // Include pre-buffer
-                self.speech_frames = self.pre_buffer.drain(..).collect();
-                self.speech_frames.push(frame);
-                self.speech_frame_count += 1;
-
-                log::debug!("Speech started");
-            }
-
-            None
+impl AudioObserver for Activity {
+    fn on_frame(&self, source: Source, _level: f32, dbfs: f32) {
+        let hold = &self.hold[source as usize];
+        if dbfs > ACTIVE_DBFS && !is_muted(source) {
+            hold.set(ACTIVE_HOLD_FRAMES);
         } else {
-            // Currently speaking
-            self.speech_frames.push(frame);
-            self.speech_frame_count += 1;
-
-            if !is_speech {
-                self.silence_count += 1;
-            } else {
-                self.silence_count = 0;
-            }
-
-            // Check end conditions
-            if self.silence_count >= self.silence_threshold {
-                log::debug!("Speech ended after silence");
-                self.finalize_segment(tmp_dir)
-            } else if self.speech_frame_count >= self.max_frames {
-                log::info!("Max segment duration reached, forcing split");
-                self.finalize_segment(tmp_dir)
-            } else {
-                None
-            }
+            hold.set(hold.get().saturating_sub(1));
         }
+        self.set_active(self.hold.iter().any(|h| h.get() > 0));
     }
 
-    /// Save accumulated speech as WAV and reset state.
-    fn finalize_segment(&mut self, tmp_dir: &Path) -> Option<SpeechSegment> {
-        if self.speech_frames.is_empty() {
-            self.reset();
-            return None;
-        }
-
-        // Concatenate all frames
-        let total_samples: usize = self.speech_frames.iter().map(|f| f.len()).sum();
-        let duration = total_samples as f64 / VAD_SAMPLE_RATE as f64;
-
-        // Skip very short segments (< 0.5s)
-        if duration < 0.5 {
-            log::debug!("Skipping short segment ({:.2}s)", duration);
-            self.reset();
-            return None;
-        }
-
-        // Save to WAV
-        self.segment_counter += 1;
-        let filename = format!("segment_{}.wav", self.segment_counter);
-        let filepath = tmp_dir.join(&filename);
-
-        match save_frames_to_wav(&self.speech_frames, &filepath) {
-            Ok(()) => {
-                log::info!("Segment saved: {:.1}s → {:?}", duration, filepath);
-                let segment = SpeechSegment {
-                    audio_path: filepath,
-                    duration_seconds: duration,
-                };
-                self.reset();
-                Some(segment)
-            }
-            Err(e) => {
-                log::error!("Failed to save segment WAV: {}", e);
-                self.reset();
-                None
-            }
-        }
-    }
-
-    fn reset(&mut self) {
-        self.is_speaking = false;
-        self.silence_count = 0;
-        self.speech_frames.clear();
-        self.speech_frame_count = 0;
+    fn muted(&self, source: Source) -> bool {
+        is_muted(source)
     }
 }
 
-/// Save f32 audio frames to a 16kHz mono WAV file.
-fn save_frames_to_wav(frames: &[Vec<f32>], path: &Path) -> Result<()> {
-    let spec = WavSpec {
-        channels: 1,
-        sample_rate: VAD_SAMPLE_RATE,
-        bits_per_sample: 16,
-        sample_format: HoundSampleFormat::Int,
-    };
-
-    let mut writer = WavWriter::create(path, spec)?;
-    for frame in frames {
-        for &sample in frame {
-            let s16 = (sample * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
-            writer.write_sample(s16)?;
-        }
-    }
-    writer.finalize()?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Transcription worker: dequeues segments, calls ASR, saves to DB, emits events
-// ---------------------------------------------------------------------------
-
-fn transcription_worker(
-    segment_rx: channel::Receiver<SpeechSegment>,
-    asr_engine: Arc<Mutex<ASREngine>>,
-    db: Arc<Mutex<TranscriptionDb>>,
-    language: Option<String>,
-    stop_flag: Arc<AtomicBool>,
-    segment_count: Arc<AtomicU32>,
-    app: AppHandle,
-) {
-    loop {
-        match segment_rx.recv_timeout(std::time::Duration::from_millis(500)) {
-            Ok(segment) => {
-                process_segment(&segment, &asr_engine, &db, language.as_deref(), &segment_count, &app);
-                // Clean up temp WAV file
-                let _ = std::fs::remove_file(&segment.audio_path);
-            }
-            Err(channel::RecvTimeoutError::Timeout) => {
-                if stop_flag.load(Ordering::SeqCst) && segment_rx.is_empty() {
-                    break;
-                }
-            }
-            Err(channel::RecvTimeoutError::Disconnected) => break,
-        }
-    }
-
-    log::info!("Transcription worker exiting");
-}
-
-fn process_segment(
-    segment: &SpeechSegment,
-    asr_engine: &Arc<Mutex<ASREngine>>,
-    db: &Arc<Mutex<TranscriptionDb>>,
-    language: Option<&str>,
-    segment_count: &Arc<AtomicU32>,
+/// Store a line in the history and tell the frontend. Returns whether it was saved.
+fn save_line(
     app: &AppHandle,
-) {
-    let audio_path = segment.audio_path.to_string_lossy();
-    log::info!("Processing segment: {:.1}s", segment.duration_seconds);
-
-    let emit_status = |kind: StatusKind, message: Option<String>| {
-        TranscriptionStatusEvent::emit(app, StatusSource::Continuous, kind, message);
-    };
-
-    // Call ASR engine
-    let (result, model_name) = {
-        let mut engine = match asr_engine.lock() {
-            Ok(e) => e,
-            Err(e) => {
-                log::error!("Failed to lock ASR engine: {}", e);
-                emit_status(StatusKind::EngineBusy, Some(e.to_string()));
-                return;
-            }
-        };
-        let model_name = match engine.active_model_name() {
-            "" => None,
-            m => Some(m.to_string()),
-        };
-        (engine.transcribe(&audio_path, language), model_name)
-    };
-
-    let result = match result {
-        Ok(r) => r,
-        Err(e) => {
-            log::error!("Transcription failed: {}", e);
-            emit_status(StatusKind::AsrError, Some(e.to_string()));
-            return;
-        }
-    };
-
-    if !result.success {
-        log::warn!("Transcription returned success=false");
-        emit_status(StatusKind::AsrError, None);
-        return;
-    }
-
-    let text = result.text.trim().to_string();
-    if text.is_empty() {
-        log::info!("Empty transcription, skipping");
-        emit_status(StatusKind::NoSpeech, None);
-        return;
-    }
-
-    // Save to database
+    db: &Mutex<TranscriptionDb>,
+    line: &live::Line,
+    language: Option<&str>,
+    model_name: Option<String>,
+) -> bool {
     let entry = TranscriptionEntry {
         id: None,
         created_at: String::new(), // DB generates the real value (returned by insert)
-        duration_seconds: Some(segment.duration_seconds),
-        text: text.clone(),
+        duration_seconds: Some(line.end - line.start),
+        text: line.text.clone(),
         raw_text: None,
-        language: if result.language.is_empty() {
-            None
-        } else {
-            Some(result.language.clone())
-        },
+        language: language.map(str::to_string),
         model_name,
-        segments_json: if result.segments.is_empty() {
-            None
-        } else {
-            serde_json::to_string(&result.segments).ok()
-        },
+        segments_json: None,
     };
-
-    let (entry_id, created_at) = match db.lock() {
-        Ok(db) => match db.insert(&entry) {
-            Ok(v) => v,
-            Err(e) => {
-                log::error!("Failed to save to DB: {}", e);
-                emit_status(StatusKind::DbError, Some(e.to_string()));
-                return;
-            }
-        },
+    let inserted = db.lock().map_err(|e| anyhow!("{e}")).and_then(|db| db.insert(&entry));
+    let (id, created_at) = match inserted {
+        Ok(v) => v,
         Err(e) => {
-            log::error!("Failed to lock DB: {}", e);
-            emit_status(StatusKind::DbError, Some(e.to_string()));
-            return;
+            log::error!("Failed to save always-on line: {e:#}");
+            TranscriptionStatusEvent::emit(app, StatusSource::Continuous, StatusKind::DbError, Some(format!("{e:#}")));
+            return false;
         }
     };
 
-    segment_count.fetch_add(1, Ordering::SeqCst);
-
-    // Visibility into MLX memory over long always-on sessions (cache is capped
-    // via set_cache_limit in ASREngine::start; active should stay flat).
-    let (active, cache) = rust_asr::mlx_memory();
-    log::info!(
-        "MLX memory after segment: active={} MB, cache={} MB",
-        active / (1024 * 1024),
-        cache / (1024 * 1024)
-    );
-
-    // Emit event to frontend
     let event = ContinuousTranscriptionEvent {
-        id: entry_id,
-        text,
+        id,
+        text: entry.text,
         created_at,
-        duration_seconds: Some(segment.duration_seconds),
-        language: if result.language.is_empty() {
-            None
-        } else {
-            Some(result.language)
-        },
+        duration_seconds: entry.duration_seconds,
+        language: entry.language,
         model_name: entry.model_name,
     };
-
     if let Err(e) = app.emit("continuous-transcription", &event) {
-        log::error!("Failed to emit continuous transcription event: {}", e);
+        log::error!("Failed to emit continuous transcription event: {e}");
     }
+    true
 }

@@ -7,6 +7,7 @@ mod audio_capture;
 mod clipboard;
 mod commands;
 mod continuous;
+mod live;
 mod database;
 mod export;
 mod handy_keys;

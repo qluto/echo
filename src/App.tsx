@@ -61,6 +61,8 @@ function App() {
     isListening,
     isSpeechDetected,
     toggleListening,
+    systemAudio,
+    warning: listeningWarning,
     error: listeningError,
   } = useContinuousListening();
 
@@ -542,10 +544,10 @@ function App() {
               </span>
               <span
                 className="text-[10px] leading-tight truncate"
-                style={{ color: "var(--text-tertiary)" }}
-                title="Continuously transcribe and save to the log"
+                style={{ color: listeningWarning ? "#8A6438" : "var(--text-tertiary)" }}
+                title={listeningWarning ?? "Continuously transcribe the mic and system audio into the log"}
               >
-                Continuous logging
+                {!isListening ? "Mic + system audio" : systemAudio ? "Logging mic + system audio" : "Logging mic only"}
               </span>
             </div>
             <button
