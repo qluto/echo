@@ -130,11 +130,12 @@ impl ContinuousPipeline {
                 let model_name: RefCell<Option<String>> = RefCell::new(None);
                 live::asr_worker(
                     chunk_rx,
-                    |samples, vad_gate| {
+                    |samples| Ok(asr_engine.lock().map_err(|e| anyhow!("{e}"))?.has_speech(samples)),
+                    |samples| {
                         // Lock per chunk so hotkey dictation can run in between.
                         let mut engine = asr_engine.lock().map_err(|e| anyhow!("{e}"))?;
                         *model_name.borrow_mut() = Some(engine.active_model_name().to_string()).filter(|m| !m.is_empty());
-                        let result = engine.transcribe_samples(samples, language.as_deref(), vad_gate);
+                        let result = engine.transcribe_samples(samples, language.as_deref(), false);
                         if let Err(e) = &result {
                             TranscriptionStatusEvent::emit(&app, StatusSource::Continuous, StatusKind::AsrError, Some(format!("{e:#}")));
                         }

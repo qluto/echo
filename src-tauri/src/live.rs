@@ -51,6 +51,11 @@ const NOISE_WINDOW_FRAMES: usize = samples(30.0) / VAD_FRAME_SIZE;
 /// …and a chunk "stands out" when this many frames (~160 ms) are this far above it.
 const PROMINENCE_DB: f32 = 15.0;
 const MIN_PROMINENT_FRAMES: usize = 5;
+/// A prominent chunk the VAD hears no speech in is still transcribed (Silero
+/// misses audible speech on some microphones), but its line is kept only with
+/// at least this many letters: missed speech gives a full sentence, while
+/// keyboard clicks and other noise come back as a word or two ("キュウリ").
+const MIN_UNHEARD_LETTERS: usize = 6;
 /// The other side counts as talking during a mic chunk when this share of
 /// its frames is louder than `OTHERS_ACTIVE_DBFS`.
 const OTHERS_ACTIVE_DBFS: f32 = -45.0;
@@ -487,15 +492,43 @@ fn is_echo(mine: &str, theirs: &str) -> bool {
     shared as f64 / mine.len() as f64 >= ECHO_CONTAINMENT
 }
 
-/// Transcribe chunks as they come until the audio thread is done
-/// (`transcribe(samples, vad_gate)` gets 16 kHz mono samples, and should skip
-/// them unless the VAD hears speech when `vad_gate`), handing each non-empty
+/// The text of a non-silent chunk, or "" when it is not speech.
+/// `has_speech` runs the VAD over 16 kHz mono samples and `transcribe` the ASR.
+///
+/// The VAD is a second opinion, not a gate: a chunk it hears speech in is
+/// always kept. One it hears none in is skipped if it doesn't stand out from
+/// the noise floor, and otherwise transcribed but kept only with at least
+/// `MIN_UNHEARD_LETTERS` letters.
+fn recognize(
+    chunk: &Chunk,
+    has_speech: &mut impl FnMut(&[f32]) -> Result<bool>,
+    transcribe: &mut impl FnMut(&[f32]) -> Result<String>,
+) -> Result<String> {
+    let speech = has_speech(&chunk.samples).unwrap_or_else(|e| {
+        log::warn!("VAD failed ({e:#}); treating the chunk as speech");
+        true
+    });
+    if !speech && !chunk.prominent {
+        return Ok(String::new());
+    }
+    let text = transcribe(&chunk.samples)?.trim().to_string();
+    let letters = text.chars().filter(|c| c.is_alphanumeric()).count();
+    if !speech && letters > 0 && letters < MIN_UNHEARD_LETTERS {
+        log::info!("Dropped as noise (VAD heard no speech): {text:?}");
+        return Ok(String::new());
+    }
+    Ok(text)
+}
+
+/// Transcribe chunks as they come until the audio thread is done (see
+/// `recognize` for `has_speech` and `transcribe`), handing each non-empty
 /// line to `on_line`. A mic line said while the other side was audible is
 /// held until the other side's transcript covers its time, and dropped if it
 /// is an echo of it.
 pub fn asr_worker(
     chunk_rx: channel::Receiver<Chunk>,
-    mut transcribe: impl FnMut(&[f32], bool) -> Result<String>,
+    mut has_speech: impl FnMut(&[f32]) -> Result<bool>,
+    mut transcribe: impl FnMut(&[f32]) -> Result<String>,
     mut on_line: impl FnMut(Line),
 ) {
     let mut held: Vec<Line> = Vec::new();
@@ -528,8 +561,8 @@ pub fn asr_worker(
         let text = if chunk.silent {
             String::new()
         } else {
-            match transcribe(&chunk.samples, !chunk.prominent) {
-                Ok(text) => text.trim().to_string(),
+            match recognize(&chunk, &mut has_speech, &mut transcribe) {
+                Ok(text) => text,
                 Err(e) => {
                     log::error!("Chunk transcription failed: {e:#}");
                     String::new()
@@ -776,10 +809,20 @@ mod tests {
             let observer = MuteMic { frames: Cell::new(0), range: mute.unwrap_or(0..0) };
             audio_loop(Inputs::for_test(first, mic_rx, sys_rx), chunk_tx, None, &observer).unwrap()
         });
+        let engine = std::cell::RefCell::new(engine);
         let mut lines = Vec::new();
         asr_worker(
             chunk_rx,
-            |samples, vad_gate| Ok(engine.transcribe_samples(samples, Some("ja"), vad_gate)?.text),
+            |samples| {
+                let heard = engine.borrow_mut().has_speech(samples);
+                println!("chunk {:4.1}s: VAD {}", samples.len() as f64 / VAD_SAMPLE_RATE as f64, if heard { "speech" } else { "no speech" });
+                Ok(heard)
+            },
+            |samples| {
+                let text = engine.borrow_mut().transcribe_samples(samples, Some("ja"), false)?.text;
+                println!("  ASR: {text:?}");
+                Ok(text)
+            },
             |line| lines.push(line),
         );
         feeder.join().unwrap();
@@ -821,7 +864,7 @@ mod tests {
         ]
         .into_iter();
         let mut lines = Vec::new();
-        asr_worker(rx, |_, _| Ok(texts.next().unwrap().to_string()), |l| lines.push((l.source, l.text)));
+        asr_worker(rx, |_| Ok(true), |_| Ok(texts.next().unwrap().to_string()), |l| lines.push((l.source, l.text)));
         assert_eq!(
             lines,
             vec![
@@ -830,5 +873,35 @@ mod tests {
                 (Source::Me, "わかりました、私が担当します".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn short_lines_the_vad_heard_no_speech_in_are_dropped() {
+        let speech = |text: &str, prominent: bool, heard: bool| {
+            let mut c = chunk(Source::Me, 0.0, 4.0, false);
+            c.prominent = prominent;
+            let mut called = false;
+            let text = recognize(
+                &c,
+                &mut |_| Ok(heard),
+                &mut |_| {
+                    called = true;
+                    Ok(text.to_string())
+                },
+            )
+            .unwrap();
+            (text, called)
+        };
+        // Heard: kept whatever its length.
+        assert_eq!(speech("はい", true, true), ("はい".to_string(), true));
+        assert_eq!(speech("はい", false, true), ("はい".to_string(), true));
+        // Not heard and not prominent: not even transcribed.
+        assert_eq!(speech("はい", false, false), (String::new(), false));
+        // Not heard but prominent: a word or two is noise…
+        assert_eq!(speech("キュウリ", true, false), (String::new(), true));
+        assert_eq!(speech("フッ。", true, false), (String::new(), true));
+        // …a sentence is speech the VAD missed.
+        let missed = "後からデータが取れるようになるといいな";
+        assert_eq!(speech(missed, true, false), (missed.to_string(), true));
     }
 }

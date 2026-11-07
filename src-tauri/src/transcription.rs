@@ -482,7 +482,7 @@ impl ASREngine {
     /// Run Silero VAD over the whole 16 kHz clip; speech if enough frames clear
     /// the threshold. Always-on segments (already speech) pass; silent hotkey
     /// recordings are rejected.
-    fn has_speech(&mut self, samples: &[f32]) -> bool {
+    pub fn has_speech(&mut self, samples: &[f32]) -> bool {
         use crate::vad::{VadEvent, VadProcessor, VAD_FRAME_SIZE};
         const MIN_SPEECH_FRAMES: usize = 3; // ~96 ms of speech
 
