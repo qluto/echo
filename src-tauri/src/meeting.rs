@@ -669,10 +669,11 @@ impl MeetingSession {
                         let engine = &app.state::<AppState>().asr_engine;
                         live::asr_worker(
                             chunk_rx,
-                            |samples, vad_gate| {
+                            |samples| Ok(engine.lock().map_err(|e| anyhow!("{e}"))?.has_speech(samples)),
+                            |samples| {
                                 // Lock per chunk so hotkey dictation can run in between.
                                 let mut engine = engine.lock().map_err(|e| anyhow!("{e}"))?;
-                                Ok(engine.transcribe_samples(samples, language.as_deref(), vad_gate)?.text)
+                                Ok(engine.transcribe_samples(samples, language.as_deref(), false)?.text)
                             },
                             |line| {
                                 let line = shared.push_line(line);
@@ -1074,9 +1075,11 @@ mod tests {
             thread::spawn(move || live::audio_loop(inputs, chunk_tx, Some(writer), &*shared).unwrap())
         };
         let t = Instant::now();
+        let engine = std::cell::RefCell::new(engine);
         live::asr_worker(
             chunk_rx,
-            |samples, vad_gate| Ok(engine.transcribe_samples(samples, Some("ja"), vad_gate)?.text),
+            |samples| Ok(engine.borrow_mut().has_speech(samples)),
+            |samples| Ok(engine.borrow_mut().transcribe_samples(samples, Some("ja"), false)?.text),
             |line| {
                 shared.push_line(line);
             },
@@ -1096,7 +1099,7 @@ mod tests {
             std::fs::write(&path, serde_json::to_string_pretty(&lines).unwrap()).unwrap();
         }
         assert!(!lines.is_empty());
-        let board = replay_rounds(engine, &lines, &round_times(&lines));
+        let board = replay_rounds(engine.into_inner(), &lines, &round_times(&lines));
         assert!(board.round > 0);
     }
 
