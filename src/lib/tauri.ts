@@ -364,7 +364,12 @@ export async function prepareNotesModel(): Promise<PostProcessModelStatus> {
 // Continuous listening types and commands
 export interface ContinuousListeningStatus {
   is_listening: boolean;
+  /** Lines saved since listening started. */
   segment_count: number;
+  /** System audio is captured along with the mic. */
+  system_audio: boolean;
+  /** Why system audio isn't captured, if it couldn't start. */
+  warning: string | null;
 }
 
 export interface ContinuousTranscriptionEvent {
@@ -376,7 +381,7 @@ export interface ContinuousTranscriptionEvent {
   model_name: string | null;
 }
 
-export async function startContinuousListening(): Promise<void> {
+export async function startContinuousListening(): Promise<ContinuousListeningStatus> {
   return invoke("start_continuous_listening");
 }
 
@@ -411,15 +416,15 @@ export function onHotkeyPartial(
   });
 }
 
-// VAD state events (for ambient float indicator)
-export interface ContinuousVadStateEvent {
-  is_speech: boolean;
+// Always-on sound activity (for the ambient float indicator)
+export interface ContinuousActivityEvent {
+  active: boolean;
 }
 
-export function onContinuousVadState(
-  callback: (event: ContinuousVadStateEvent) => void
+export function onContinuousActivity(
+  callback: (event: ContinuousActivityEvent) => void
 ): Promise<UnlistenFn> {
-  return listen<ContinuousVadStateEvent>("continuous-vad-state", (event) => {
+  return listen<ContinuousActivityEvent>("continuous-activity", (event) => {
     callback(event.payload);
   });
 }

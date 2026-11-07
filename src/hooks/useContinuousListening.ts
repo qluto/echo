@@ -4,7 +4,8 @@ import {
   stopContinuousListening,
   getContinuousListeningStatus,
   onContinuousTranscription,
-  onContinuousVadState,
+  onContinuousActivity,
+  ContinuousListeningStatus,
   ContinuousTranscriptionEvent,
 } from "../lib/tauri";
 
@@ -12,6 +13,10 @@ interface UseContinuousListeningReturn {
   isListening: boolean;
   isSpeechDetected: boolean;
   segmentCount: number;
+  /** System audio is captured along with the mic. */
+  systemAudio: boolean;
+  /** Why system audio isn't captured, if it couldn't start. */
+  warning: string | null;
   recentEntries: ContinuousTranscriptionEvent[];
   error: string | null;
   startListening: () => Promise<void>;
@@ -25,18 +30,24 @@ export function useContinuousListening(): UseContinuousListeningReturn {
   const [isListening, setIsListening] = useState(false);
   const [isSpeechDetected, setIsSpeechDetected] = useState(false);
   const [segmentCount, setSegmentCount] = useState(0);
+  const [systemAudio, setSystemAudio] = useState(false);
+  const [warning, setWarning] = useState<string | null>(null);
   const [recentEntries, setRecentEntries] = useState<ContinuousTranscriptionEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  const applyStatus = useCallback((status: ContinuousListeningStatus) => {
+    setIsListening(status.is_listening);
+    setSegmentCount(status.segment_count);
+    setSystemAudio(status.system_audio);
+    setWarning(status.warning);
+  }, []);
 
   // Check initial status
   useEffect(() => {
     getContinuousListeningStatus()
-      .then((status) => {
-        setIsListening(status.is_listening);
-        setSegmentCount(status.segment_count);
-      })
+      .then(applyStatus)
       .catch((e) => console.error("Failed to get listening status:", e));
-  }, []);
+  }, [applyStatus]);
 
   // Subscribe to continuous transcription events
   useEffect(() => {
@@ -57,12 +68,12 @@ export function useContinuousListening(): UseContinuousListeningReturn {
     };
   }, []);
 
-  // Subscribe to VAD speech state changes
+  // Subscribe to sound activity changes
   useEffect(() => {
     let unlisten: (() => void) | null = null;
 
-    onContinuousVadState((event) => {
-      setIsSpeechDetected(event.is_speech);
+    onContinuousActivity((event) => {
+      setIsSpeechDetected(event.active);
     }).then((fn) => {
       unlisten = fn;
     });
@@ -75,15 +86,13 @@ export function useContinuousListening(): UseContinuousListeningReturn {
   const startListening = useCallback(async () => {
     try {
       setError(null);
-      await startContinuousListening();
-      setIsListening(true);
+      applyStatus(await startContinuousListening());
       setIsSpeechDetected(false);
-      setSegmentCount(0);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
     }
-  }, []);
+  }, [applyStatus]);
 
   const stopListening = useCallback(async () => {
     try {
@@ -92,6 +101,8 @@ export function useContinuousListening(): UseContinuousListeningReturn {
       setIsListening(false);
       setIsSpeechDetected(false);
       setSegmentCount(count);
+      setSystemAudio(false);
+      setWarning(null);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
@@ -110,6 +121,8 @@ export function useContinuousListening(): UseContinuousListeningReturn {
     isListening,
     isSpeechDetected,
     segmentCount,
+    systemAudio,
+    warning,
     recentEntries,
     error,
     startListening,

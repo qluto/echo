@@ -503,63 +503,54 @@ pub fn get_postprocess_model_status(state: tauri::State<'_, AppState>) -> Result
 
 // ===== Continuous listening commands =====
 
-#[tauri::command]
+/// Off the main thread: it waits for the microphone's first audio.
+#[tauri::command(async)]
 pub fn start_continuous_listening(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<continuous::ContinuousListeningStatus, String> {
     let mut pipeline = state.continuous_pipeline.lock().map_err(|e| e.to_string())?;
     if pipeline.is_some() {
         return Err("Already listening".to_string());
     }
 
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    let language = if settings.language == "auto" {
-        None
-    } else {
-        Some(settings.language.clone())
+    let (language, device_name) = {
+        let settings = state.settings.lock().map_err(|e| e.to_string())?;
+        ((settings.language != "auto").then(|| settings.language.clone()), settings.device_name.clone())
     };
-    let device_name = settings.device_name.clone();
-    drop(settings);
-
-    let asr_engine = Arc::clone(&state.asr_engine);
-    let db = Arc::clone(&state.transcription_db);
-
     let p = continuous::ContinuousPipeline::start(
         app,
-        asr_engine,
-        db,
+        Arc::clone(&state.asr_engine),
+        Arc::clone(&state.transcription_db),
         language,
         device_name,
-        1.5,  // silence_sec
-        60,   // max_segment_sec
     )
-    .map_err(|e| e.to_string())?;
-
+    .map_err(|e| format!("{e:#}"))?;
+    let status = p.status();
     *pipeline = Some(p);
-    Ok(())
+    Ok(status)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn stop_continuous_listening(
     state: tauri::State<'_, AppState>,
 ) -> Result<u32, String> {
     let mut pipeline = state.continuous_pipeline.lock().map_err(|e| e.to_string())?;
     match pipeline.take() {
-        Some(mut p) => Ok(p.stop()),
+        Some(p) => Ok(p.stop()),
         None => Err("Not listening".to_string()),
     }
 }
 
-#[tauri::command]
+/// Off the main thread: the pipeline lock is held while listening starts.
+#[tauri::command(async)]
 pub fn get_continuous_listening_status(
     state: tauri::State<'_, AppState>,
 ) -> Result<continuous::ContinuousListeningStatus, String> {
     let pipeline = state.continuous_pipeline.lock().map_err(|e| e.to_string())?;
-    Ok(continuous::ContinuousListeningStatus {
-        is_listening: pipeline.is_some(),
-        segment_count: pipeline.as_ref().map_or(0, |p| p.segment_count()),
-    })
+    Ok(pipeline
+        .as_ref()
+        .map_or_else(continuous::ContinuousListeningStatus::idle, |p| p.status()))
 }
 
 // ===== Transcription history commands =====
@@ -773,6 +764,7 @@ pub fn start_memo_recording(
     match memo::MemoRecorder::start(new_memo.id, device_name, audio_path) {
         Ok(r) => {
             *recorder = Some(r);
+            continuous::set_muted(continuous::Mute::Memo, true);
             Ok(new_memo)
         }
         Err(e) => {
@@ -798,6 +790,7 @@ pub fn stop_memo_recording(
         .take()
         .ok_or("Not recording a memo")?;
     let (id, duration) = recorder.stop();
+    continuous::set_muted(continuous::Mute::Memo, false);
     let started = (|| -> anyhow::Result<()> {
         state
             .transcription_db
@@ -1009,6 +1002,7 @@ pub fn start_meeting(
         return Err("A meeting is already in progress".to_string());
     }
     let session = meeting::MeetingSession::start(&app).map_err(|e| format!("{e:#}"))?;
+    continuous::set_muted(continuous::Mute::Meeting, true);
     let snapshot = session.snapshot();
     *current = Some(session);
     Ok(snapshot)
@@ -1024,6 +1018,7 @@ pub fn stop_meeting(
     let mut current = state.meeting.lock().map_err(|e| e.to_string())?;
     let session = current.as_mut().ok_or("No meeting in progress")?;
     session.stop(&app);
+    continuous::set_muted(continuous::Mute::Meeting, false);
     Ok(session.snapshot())
 }
 

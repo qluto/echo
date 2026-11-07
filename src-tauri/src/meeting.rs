@@ -2,25 +2,18 @@
 //! decisions, action items and open questions.
 //!
 //! ```text
-//! [mic StreamingCapture]    ─┐                         ┌→ mixed 16 kHz WAV (saved as a voice memo)
-//! [SystemAudioCapture tap]  ─┴→ [audio thread] ─┼→ Chunker per source → chunks
-//!                                                        ↓
-//!                                 [ASR worker] → lines ("自分" / "相手") → `meeting-line`
-//!                                                        ↓
-//!            [notes thread] every 3 min: items + new lines (+ 60 s of already
-//!            reviewed context) → LLM → ADD / UPDATE / DELETE → `meeting-items`
+//! live capture (mic + system audio → chunks → ASR, see `live`)
+//!   ├→ mixed 16 kHz WAV (saved as a voice memo)
+//!   └→ lines ("自分" / "相手") → `meeting-line`
+//!                                   ↓
+//!      [notes thread] every 3 min: items + new lines (+ 60 s of already
+//!      reviewed context) → LLM → ADD / UPDATE / DELETE → `meeting-items`
 //! ```
 //!
 //! Items are never edited by hand: a wrong item is corrected by saying so in
 //! the meeting, which the next round picks up. On stop, the remaining audio is
 //! transcribed, a final round runs, and the meeting is stored as a voice memo
 //! (mixed audio, speaker-labelled transcript, items as minutes).
-//!
-//! Chunks are cut at pauses, not picked out by a VAD (it misses audible speech
-//! on some microphones). But a call leaves the mic on room noise for minutes,
-//! and the engines hallucinate on noise (Whisper: "ご視聴ありがとうございました"),
-//! so a chunk only reaches ASR when it stands out from the room's noise floor
-//! or the VAD hears speech in it: speech is lost only if both miss it.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -34,14 +27,13 @@ use hound::{SampleFormat as HoundSampleFormat, WavSpec, WavWriter};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::audio_capture::StreamingCapture;
 use crate::database::MemoStatus;
-use crate::memo::{self, format_timestamp, frame_dbfs, meter_level, to_i16, with_db};
-use crate::partial::{append_text, quietest_cut};
-use crate::system_audio::SystemAudioCapture;
+use crate::live::{self, AudioObserver, Captures, Chunk};
+pub use crate::live::Source;
+use crate::memo::{self, format_timestamp, with_db};
 use crate::transcription::ASREngine;
 use crate::types::{AppState, TranscriptionSegment};
-use crate::vad::{VAD_FRAME_SIZE, VAD_SAMPLE_RATE};
+use crate::vad::VAD_SAMPLE_RATE;
 
 /// The item list is revised this often (wall clock)…
 const UPDATE_EVERY: Duration = Duration::from_secs(180);
@@ -50,37 +42,6 @@ const UPDATE_OVERLAP_SEC: f64 = 60.0;
 /// A round is skipped while less than this much new text has come in.
 const MIN_NEW_CHARS: usize = 20;
 const ITEMS_MAX_TOKENS: usize = 2048;
-
-const fn samples(sec: f64) -> usize {
-    (sec * VAD_SAMPLE_RATE as f64) as usize
-}
-
-/// A chunk is cut at the first pause once it is this long…
-const MIN_CHUNK_SAMPLES: usize = samples(4.0);
-/// …and at the quietest point once it reaches this length.
-const MAX_CHUNK_SAMPLES: usize = samples(15.0);
-/// A pause is this long stretch at least `PAUSE_DROP_DB` below the chunk's speech level.
-const PAUSE_FRAMES: usize = samples(0.5) / VAD_FRAME_SIZE;
-const PAUSE_DROP_DB: f32 = 18.0;
-const CUT_PROBE_SAMPLES: usize = samples(0.2);
-const MIN_FINAL_CHUNK_SAMPLES: usize = samples(0.3);
-/// A chunk with no frame above this is not sent to ASR at all.
-const SILENT_DBFS: f32 = -55.0;
-/// The noise floor is the 10th percentile frame level over this window…
-const NOISE_WINDOW_FRAMES: usize = samples(30.0) / VAD_FRAME_SIZE;
-/// …and a chunk "stands out" when this many frames (~160 ms) are this far above it.
-const PROMINENCE_DB: f32 = 15.0;
-const MIN_PROMINENT_FRAMES: usize = 5;
-/// The other side counts as talking during a mic chunk when this share of
-/// its frames is louder than `OTHERS_ACTIVE_DBFS`.
-const OTHERS_ACTIVE_DBFS: f32 = -45.0;
-const OTHERS_ACTIVE_SHARE: f64 = 0.3;
-/// A mic line counts as an echo of the speakers when this share of its
-/// character bigrams appears in what the other side said around it.
-const ECHO_CONTAINMENT: f64 = 0.6;
-const ECHO_MARGIN_SEC: f64 = 3.0;
-
-const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(3);
 
 const ITEMS_PROMPT: &str = "You keep the live notes of a meeting: the main topics discussed, its decisions, action items and open questions. Every few minutes you get the current notes and the newest part of the speech-recognition transcript, and you rewrite the notes so they are up to date.
 
@@ -154,24 +115,6 @@ OPEN:
 // ---------------------------------------------------------------------------
 // Data shared with the frontend
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Source {
-    /// The microphone: the user.
-    Me,
-    /// System audio: everyone else on the call.
-    Others,
-}
-
-impl Source {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Me => "自分",
-            Self::Others => "相手",
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct MeetingLine {
@@ -299,146 +242,6 @@ struct StateEvent<'a> {
     memo_id: i64,
     error: Option<&'a str>,
     warning: Option<&'a str>,
-}
-
-// ---------------------------------------------------------------------------
-// Chunking
-// ---------------------------------------------------------------------------
-
-struct Chunk {
-    source: Source,
-    /// Offset of the first sample within this source's stream.
-    start: usize,
-    samples: Vec<f32>,
-    /// No frame is loud enough to hold speech.
-    silent: bool,
-    /// Clearly louder than the noise floor; otherwise ASR runs only if the VAD hears speech.
-    prominent: bool,
-    /// (Mic chunks) the other side was audible during it, so it may contain
-    /// their voice coming out of the speakers.
-    others_active: bool,
-}
-
-impl Chunk {
-    fn start_sec(&self) -> f64 {
-        self.start as f64 / VAD_SAMPLE_RATE as f64
-    }
-
-    fn end_sec(&self) -> f64 {
-        (self.start + self.samples.len()) as f64 / VAD_SAMPLE_RATE as f64
-    }
-}
-
-/// Cuts one source's frame stream into contiguous chunks at pauses.
-struct Chunker {
-    source: Source,
-    start: usize,
-    buf: Vec<f32>,
-    /// dBFS of each `VAD_FRAME_SIZE` frame in `buf`.
-    frame_db: Vec<f32>,
-    /// dBFS of the last `NOISE_WINDOW_FRAMES` frames, across chunks.
-    recent_db: std::collections::VecDeque<f32>,
-}
-
-impl Chunker {
-    fn new(source: Source) -> Self {
-        Self {
-            source,
-            start: 0,
-            buf: Vec::with_capacity(MAX_CHUNK_SAMPLES),
-            frame_db: Vec::new(),
-            recent_db: std::collections::VecDeque::with_capacity(NOISE_WINDOW_FRAMES + 1),
-        }
-    }
-
-    /// Add one frame (`VAD_FRAME_SIZE` samples); returns a chunk when one is cut.
-    fn push(&mut self, frame: &[f32]) -> Option<Chunk> {
-        self.buf.extend_from_slice(frame);
-        let db = frame_dbfs(frame);
-        self.frame_db.push(db);
-        self.recent_db.push_back(db);
-        if self.recent_db.len() > NOISE_WINDOW_FRAMES {
-            self.recent_db.pop_front();
-        }
-        if self.buf.len() >= MAX_CHUNK_SAMPLES {
-            let cut = quietest_cut(&self.buf, MIN_CHUNK_SAMPLES, MAX_CHUNK_SAMPLES, CUT_PROBE_SAMPLES);
-            return Some(self.cut(cut));
-        }
-        if self.buf.len() >= MIN_CHUNK_SAMPLES && self.ends_in_pause() {
-            // Keep half the pause as the next chunk's lead-in.
-            let cut = self.buf.len() - PAUSE_FRAMES * VAD_FRAME_SIZE / 2;
-            return Some(self.cut(cut));
-        }
-        None
-    }
-
-    /// The rest of the stream, if it is long enough to hold a word.
-    fn flush(&mut self) -> Option<Chunk> {
-        if self.buf.len() < MIN_FINAL_CHUNK_SAMPLES {
-            return None;
-        }
-        Some(self.cut(self.buf.len()))
-    }
-
-    fn ends_in_pause(&self) -> bool {
-        if self.frame_db.len() <= PAUSE_FRAMES {
-            return false;
-        }
-        let speech = percentile(&self.frame_db, 0.9);
-        if speech < SILENT_DBFS {
-            return false;
-        }
-        let threshold = speech - PAUSE_DROP_DB;
-        self.frame_db[self.frame_db.len() - PAUSE_FRAMES..]
-            .iter()
-            .all(|&db| db < threshold)
-    }
-
-    fn cut(&mut self, at: usize) -> Chunk {
-        let rest = self.buf.split_off(at);
-        let samples = std::mem::replace(&mut self.buf, rest);
-        let frames = at.div_ceil(VAD_FRAME_SIZE).min(self.frame_db.len());
-        let chunk_db = &self.frame_db[..frames];
-        let silent = chunk_db.iter().all(|&db| db < SILENT_DBFS);
-        let floor = percentile(self.recent_db.make_contiguous(), 0.1);
-        let prominent = chunk_db.iter().filter(|&&db| db >= floor + PROMINENCE_DB).count() >= MIN_PROMINENT_FRAMES;
-        // Frames straddling the cut are counted on both sides; harmless for a level.
-        self.frame_db.drain(..at / VAD_FRAME_SIZE);
-        let chunk = Chunk { source: self.source, start: self.start, samples, silent, prominent, others_active: false };
-        self.start += at;
-        chunk
-    }
-}
-
-fn percentile(values: &[f32], p: f64) -> f32 {
-    let mut sorted = values.to_vec();
-    sorted.sort_by(f32::total_cmp);
-    sorted[((sorted.len() - 1) as f64 * p).round() as usize]
-}
-
-// ---------------------------------------------------------------------------
-// Echo check
-// ---------------------------------------------------------------------------
-
-fn bigrams(text: &str) -> Vec<(char, char)> {
-    let chars: Vec<char> = text
-        .chars()
-        .filter(|c| c.is_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect();
-    chars.windows(2).map(|w| (w[0], w[1])).collect()
-}
-
-/// Whether `mine` (a mic line) is mostly the other side's speech picked up
-/// from the speakers: most of its character bigrams occur in `theirs`.
-fn is_echo(mine: &str, theirs: &str) -> bool {
-    let mine = bigrams(mine);
-    if mine.is_empty() {
-        return false;
-    }
-    let theirs: std::collections::HashSet<_> = bigrams(theirs).into_iter().collect();
-    let shared = mine.iter().filter(|b| theirs.contains(b)).count();
-    shared as f64 / mine.len() as f64 >= ECHO_CONTAINMENT
 }
 
 // ---------------------------------------------------------------------------
@@ -774,6 +577,20 @@ impl Shared {
         state.ended_after.unwrap_or_else(|| self.started.elapsed())
     }
 
+    /// Number a transcribed line and add it to the meeting.
+    fn push_line(&self, line: live::Line) -> MeetingLine {
+        let mut state = self.state();
+        let line = MeetingLine {
+            id: state.lines.len() as u64 + 1,
+            source: line.source,
+            start: line.start,
+            end: line.end,
+            text: line.text,
+        };
+        state.lines.push(line.clone());
+        line
+    }
+
     fn emit_state(&self, app: &AppHandle) {
         let state = self.state();
         let event = StateEvent {
@@ -788,11 +605,20 @@ impl Shared {
     }
 }
 
+impl AudioObserver for Shared {
+    fn on_frame(&self, source: Source, level: f32, _dbfs: f32) {
+        let meter = match source {
+            Source::Me => &self.mic_level,
+            Source::Others => &self.system_level,
+        };
+        meter.store(level.to_bits(), Ordering::Relaxed);
+    }
+}
+
 /// A meeting in progress, or the last one (kept for the window to show).
 pub struct MeetingSession {
     shared: Arc<Shared>,
-    mic: Option<StreamingCapture>,
-    system: Option<SystemAudioCapture>,
+    captures: Captures,
 }
 
 impl MeetingSession {
@@ -809,28 +635,9 @@ impl MeetingSession {
         let audio_path = Path::new(&new_memo.audio_path).to_path_buf();
 
         let started = (|| -> Result<Self> {
-            let (mic_tx, mic_rx) = channel::bounded::<Vec<f32>>(256);
-            let mut mic = StreamingCapture::start(device_name, mic_tx)?;
-            let first = match mic_rx.recv_timeout(FIRST_FRAME_TIMEOUT) {
-                Ok(frame) => frame,
-                Err(_) => {
-                    mic.stop();
-                    return Err(anyhow!("No audio from the input device (check the microphone permission)"));
-                }
-            };
-
-            let (sys_tx, sys_rx) = channel::bounded::<Vec<f32>>(256);
-            let (system, sys_rx, warning) = match SystemAudioCapture::start(sys_tx) {
-                Ok(capture) => (Some(capture), sys_rx, None),
-                Err(e) => {
-                    log::warn!("System audio capture unavailable: {e:#}");
-                    (
-                        None,
-                        channel::never(),
-                        Some(format!("相手の音声（システム音声）を取得できないため、マイクのみで記録します: {e:#}")),
-                    )
-                }
-            };
+            let (captures, inputs, system_error) = live::start_captures(device_name)?;
+            let warning = system_error
+                .map(|e| format!("相手の音声（システム音声）を取得できないため、マイクのみで記録します: {e}"));
 
             let writer = WavWriter::create(
                 &audio_path,
@@ -848,9 +655,8 @@ impl MeetingSession {
             let (chunk_tx, chunk_rx) = channel::unbounded::<Chunk>();
             {
                 let shared = Arc::clone(&shared);
-                let has_system = system.is_some();
                 thread::Builder::new().name("echo-meeting-audio".into()).spawn(move || {
-                    if let Err(e) = audio_loop(first, mic_rx, sys_rx, has_system, chunk_tx, writer, &shared) {
+                    if let Err(e) = live::audio_loop(inputs, chunk_tx, Some(writer), &*shared) {
                         log::error!("Meeting audio thread failed: {e:#}");
                     }
                 })?;
@@ -861,21 +667,22 @@ impl MeetingSession {
                     .name("echo-meeting-asr".into())
                     .spawn(move || {
                         let engine = &app.state::<AppState>().asr_engine;
-                        asr_worker(
+                        live::asr_worker(
                             chunk_rx,
-                            &shared,
                             |samples, vad_gate| {
                                 // Lock per chunk so hotkey dictation can run in between.
                                 let mut engine = engine.lock().map_err(|e| anyhow!("{e}"))?;
                                 Ok(engine.transcribe_samples(samples, language.as_deref(), vad_gate)?.text)
                             },
                             |line| {
-                                let event = LineEvent { memo_id: shared.memo_id, line };
+                                let line = shared.push_line(line);
+                                let event = LineEvent { memo_id: shared.memo_id, line: &line };
                                 if let Err(e) = app.emit("meeting-line", &event) {
                                     log::warn!("Failed to emit meeting-line: {e}");
                                 }
                             },
-                        )
+                        );
+                        shared.transcribed.store(true, Ordering::SeqCst);
                     })?
             };
             {
@@ -885,8 +692,8 @@ impl MeetingSession {
                     .spawn(move || notes_loop(worker, &shared, &app, language.as_deref()))?;
             }
 
-            log::info!("Meeting {} started (system audio: {})", new_memo.id, system.is_some());
-            Ok(Self { shared, mic: Some(mic), system })
+            log::info!("Meeting {} started (system audio: {})", new_memo.id, captures.has_system());
+            Ok(Self { shared, captures })
         })();
 
         if started.is_err() {
@@ -917,12 +724,9 @@ impl MeetingSession {
             state.phase = MeetingPhase::Finalizing;
             state.ended_after = Some(self.shared.started.elapsed());
         }
-        // Dropping the captures closes their frame channels, which lets the
-        // audio thread flush and the rest of the pipeline drain.
-        if let Some(mut mic) = self.mic.take() {
-            mic.stop();
-        }
-        self.system.take();
+        // Closing the frame channels lets the audio thread flush and the rest
+        // of the pipeline drain.
+        self.captures.stop();
         self.shared.emit_state(app);
         log::info!("Meeting {} stopped; finalizing", self.shared.memo_id);
     }
@@ -955,212 +759,6 @@ impl MeetingSession {
                 .then(|| state.next_update.saturating_duration_since(Instant::now()).as_secs_f64()),
         }
     }
-}
-
-impl Drop for MeetingSession {
-    fn drop(&mut self) {
-        if let Some(mut mic) = self.mic.take() {
-            mic.stop();
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Audio thread: levels, chunking, mixed recording
-// ---------------------------------------------------------------------------
-
-fn audio_loop(
-    first: Vec<f32>,
-    mic_rx: channel::Receiver<Vec<f32>>,
-    sys_rx: channel::Receiver<Vec<f32>>,
-    has_system: bool,
-    chunk_tx: channel::Sender<Chunk>,
-    mut writer: WavWriter<std::io::BufWriter<std::fs::File>>,
-    shared: &Shared,
-) -> Result<()> {
-    let mut mic_chunker = Chunker::new(Source::Me);
-    let mut sys_chunker = Chunker::new(Source::Others);
-    // Per-frame "the other side is audible", for flagging possible echo.
-    let mut others_loud: Vec<bool> = Vec::new();
-    // Samples not yet mixed into the recording, per source.
-    let mut mic_pending: Vec<f32> = Vec::new();
-    let mut sys_pending: Vec<f32> = Vec::new();
-    let mut since_flush = 0usize;
-
-    let send = |mut chunk: Chunk, others_loud: &[bool]| {
-        if chunk.source == Source::Me && !chunk.silent {
-            let from = chunk.start / VAD_FRAME_SIZE;
-            let to = (chunk.start + chunk.samples.len()) / VAD_FRAME_SIZE;
-            let span = others_loud.get(from..to.min(others_loud.len())).unwrap_or(&[]);
-            let loud = span.iter().filter(|&&l| l).count();
-            chunk.others_active = !span.is_empty() && loud as f64 / span.len() as f64 >= OTHERS_ACTIVE_SHARE;
-        }
-        let _ = chunk_tx.send(chunk);
-    };
-
-    let mut mic_open = true;
-    let mut sys_open = has_system;
-    let mut pending_first = Some(first);
-    let never = channel::never::<Vec<f32>>();
-    while mic_open || sys_open {
-        let (source, frame) = if let Some(frame) = pending_first.take() {
-            (Source::Me, frame)
-        } else {
-            channel::select! {
-                recv(if mic_open { &mic_rx } else { &never }) -> msg => match msg {
-                    Ok(frame) => (Source::Me, frame),
-                    Err(_) => { mic_open = false; continue; }
-                },
-                recv(if sys_open { &sys_rx } else { &never }) -> msg => match msg {
-                    Ok(frame) => (Source::Others, frame),
-                    Err(_) => { sys_open = false; continue; }
-                },
-            }
-        };
-
-        let level = meter_level(&frame);
-        match source {
-            Source::Me => {
-                shared.mic_level.store(level.to_bits(), Ordering::Relaxed);
-                mic_pending.extend_from_slice(&frame);
-                if let Some(chunk) = mic_chunker.push(&frame) {
-                    send(chunk, &others_loud);
-                }
-            }
-            Source::Others => {
-                shared.system_level.store(level.to_bits(), Ordering::Relaxed);
-                others_loud.push(frame_dbfs(&frame) > OTHERS_ACTIVE_DBFS);
-                sys_pending.extend_from_slice(&frame);
-                if let Some(chunk) = sys_chunker.push(&frame) {
-                    send(chunk, &others_loud);
-                }
-            }
-        }
-
-        // Mix what both sources have delivered. A source that falls more than
-        // a second behind (stalled tap, no system audio) is padded with silence.
-        let lag_limit = samples(1.0);
-        if !has_system || sys_pending.len() + lag_limit < mic_pending.len() {
-            sys_pending.resize(mic_pending.len(), 0.0);
-        } else if mic_pending.len() + lag_limit < sys_pending.len() {
-            mic_pending.resize(sys_pending.len(), 0.0);
-        }
-        let n = mic_pending.len().min(sys_pending.len());
-        if n > 0 {
-            for (m, s) in mic_pending.drain(..n).zip(sys_pending.drain(..n)) {
-                writer.write_sample(to_i16(m + s))?;
-            }
-            since_flush += n;
-            if since_flush >= memo::FLUSH_INTERVAL_SAMPLES {
-                writer.flush()?;
-                since_flush = 0;
-            }
-        }
-    }
-
-    for chunk in [mic_chunker.flush(), sys_chunker.flush()].into_iter().flatten() {
-        send(chunk, &others_loud);
-    }
-    let n = mic_pending.len().max(sys_pending.len());
-    mic_pending.resize(n, 0.0);
-    sys_pending.resize(n, 0.0);
-    for (m, s) in mic_pending.into_iter().zip(sys_pending) {
-        writer.write_sample(to_i16(m + s))?;
-    }
-    writer.finalize()?;
-    log::info!("Meeting audio thread exiting");
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// ASR worker
-// ---------------------------------------------------------------------------
-
-/// A mic line held back until the other side's transcript covers its time,
-/// so it can be checked for echo.
-struct HeldLine {
-    start: f64,
-    end: f64,
-    text: String,
-}
-
-/// Transcribe chunks as they come (`transcribe(samples, vad_gate)` gets 16 kHz
-/// mono samples, and should skip them unless the VAD hears speech when
-/// `vad_gate`), append the lines to `shared` and hand each to `on_line`.
-fn asr_worker(
-    chunk_rx: channel::Receiver<Chunk>,
-    shared: &Shared,
-    mut transcribe: impl FnMut(&[f32], bool) -> Result<String>,
-    mut on_line: impl FnMut(&MeetingLine),
-) {
-    let mut held: Vec<HeldLine> = Vec::new();
-    // The other side's stream has been transcribed up to here (seconds).
-    let mut others_done = 0.0f64;
-    let mut next_id = 1u64;
-
-    let mut publish = |source: Source, start: f64, end: f64, text: String| {
-        let line = MeetingLine { id: next_id, source, start, end, text };
-        next_id += 1;
-        on_line(&line);
-        shared.state().lines.push(line);
-    };
-
-    // Publish held lines the other side's transcript now covers, dropping echoes.
-    let release = |held: &mut Vec<HeldLine>, upto: f64, publish: &mut dyn FnMut(Source, f64, f64, String)| {
-        let ready: Vec<HeldLine>;
-        (ready, *held) = std::mem::take(held).into_iter().partition(|h| h.end <= upto);
-        for h in ready {
-            let theirs = {
-                let state = shared.state();
-                let mut theirs = String::new();
-                for l in state.lines.iter().filter(|l| {
-                    l.source == Source::Others
-                        && l.end > h.start - ECHO_MARGIN_SEC
-                        && l.start < h.end + ECHO_MARGIN_SEC
-                }) {
-                    append_text(&mut theirs, &l.text);
-                }
-                theirs
-            };
-            if is_echo(&h.text, &theirs) {
-                log::info!("Meeting: dropped mic line as speaker echo: {}", h.text);
-            } else {
-                publish(Source::Me, h.start, h.end, h.text);
-            }
-        }
-    };
-
-    for chunk in chunk_rx.iter() {
-        let (start, end) = (chunk.start_sec(), chunk.end_sec());
-        let text = if chunk.silent {
-            String::new()
-        } else {
-            match transcribe(&chunk.samples, !chunk.prominent) {
-                Ok(text) => text.trim().to_string(),
-                Err(e) => {
-                    log::error!("Meeting chunk transcription failed: {e:#}");
-                    String::new()
-                }
-            }
-        };
-
-        match chunk.source {
-            Source::Others => {
-                if !text.is_empty() {
-                    publish(Source::Others, start, end, text);
-                }
-                others_done = others_done.max(end);
-                release(&mut held, others_done, &mut publish);
-            }
-            Source::Me if text.is_empty() => {}
-            Source::Me if chunk.others_active => held.push(HeldLine { start, end, text }),
-            Source::Me => publish(Source::Me, start, end, text),
-        }
-    }
-    // Everything is transcribed: check what is still held against what we have.
-    release(&mut held, f64::INFINITY, &mut publish);
-    shared.transcribed.store(true, Ordering::SeqCst);
-    log::info!("Meeting ASR worker exiting");
 }
 
 // ---------------------------------------------------------------------------
@@ -1304,111 +902,7 @@ fn save(shared: &Shared, app: &AppHandle, language: Option<&str>) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn tone(seconds: f64, amplitude: f32) -> Vec<f32> {
-        (0..samples(seconds))
-            .map(|i| amplitude * (i as f32 / VAD_SAMPLE_RATE as f32 * 220.0 * std::f32::consts::TAU).sin())
-            .collect()
-    }
-
-    /// Feed `audio` frame by frame; return every chunk's `(start, end, silent, prominent)`.
-    fn chunks_of(audio: &[f32]) -> Vec<(f64, f64, bool, bool)> {
-        let mut chunker = Chunker::new(Source::Me);
-        let mut out = Vec::new();
-        let mut take = |c: Chunk| out.push((c.start_sec(), c.end_sec(), c.silent, c.prominent));
-        for frame in audio.chunks(VAD_FRAME_SIZE) {
-            if let Some(c) = chunker.push(frame) {
-                take(c);
-            }
-        }
-        if let Some(c) = chunker.flush() {
-            take(c);
-        }
-        out
-    }
-
-    fn chunk_all(audio: &[f32]) -> Vec<(f64, f64, bool)> {
-        chunks_of(audio).into_iter().map(|(s, e, silent, _)| (s, e, silent)).collect()
-    }
-
-    /// Steady noise at about `db` dBFS RMS.
-    fn noise(seconds: f64, db: f32) -> Vec<f32> {
-        let amp = 10f32.powf(db / 20.0) * 3f32.sqrt();
-        let mut x = 0x2545_f491u32;
-        (0..samples(seconds))
-            .map(|_| {
-                x ^= x << 13;
-                x ^= x >> 17;
-                x ^= x << 5;
-                (x as f32 / u32::MAX as f32 * 2.0 - 1.0) * amp
-            })
-            .collect()
-    }
-
-    #[test]
-    fn room_noise_does_not_stand_out_but_speech_over_it_does() {
-        let mut audio = noise(40.0, -50.0);
-        let quiet = chunks_of(&audio);
-        assert!(quiet.iter().all(|c| !c.2 && !c.3), "{quiet:?}");
-        // A "voice" 20 dB above the noise, after 30 s of room tone.
-        for (s, t) in audio[samples(31.0)..samples(33.0)].iter_mut().zip(tone(2.0, 0.03)) {
-            *s += t;
-        }
-        let chunks = chunks_of(&audio);
-        let with_voice = chunks.iter().find(|c| c.0 <= 31.5 && c.1 >= 32.5).unwrap();
-        assert!(with_voice.3, "{chunks:?}");
-        assert_eq!(chunks.iter().filter(|c| c.3).count(), 1, "{chunks:?}");
-    }
-
-    #[test]
-    fn chunks_are_cut_at_a_pause_after_the_minimum_length() {
-        let mut audio = tone(5.0, 0.3);
-        audio.extend(vec![0.0; samples(1.0)]);
-        audio.extend(tone(3.0, 0.3));
-        let chunks = chunk_all(&audio);
-        assert_eq!(chunks.len(), 2, "{chunks:?}");
-        // Cut inside the pause, which starts at 5.0 s.
-        assert!((5.2..5.6).contains(&chunks[0].1), "{chunks:?}");
-        assert_eq!(chunks[0].1, chunks[1].0);
-        assert!((chunks[1].1 - 9.0).abs() < 0.05);
-    }
-
-    #[test]
-    fn a_short_pause_before_the_minimum_length_does_not_cut() {
-        let mut audio = tone(2.0, 0.3);
-        audio.extend(vec![0.0; samples(0.8)]);
-        audio.extend(tone(2.0, 0.3));
-        assert_eq!(chunk_all(&audio).len(), 1);
-    }
-
-    #[test]
-    fn continuous_speech_is_cut_at_the_maximum_length() {
-        let chunks = chunk_all(&tone(32.0, 0.3));
-        assert!(chunks.iter().all(|(s, e, _)| e - s <= 15.0 + 1e-9), "{chunks:?}");
-        assert_eq!(chunks.first().unwrap().0, 0.0);
-        for pair in chunks.windows(2) {
-            assert_eq!(pair[0].1, pair[1].0);
-        }
-        assert!((chunks.last().unwrap().1 - 32.0).abs() < 0.05);
-    }
-
-    #[test]
-    fn silence_is_chunked_but_marked_silent() {
-        let chunks = chunk_all(&vec![0.0; samples(20.0)]);
-        assert!(chunks.iter().all(|c| c.2), "{chunks:?}");
-        // Quiet speech is not "silent".
-        let quiet = chunk_all(&tone(3.0, 0.005));
-        assert!(!quiet[0].2, "{quiet:?}");
-    }
-
-    #[test]
-    fn echo_is_detected_by_shared_bigrams() {
-        let theirs = "来週の月曜までに見積もりを出してもらえますか。はい、お願いします";
-        assert!(is_echo("来週の月曜までに見積もりを出して", theirs));
-        assert!(!is_echo("わかりました、私が担当します", theirs));
-        assert!(!is_echo("", theirs));
-        assert!(is_echo("Send the Quote by Monday", "please send the quote by monday, thanks"));
-    }
+    use crate::vad::VAD_FRAME_SIZE;
 
     #[test]
     fn notes_are_parsed_leniently() {
@@ -1576,15 +1070,16 @@ mod tests {
         let writer = WavWriter::create(&wav, spec).unwrap();
         let audio = {
             let shared = Arc::clone(&shared);
-            let first = vec![0.0; VAD_FRAME_SIZE];
-            thread::spawn(move || audio_loop(first, mic_rx, sys_rx, true, chunk_tx, writer, &shared).unwrap())
+            let inputs = live::Inputs::for_test(vec![0.0; VAD_FRAME_SIZE], mic_rx, sys_rx);
+            thread::spawn(move || live::audio_loop(inputs, chunk_tx, Some(writer), &*shared).unwrap())
         };
         let t = Instant::now();
-        asr_worker(
+        live::asr_worker(
             chunk_rx,
-            &shared,
             |samples, vad_gate| Ok(engine.transcribe_samples(samples, Some("ja"), vad_gate)?.text),
-            |_| {},
+            |line| {
+                shared.push_line(line);
+            },
         );
         feeder.join().unwrap();
         audio.join().unwrap();
