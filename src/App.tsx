@@ -475,7 +475,7 @@ function App() {
         style={{ borderColor: "var(--border-subtle)" }}
       >
         {/* Traffic Lights */}
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 h-full" data-tauri-drag-region>
           <button
             onClick={handleClose}
             className="w-2.5 h-2.5 rounded-full bg-[#FF5F57] hover:brightness-90 transition-all"
@@ -512,7 +512,7 @@ function App() {
         </div>
 
         {/* Settings Button */}
-        <div className="flex justify-end">
+        <div className="flex items-center justify-end h-full" data-tauri-drag-region>
           <button
             onClick={() => setIsSettingsOpen(true)}
             className="w-8 h-8 rounded-2xl flex items-center justify-center hover:bg-surface-elevated transition-colors border"
@@ -541,7 +541,7 @@ function App() {
       </header>
 
       {/* Tabs */}
-      <nav className="flex gap-1 px-5 pt-3 flex-shrink-0" role="tablist">
+      <nav className="flex gap-1 px-5 pt-3 flex-shrink-0" role="tablist" data-tauri-drag-region>
         {TABS.map(({ id, label }) => (
           <button
             key={id}
