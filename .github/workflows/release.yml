@@ -94,13 +94,41 @@ jobs:
             || echo "Metal toolchain already present or not required for this Xcode"
           xcrun metal --version 2>&1 || true
 
+      # An app shipped without the public key can never check for updates.
+      - name: Check the updater public key
+        run: |
+          node -e 'process.exit(require("./src-tauri/tauri.conf.json").plugins.updater.pubkey ? 0 : 1)' \
+            || { echo "::error::No updater public key in tauri.conf.json; run scripts/setup-updater-key.sh"; exit 1; }
+
+      # Also builds the signed update archive (Echo.app.tar.gz + .sig). Only
+      # here: local builds stay possible without the signing key.
       - name: Build Tauri app
-        run: npm run tauri:build -- --target aarch64-apple-darwin
+        run: npm run tauri:build -- --target aarch64-apple-darwin --config '{"bundle":{"createUpdaterArtifacts":true}}'
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # What installed copies read from releases/latest/download/latest.json.
+      - name: Describe the update
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          bundle=src-tauri/target/aarch64-apple-darwin/release/bundle/macos
+          node -e '
+            const fs = require("fs");
+            const [tag, sig, out] = process.argv.slice(1);
+            fs.writeFileSync(out, JSON.stringify({
+              version: tag.replace(/^v/, ""),
+              pub_date: new Date().toISOString(),
+              platforms: { "darwin-aarch64": {
+                signature: fs.readFileSync(sig, "utf8"),
+                url: `https://github.com/qluto/echo/releases/download/${tag}/Echo.app.tar.gz`,
+              } },
+            }, null, 2));
+          ' "$GITHUB_REF_NAME" "$bundle/Echo.app.tar.gz.sig" "$bundle/latest.json"
 
       - name: Cleanup keychain
         if: always()
@@ -115,7 +143,9 @@ jobs:
         with:
           files: |
             src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Echo.app.tar.gz
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/latest.json
+          fail_on_unmatched_files: true
           draft: false
           generate_release_notes: true
         env:

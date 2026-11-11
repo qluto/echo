@@ -20,6 +20,7 @@ mod meeting;
 mod system_audio;
 mod transcription;
 mod types;
+mod update;
 mod vad;
 
 use std::sync::{Arc, Mutex};
@@ -108,6 +109,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Debug)
@@ -175,6 +177,9 @@ pub fn run() {
 
             // Setup system tray
             setup_system_tray(app)?;
+
+            update::resume_listening(app.handle());
+            update::start(app.handle().clone());
 
             // Initialize handy-keys and register saved hotkey
             let app_handle = app.handle().clone();
@@ -262,6 +267,9 @@ pub fn run() {
             commands::request_accessibility_permission,
             commands::open_accessibility_settings,
             commands::restart_app,
+            update::update_ready,
+            update::restart_for_update,
+            update::just_updated,
             commands::get_frontmost_app,
             commands::get_postprocess_settings,
             commands::update_postprocess_settings,
