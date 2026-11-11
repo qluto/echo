@@ -461,6 +461,16 @@ impl TranscriptionDb {
         Ok(rows as u32)
     }
 
+    /// Whether a memo is recording or being processed (what an exit would interrupt).
+    pub fn has_memo_in_progress(&self) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM memos
+                           WHERE status IN ('recording', 'transcribing', 'summarizing'))",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
     /// Get the database file path.
     pub fn path(&self) -> &Path {
         &self.path

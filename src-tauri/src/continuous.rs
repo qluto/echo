@@ -12,7 +12,7 @@
 //! transcribes it itself.
 
 use std::cell::{Cell, RefCell};
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -55,6 +55,21 @@ fn is_muted(source: Source) -> bool {
         Source::Me => muted != 0,
         Source::Others => muted & Mute::Meeting as u8 != 0,
     }
+}
+
+/// When always-on last heard sound (Unix seconds; 0 = never), so that an
+/// update does not restart the app while there is something to transcribe.
+static LAST_SOUND: AtomicU64 = AtomicU64::new(0);
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Seconds since always-on last heard sound (very large if never).
+pub fn seconds_since_sound() -> f64 {
+    now_secs().saturating_sub(LAST_SOUND.load(Ordering::Relaxed)) as f64
 }
 
 /// A frame this loud counts as sound for the activity indicator…
@@ -201,6 +216,7 @@ impl AudioObserver for Activity {
         let hold = &self.hold[source as usize];
         if dbfs > ACTIVE_DBFS && !is_muted(source) {
             hold.set(ACTIVE_HOLD_FRAMES);
+            LAST_SOUND.store(now_secs(), Ordering::Relaxed);
         } else {
             hold.set(hold.get().saturating_sub(1));
         }

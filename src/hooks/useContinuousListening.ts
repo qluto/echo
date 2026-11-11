@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   startContinuousListening,
+  onContinuousListeningResumed,
   stopContinuousListening,
   getContinuousListeningStatus,
   onContinuousTranscription,
@@ -47,6 +48,14 @@ export function useContinuousListening(): UseContinuousListeningReturn {
     getContinuousListeningStatus()
       .then(applyStatus)
       .catch((e) => console.error("Failed to get listening status:", e));
+  }, [applyStatus]);
+
+  // Always-on turned back on by the backend after an update restart
+  useEffect(() => {
+    const unlisten = onContinuousListeningResumed(applyStatus);
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, [applyStatus]);
 
   // Subscribe to continuous transcription events

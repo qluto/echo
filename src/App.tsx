@@ -20,6 +20,10 @@ import {
   requestAccessibilityPermission,
   openAccessibilitySettings,
   restartApp,
+  getUpdateReady,
+  restartForUpdate,
+  getJustUpdated,
+  onUpdateReady,
   loadPostprocessModel,
 } from "./lib/tauri";
 import { getModelShortName } from "./lib/models";
@@ -104,6 +108,19 @@ function App() {
   const [hotkey, setHotkey] = useState<string>("command+shift+space");
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
   const [showRestartPrompt, setShowRestartPrompt] = useState(false);
+  // An installed update waiting for a restart, and the version just moved to
+  const [updateReady, setUpdateReady] = useState<string | null>(null);
+  const [updatedTo, setUpdatedTo] = useState<string | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getUpdateReady().then(setUpdateReady).catch(() => {});
+    getJustUpdated().then(setUpdatedTo).catch(() => {});
+    const unlisten = onUpdateReady(setUpdateReady);
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
 
   const [showSuccess, setShowSuccess] = useState(false);
 
@@ -565,6 +582,48 @@ function App() {
 
       {/* Content: every tab stays mounted so its hooks keep running */}
       <main className="flex-1 min-h-0 flex flex-col">
+        {/* Auto-update: installed and waiting for a restart, or just applied */}
+        {(updateReady || updatedTo) && (
+          <div className="px-5 pt-3 flex-shrink-0">
+            <div
+              role="status"
+              className="px-3 py-2 rounded-lg text-xs flex items-center gap-2"
+              style={{ backgroundColor: "var(--surface-muted)", color: "var(--text-secondary)" }}
+            >
+              <span className="flex-1 min-w-0">
+                {updateReady
+                  ? updateError ?? `Echo ${updateReady} is installed. It restarts when you're away.`
+                  : `Updated to Echo ${updatedTo}.`}
+              </span>
+              {updateReady ? (
+                <button
+                  onClick={async () => {
+                    setUpdateError(null);
+                    try {
+                      await restartForUpdate();
+                    } catch (e) {
+                      setUpdateError(String(e));
+                    }
+                  }}
+                  className="px-2.5 py-1 rounded-md text-xs font-medium flex-shrink-0"
+                  style={{ backgroundColor: "var(--glow-idle)", color: "white" }}
+                >
+                  Restart now
+                </button>
+              ) : (
+                <button
+                  onClick={() => setUpdatedTo(null)}
+                  aria-label="Dismiss"
+                  className="px-1.5 text-sm leading-none flex-shrink-0"
+                  style={{ color: "var(--text-tertiary)" }}
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Hotkey Error */}
         {hotkeyError && (
           <div className="px-5 pt-3 flex-shrink-0">

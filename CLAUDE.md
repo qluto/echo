@@ -400,6 +400,25 @@ Required secrets:
 - `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD`
 - `APPLE_SIGNING_IDENTITY`
 - `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`
+- `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (auto-update signing; set by `scripts/setup-updater-key.sh`)
+
+### Auto-Update (`update.rs`)
+
+Tagged releases also carry `Echo.app.tar.gz` (signed with the updater key; CI
+passes `createUpdaterArtifacts` only there, so local builds need no key) and
+`latest.json`. The app in `/Applications` (only there — not dev builds or the
+dmg) checks `releases/latest/download/latest.json` 1 min after launch and every
+6 h via `tauri-plugin-updater`, installs a newer version into the bundle in the
+background, and shows a "Restart now" banner. It restarts by itself only when
+quiet: 2 min without keyboard/mouse input, 2 min without sound for always-on
+(`continuous::seconds_since_sound`), and no dictation, memo recording, meeting,
+or memo still transcribing/summarizing. The relaunch waits for the old process
+to exit before `open`ing the bundle (no overlap on the hotkey or the DB);
+always-on that was on is resumed after it (`resume_listening` store key →
+`continuous-listening-resumed`). The CI build fails if `plugins.updater.pubkey`
+is empty. The private key lives at `~/.tauri/echo.key` (password in the
+keychain item "echo updater signing key") — **losing it means installed copies
+can no longer auto-update**; back it up.
 
 ## Development Notes
 

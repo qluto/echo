@@ -83,5 +83,12 @@
       "infoPlist": "Info.plist"
     }
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://github.com/qluto/echo/releases/latest/download/latest.json"
+      ]
+    }
+  }
 }

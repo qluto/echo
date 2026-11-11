@@ -295,6 +295,27 @@ export async function restartApp(): Promise<void> {
   return invoke("restart_app");
 }
 
+// Auto-update (installed in the background; the app restarts when idle)
+
+/** The installed version waiting for a restart, if any. */
+export async function getUpdateReady(): Promise<string | null> {
+  return invoke("update_ready");
+}
+
+/** Restart into the installed update now. */
+export async function restartForUpdate(): Promise<void> {
+  return invoke("restart_for_update");
+}
+
+/** The version the app just moved to (once after an update), else null. */
+export async function getJustUpdated(): Promise<string | null> {
+  return invoke("just_updated");
+}
+
+export function onUpdateReady(callback: (version: string) => void): Promise<UnlistenFn> {
+  return listen<string>("update-ready", (event) => callback(event.payload));
+}
+
 // Post-processing types and functions
 export interface PostProcessModelStatus {
   model_name: string;
@@ -446,6 +467,14 @@ export function onHotkeyPartial(
 // Always-on sound activity (for the ambient float indicator)
 export interface ContinuousActivityEvent {
   active: boolean;
+}
+
+export function onContinuousListeningResumed(
+  callback: (status: ContinuousListeningStatus) => void
+): Promise<UnlistenFn> {
+  return listen<ContinuousListeningStatus>("continuous-listening-resumed", (event) => {
+    callback(event.payload);
+  });
 }
 
 export function onContinuousActivity(
