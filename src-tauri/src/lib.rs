@@ -3,6 +3,7 @@
 extern crate objc;
 
 mod active_app;
+mod claude_code;
 mod audio_capture;
 mod clipboard;
 mod commands;
@@ -290,6 +291,9 @@ pub fn run() {
             commands::get_notes_model_status,
             commands::set_notes_model,
             commands::prepare_notes_model,
+            commands::get_notes_claude,
+            commands::set_notes_claude,
+            commands::check_claude_code,
             commands::start_meeting,
             commands::stop_meeting,
             commands::get_meeting_snapshot,

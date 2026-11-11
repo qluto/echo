@@ -3,8 +3,16 @@ import {
   getNotesModelStatus,
   setNotesModel,
   prepareNotesModel,
+  getNotesClaude,
+  setNotesClaude,
+  checkClaudeCode,
+  ClaudeCliInfo,
+  NotesClaudeSettings,
   PostProcessModelStatus,
 } from "../lib/tauri";
+
+/** Claude Code model aliases (each resolves to that family's latest model). */
+const CLAUDE_MODELS = ["sonnet", "opus", "haiku", "fable"];
 import { POSTPROCESS_MODEL_SIZES, getPostprocessModelName } from "../lib/models";
 
 /**
@@ -12,17 +20,47 @@ import { POSTPROCESS_MODEL_SIZES, getPostprocessModelName } from "../lib/models"
  * the dictation post-processor: these favor quality over speed. A model that
  * isn't downloaded yet is fetched on selection, so a memo or meeting never
  * waits for the download.
+ *
+ * Advanced: the user's Claude Code CLI (`claude -p`) can write them instead —
+ * faster and better, but the transcript leaves the device.
  */
 export function NotesModelSection() {
   const [status, setStatus] = useState<PostProcessModelStatus | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [claude, setClaude] = useState<NotesClaudeSettings | null>(null);
+  const [cli, setCli] = useState<ClaudeCliInfo | null>(null);
+  const [cliError, setCliError] = useState<string | null>(null);
 
   useEffect(() => {
     getNotesModelStatus()
       .then(setStatus)
       .catch((e) => console.error("Failed to get notes model status:", e));
+    getNotesClaude()
+      .then(setClaude)
+      .catch((e) => console.error("Failed to get Claude Code notes settings:", e));
   }, []);
+
+  // Look for the CLI whenever Claude Code is (or gets) turned on.
+  useEffect(() => {
+    if (!claude?.enabled || cli) return;
+    setCliError(null);
+    checkClaudeCode()
+      .then(setCli)
+      .catch((e) => setCliError(e instanceof Error ? e.message : String(e)));
+  }, [claude?.enabled, cli]);
+
+  const updateClaude = async (next: NotesClaudeSettings) => {
+    const previous = claude;
+    setClaude(next);
+    setError(null);
+    try {
+      setClaude(await setNotesClaude(next));
+    } catch (e) {
+      setClaude(previous);
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   const download = async () => {
     setIsDownloading(true);
@@ -49,6 +87,7 @@ export function NotesModelSection() {
   };
 
   if (!status) return null;
+  const claudeOn = claude?.enabled ?? false;
 
   return (
     <section className="flex flex-col gap-3">
@@ -74,13 +113,16 @@ export function NotesModelSection() {
         </span>
       </div>
 
-      <div className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between">
+      <div
+        className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between transition-opacity"
+        style={{ opacity: claudeOn ? 0.5 : 1 }}
+      >
         <div className="flex flex-col">
           <span className="text-sm flex-shrink-0" style={{ color: "var(--text-secondary)" }}>
             LLM Model
           </span>
           <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
-            Voice Memo / Meeting
+            {claudeOn ? "Not used while Claude Code is on" : "Voice Memo / Meeting"}
           </span>
         </div>
         <div className="flex items-center gap-2 w-[140px] justify-end">
@@ -122,7 +164,7 @@ export function NotesModelSection() {
         </div>
       </div>
 
-      {!status.loaded && !isDownloading && (
+      {!status.loaded && !isDownloading && !claudeOn && (
         <button
           onClick={download}
           className="px-4 py-2 rounded-lg text-xs text-left transition-colors hover:bg-surface-elevated border border-subtle"
@@ -130,6 +172,84 @@ export function NotesModelSection() {
         >
           Not downloaded yet — download now
         </button>
+      )}
+
+      {claude && (
+        <div className="flex flex-col gap-2">
+          <div className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between">
+            <div className="flex flex-col">
+              <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                Use Claude Code (Advanced)
+              </span>
+              <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+                Runs <span className="font-mono">claude -p</span> on this Mac · not offline
+              </span>
+            </div>
+            <button
+              onClick={() => updateClaude({ ...claude, enabled: !claude.enabled })}
+              className="relative w-10 h-5 rounded-full transition-colors flex-shrink-0"
+              style={{ backgroundColor: claudeOn ? "var(--glow-idle)" : "var(--border-subtle)" }}
+              aria-label="Toggle Claude Code for minutes and meeting notes"
+            >
+              <div
+                className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform"
+                style={{ transform: claudeOn ? "translateX(22px)" : "translateX(2px)" }}
+              />
+            </button>
+          </div>
+
+          {claudeOn && (
+            <>
+              <div className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between">
+                <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                  Claude Model
+                </span>
+                <div className="flex items-center gap-2 w-[140px] justify-end">
+                  <select
+                    value={claude.model}
+                    onChange={(e) => updateClaude({ ...claude, model: e.target.value })}
+                    className="bg-transparent font-mono text-xs appearance-none cursor-pointer focus:outline-none w-full text-right"
+                    style={{ color: "var(--text-primary)" }}
+                  >
+                    {CLAUDE_MODELS.map((model) => (
+                      <option key={model} value={model} className="bg-surface">
+                        {model}
+                      </option>
+                    ))}
+                  </select>
+                  <svg
+                    className="w-4 h-4 flex-shrink-0"
+                    fill="none"
+                    stroke="var(--text-tertiary)"
+                    strokeWidth={2}
+                    viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                  </svg>
+                </div>
+              </div>
+
+              <div
+                className="px-4 py-2 rounded-lg text-xs font-mono break-all"
+                style={{
+                  backgroundColor: cliError ? "rgba(198, 125, 99, 0.15)" : "var(--surface)",
+                  color: cliError ? "var(--glow-recording)" : "var(--text-tertiary)",
+                }}
+              >
+                {cliError ? cliError : cli ? `${cli.version} · ${cli.path}` : "Looking for claude…"}
+              </div>
+
+              <div
+                className="px-4 py-2 rounded-lg text-xs"
+                style={{ backgroundColor: "rgba(212, 165, 116, 0.12)", color: "var(--text-secondary)" }}
+              >
+                Transcripts of voice memos and meetings are sent to Anthropic through your Claude Code login,
+                and count toward its usage. Live meeting notes update every minute instead of every three.
+                Dictation and transcription stay on this Mac.
+              </div>
+            </>
+          )}
+        </div>
       )}
 
       {error && (

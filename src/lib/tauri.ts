@@ -54,6 +54,20 @@ export interface AppSettings {
   gated_access: GatedAccessSettings;
   /** LLM for voice-memo minutes and meeting notes (set via setNotesModel). */
   notes_model?: string | null;
+  /** Minutes and meeting notes via Claude Code (set via setNotesClaude). */
+  notes_claude?: NotesClaudeSettings;
+}
+
+/** Minutes and meeting notes through the local Claude Code CLI (`claude -p`). */
+export interface NotesClaudeSettings {
+  enabled: boolean;
+  /** Claude Code model alias: "sonnet" | "opus" | "haiku" | "fable". */
+  model: string;
+}
+
+export interface ClaudeCliInfo {
+  path: string;
+  version: string;
 }
 
 // Tauri commands
@@ -359,6 +373,19 @@ export async function setNotesModel(modelName: string): Promise<PostProcessModel
 /** Download the notes model if it isn't yet. */
 export async function prepareNotesModel(): Promise<PostProcessModelStatus> {
   return invoke("prepare_notes_model");
+}
+
+export async function getNotesClaude(): Promise<NotesClaudeSettings> {
+  return invoke("get_notes_claude");
+}
+
+export async function setNotesClaude(notesClaude: NotesClaudeSettings): Promise<NotesClaudeSettings> {
+  return invoke("set_notes_claude", { notesClaude });
+}
+
+/** Find the Claude Code CLI; rejects with the reason when it isn't usable. */
+export async function checkClaudeCode(): Promise<ClaudeCliInfo> {
+  return invoke("check_claude_code");
 }
 
 // Continuous listening types and commands

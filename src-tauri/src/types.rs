@@ -22,6 +22,9 @@ pub struct Settings {
     /// LLM for voice-memo minutes and meeting notes. None = default.
     #[serde(default)]
     pub notes_model: Option<String>,
+    /// Write minutes and meeting notes with Claude Code instead (opt-in).
+    #[serde(default)]
+    pub notes_claude: NotesClaudeSettings,
 }
 
 impl Default for Settings {
@@ -35,7 +38,24 @@ impl Default for Settings {
             postprocess: PostProcessSettings::default(),
             gated_access: GatedAccessSettings::default(),
             notes_model: None,
+            notes_claude: NotesClaudeSettings::default(),
         }
+    }
+}
+
+/// Minutes and meeting notes through the user's Claude Code CLI (`claude -p`)
+/// instead of the local notes model. Off by default: it sends transcripts off
+/// the device.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NotesClaudeSettings {
+    pub enabled: bool,
+    /// Claude Code model alias (`claude_code::MODELS`).
+    pub model: String,
+}
+
+impl Default for NotesClaudeSettings {
+    fn default() -> Self {
+        Self { enabled: false, model: crate::claude_code::DEFAULT_MODEL.to_string() }
     }
 }
 

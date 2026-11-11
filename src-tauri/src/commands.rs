@@ -156,10 +156,14 @@ pub fn update_settings(
         settings.gated_access.hf_token.as_ref().is_some_and(|t| !t.is_empty()),
     );
 
-    // The notes model is changed through `set_notes_model`; a settings object
+    // The notes model is changed through `set_notes_model` / `set_notes_claude`; a settings object
     // from an older UI state must not reset it.
     let mut settings = settings;
-    settings.notes_model = state.settings.lock().map_err(|e| e.to_string())?.notes_model.clone();
+    {
+        let current = state.settings.lock().map_err(|e| e.to_string())?;
+        settings.notes_model = current.notes_model.clone();
+        settings.notes_claude = current.notes_claude.clone();
+    }
 
     // Detect whether the effective HF token changed so we can push it into the sidecar.
     let new_effective_token = if settings.gated_access.enabled {
@@ -235,7 +239,7 @@ pub fn start_asr_engine(
     let mut asr_engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
 
     // Snapshot the bits we need from settings without holding the lock during sidecar spawn.
-    let (saved_model, saved_postprocess_model, saved_notes_model, hf_token) = {
+    let (saved_model, saved_postprocess_model, saved_notes_model, notes_claude, hf_token) = {
         let settings = state.settings.lock().map_err(|e| e.to_string())?;
         let token = if settings.gated_access.enabled {
             settings.gated_access.hf_token.clone()
@@ -246,6 +250,7 @@ pub fn start_asr_engine(
             settings.model_name.clone(),
             settings.postprocess.model_name.clone(),
             settings.notes_model.clone(),
+            settings.notes_claude.clone(),
             token,
         )
     };
@@ -286,6 +291,11 @@ pub fn start_asr_engine(
     if let Some(name) = saved_notes_model {
         if let Err(e) = asr_engine.set_notes_model(&name) {
             log::warn!("Saved notes model '{}' unavailable ({}); using default", name, e);
+        }
+    }
+    if notes_claude.enabled {
+        if let Err(e) = asr_engine.set_notes_claude(Some(&notes_claude.model)) {
+            log::warn!("Saved Claude Code notes model unavailable ({e}); using the local notes model");
         }
     }
 
@@ -734,10 +744,44 @@ pub fn set_notes_model(
 /// it. The engine lock is not held meanwhile; the model is not kept loaded.
 #[tauri::command(async)]
 pub fn prepare_notes_model(state: tauri::State<'_, AppState>) -> Result<PostProcessModelStatus, String> {
-    ASREngine::notes_llm(&state.asr_engine).map_err(|e| e.to_string())?;
+    ASREngine::local_notes_llm(&state.asr_engine).map_err(|e| e.to_string())?;
     let mut engine = state.asr_engine.lock().map_err(|e| e.to_string())?;
     engine.release_notes_model();
     Ok(engine.notes_model_status())
+}
+
+#[tauri::command]
+pub fn get_notes_claude(state: tauri::State<'_, AppState>) -> Result<NotesClaudeSettings, String> {
+    Ok(state.settings.lock().map_err(|e| e.to_string())?.notes_claude.clone())
+}
+
+/// Turn minutes and meeting notes through Claude Code on or off (and pick its
+/// model). Applies from the next memo or meeting.
+#[tauri::command]
+pub fn set_notes_claude(
+    notes_claude: NotesClaudeSettings,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<NotesClaudeSettings, String> {
+    state
+        .asr_engine
+        .lock()
+        .map_err(|e| e.to_string())?
+        .set_notes_claude(notes_claude.enabled.then_some(notes_claude.model.as_str()))
+        .map_err(|e| e.to_string())?;
+    log::info!("Notes via Claude Code: enabled={}, model={}", notes_claude.enabled, notes_claude.model);
+    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+    settings.notes_claude = notes_claude.clone();
+    let settings_clone = settings.clone();
+    drop(settings);
+    save_settings_to_store(&app, &settings_clone)?;
+    Ok(notes_claude)
+}
+
+/// Find the Claude Code CLI and its version (may ask the login shell).
+#[tauri::command(async)]
+pub fn check_claude_code() -> Result<crate::claude_code::CliInfo, String> {
+    crate::claude_code::cli_info().map_err(|e| format!("{e:#}"))
 }
 
 // ===== Voice memo commands =====

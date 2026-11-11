@@ -142,6 +142,7 @@ Optional LLM-based cleanup using Gemma 4 E4B (`mlx-community/gemma-4-e4b-it-4bit
 - `src-tauri/src/vad.rs` - Silero VAD v5 wrapper (ONNX Runtime via `voice_activity_detector` crate)
 - `src-tauri/src/audio_capture.rs` - Audio recording (hotkey mode) + streaming capture (always-on mode, with rubato resampling)
 - `src-tauri/src/database.rs` - SQLite storage with FTS5 for transcription history, plus the `memos` table
+- `src-tauri/src/claude_code.rs` - Opt-in `claude -p` backend for minutes / meeting notes
 - `src-tauri/src/memo.rs` - Voice memo: long recording to disk, VAD chunking, transcript + LLM meeting minutes
 - `src/hooks/useTranscription.ts` - React hook for hotkey transcription state
 - `src/hooks/useContinuousListening.ts` - React hook for always-on listening state
@@ -162,6 +163,7 @@ Optional LLM-based cleanup using Gemma 4 E4B (`mlx-community/gemma-4-e4b-it-4bit
   - `enabled`: Enable LLM-based cleanup (removes fillers, self-corrections)
   - `dictionary`: Custom word replacements (e.g., "GPT" → "GPT-4")
   - `custom_prompt`: Optional custom system prompt (null = use default)
+- `notes_claude`: Write minutes / meeting notes with the local Claude Code CLI (`enabled`, `model` alias; off by default, not offline)
 - `gated_access`: Gated HuggingFace model access (off by default)
   - `enabled`: User must explicitly opt in before gated models appear in the picker
   - `hf_token`: HuggingFace personal access token (read scope) — stored in plaintext `settings.json` matching the HF CLI's own `~/.cache/huggingface/token` model
@@ -259,6 +261,21 @@ meetings + 1 real one; mlx-lm, same prompt): Qwen3.6-27B 22/23, Gemma 4
 real meeting's notes empty), Qwen3.5-9B 15 (copied the prompt's example),
 Gemma 4 12B 12 (repetition loops). ~10–30 s per revision round; the meeting
 loads it at start, and it is released after a memo or meeting.
+
+**Claude Code for notes (opt-in, Advanced):** `Settings.notes_claude`
+(`{enabled, model}`) sends minutes and meeting notes to the user's local
+Claude Code CLI instead (`claude_code.rs`; `ASREngine::notes_llm` returns
+`NotesLlm::ClaudeCode`). This breaks offline-only operation, so it is off by
+default and only covers notes — dictation, ASR and post-processing stay local.
+Each call is `claude -p --output-format json --model <alias> --system-prompt …
+--tools "" --strict-mcp-config --safe-mode --setting-sources ""
+--no-session-persistence`, run from the temp dir with the transcript on stdin
+(never argv, never logged); `is_error` in the JSON result becomes the error.
+The CLI is found on PATH, in the installers' usual places, then via the login
+shell (Finder-launched apps get a minimal PATH). With it on, meeting rounds run
+every 60 s instead of 180 s and a memo's minutes are one call (no 3500-char
+parts). Check with `cargo test claude_code_round_trip -- --ignored` and
+`ECHO_MEETING_CLAUDE=sonnet` on `meeting_rounds_replay`.
 
 All ports decode through `llm/decode.rs`, which mirrors mlx-lm's `generate_step`
 (chunked prefill of all but the last prompt token, argmax over log-probs,
