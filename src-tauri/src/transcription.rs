@@ -16,7 +16,36 @@ use tauri::{AppHandle, Manager};
 
 use rust_asr::{CohereEngine, HaasEngine, ParakeetEngine, PostProcessor, WhisperEngine};
 
+use crate::claude_code::ClaudeCode;
 use crate::{TranscriptionResult, TranscriptionSegment};
+
+/// The LLM that writes voice-memo minutes and meeting notes.
+pub enum NotesLlm {
+    /// In-process MLX model (offline).
+    Local(Arc<PostProcessor>),
+    /// The user's Claude Code CLI (`claude -p`).
+    ClaudeCode(ClaudeCode),
+}
+
+impl NotesLlm {
+    /// One system + user completion. `max_tokens` bounds the local model
+    /// only; Claude Code picks its own limit.
+    pub fn chat(&self, system: &str, user: &str, max_tokens: usize) -> Result<String> {
+        match self {
+            Self::Local(llm) => llm.chat(system, user, max_tokens),
+            Self::ClaudeCode(claude) => claude.chat(system, user),
+        }
+    }
+
+    /// Get ready for the first call: read a local model's weights in, or find
+    /// the Claude Code CLI.
+    pub fn warmup(&self) -> Result<()> {
+        match self {
+            Self::Local(llm) => llm.warmup(),
+            Self::ClaudeCode(_) => crate::claude_code::cli_info().map(|_| ()),
+        }
+    }
+}
 
 /// ASR models the picker offers; all are served in-process.
 const AVAILABLE_MODELS: [&str; 9] = [
@@ -128,6 +157,9 @@ pub struct ASREngine {
     llms: HashMap<String, Arc<PostProcessor>>,
     postproc_model: String,
     notes_model: String,
+    /// When set, minutes and meeting notes go to Claude Code instead of
+    /// `notes_model` (opt-in; sends transcripts off the device).
+    notes_claude: Option<ClaudeCode>,
     /// Currently selected ASR model id (drives dispatch).
     active_model: String,
     /// HF hub cache root (`<appcache>/huggingface/hub`), captured at start().
@@ -153,6 +185,7 @@ impl ASREngine {
             llms: HashMap::new(),
             postproc_model: DEFAULT_POSTPROCESS_MODEL.to_string(),
             notes_model: default_notes_model().to_string(),
+            notes_claude: None,
             active_model: String::new(),
             hub_dir: None,
             hf_token: None,
@@ -574,10 +607,32 @@ impl ASREngine {
         Self::shared_llm(engine, |e| &e.postproc_model)
     }
 
-    /// The LLM for voice-memo minutes and meeting notes. Generate with it after
-    /// the engine lock is released.
-    pub fn notes_llm(engine: &Mutex<Self>) -> Result<Arc<PostProcessor>> {
+    /// The LLM for voice-memo minutes and meeting notes: Claude Code if the
+    /// user opted in, else the local notes model (loaded if needed). Generate
+    /// with it after the engine lock is released.
+    pub fn notes_llm(engine: &Mutex<Self>) -> Result<NotesLlm> {
+        if let Some(claude) = engine.lock().map_err(|e| anyhow!("{e}"))?.notes_claude.clone() {
+            return Ok(NotesLlm::ClaudeCode(claude));
+        }
+        Self::local_notes_llm(engine).map(NotesLlm::Local)
+    }
+
+    /// The local notes model, loaded (and downloaded) if needed, even while
+    /// Claude Code is selected.
+    pub fn local_notes_llm(engine: &Mutex<Self>) -> Result<Arc<PostProcessor>> {
         Self::shared_llm(engine, |e| &e.notes_model)
+    }
+
+    /// Whether minutes and meeting notes go to Claude Code.
+    pub fn notes_use_claude(&self) -> bool {
+        self.notes_claude.is_some()
+    }
+
+    /// Send minutes and meeting notes to Claude Code with `model`, or back to
+    /// the local notes model (None).
+    pub fn set_notes_claude(&mut self, model: Option<&str>) -> Result<()> {
+        self.notes_claude = model.map(ClaudeCode::new).transpose()?;
+        Ok(())
     }
 
     /// Free the notes model after a memo or meeting, unless dictation uses it too.

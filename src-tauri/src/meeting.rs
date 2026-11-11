@@ -35,8 +35,10 @@ use crate::transcription::ASREngine;
 use crate::types::{AppState, TranscriptionSegment};
 use crate::vad::VAD_SAMPLE_RATE;
 
-/// The item list is revised this often (wall clock)…
+/// The item list is revised this often (wall clock) by the local notes model…
 const UPDATE_EVERY: Duration = Duration::from_secs(180);
+/// …and this often by Claude Code, which answers in seconds and runs off the GPU.
+const CLAUDE_UPDATE_EVERY: Duration = Duration::from_secs(60);
 /// …showing the model this much of the already-reviewed transcript as context.
 const UPDATE_OVERLAP_SEC: f64 = 60.0;
 /// A round is skipped while less than this much new text has come in.
@@ -542,10 +544,11 @@ struct Shared {
     updating: AtomicBool,
     /// The ASR worker has transcribed everything; the final round can run.
     transcribed: AtomicBool,
+    update_every: Duration,
 }
 
 impl Shared {
-    fn new(memo_id: i64, started_at: String, warning: Option<String>) -> Self {
+    fn new(memo_id: i64, started_at: String, warning: Option<String>, update_every: Duration) -> Self {
         Self {
             memo_id,
             started_at,
@@ -555,7 +558,7 @@ impl Shared {
                 lines: Vec::new(),
                 board: ItemBoard::default(),
                 reviewed_id: 0,
-                next_update: Instant::now() + UPDATE_EVERY,
+                next_update: Instant::now() + update_every,
                 ended_after: None,
                 warning,
                 error: None,
@@ -564,6 +567,7 @@ impl Shared {
             system_level: AtomicU32::new(0f32.to_bits()),
             updating: AtomicBool::new(false),
             transcribed: AtomicBool::new(false),
+            update_every,
         }
     }
 
@@ -650,7 +654,9 @@ impl MeetingSession {
             )
             .with_context(|| format!("Failed to create {audio_path:?}"))?;
 
-            let shared = Arc::new(Shared::new(new_memo.id, new_memo.created_at.clone(), warning));
+            let claude = state.asr_engine.lock().map_err(|e| anyhow!("{e}"))?.notes_use_claude();
+            let update_every = if claude { CLAUDE_UPDATE_EVERY } else { UPDATE_EVERY };
+            let shared = Arc::new(Shared::new(new_memo.id, new_memo.created_at.clone(), warning, update_every));
 
             let (chunk_tx, chunk_rx) = channel::unbounded::<Chunk>();
             {
@@ -835,7 +841,7 @@ fn notes_loop(worker: JoinHandle<()>, shared: &Shared, app: &AppHandle, language
             shared.state().warning = Some(format!("議事メモの更新に失敗しました: {e:#}"));
             shared.emit_state(app);
         }
-        shared.state().next_update = Instant::now() + UPDATE_EVERY;
+        shared.state().next_update = Instant::now() + shared.update_every;
     }
     let _ = worker.join();
 
@@ -1052,7 +1058,7 @@ mod tests {
         engine.set_model(&model).unwrap();
 
         // Feed both tracks in lockstep, as live capture would.
-        let shared = Arc::new(Shared::new(0, String::new(), None));
+        let shared = Arc::new(Shared::new(0, String::new(), None, UPDATE_EVERY));
         let (mic_tx, mic_rx) = channel::bounded(2);
         let (sys_tx, sys_rx) = channel::bounded(2);
         let (chunk_tx, chunk_rx) = channel::unbounded();
@@ -1105,7 +1111,7 @@ mod tests {
 
     /// Revision rounds on a saved transcript (`ECHO_MEETING_DUMP` output, or
     /// lines from a memo), skipping ASR — for comparing notes models:
-    /// `ECHO_MEETING_LINES=<lines.json> [ECHO_MEETING_LLM=<notes model>]
+    /// `ECHO_MEETING_LINES=<lines.json> [ECHO_MEETING_LLM=<notes model> | ECHO_MEETING_CLAUDE=<sonnet|opus|…>]
     ///  [ECHO_MEETING_ROUNDS=182,366 | ECHO_MEETING_ROUND_SEC=35] \
     ///  cargo test meeting_rounds_replay -- --ignored --nocapture --test-threads=1`
     #[test]
@@ -1139,6 +1145,9 @@ mod tests {
     fn replay_rounds(mut engine: ASREngine, lines: &[MeetingLine], times: &[f64]) -> ItemBoard {
         if let Ok(llm) = std::env::var("ECHO_MEETING_LLM") {
             engine.set_notes_model(&llm).unwrap();
+        }
+        if let Ok(model) = std::env::var("ECHO_MEETING_CLAUDE") {
+            engine.set_notes_claude(Some(&model)).unwrap();
         }
         let engine = Mutex::new(engine);
         let mut board = ItemBoard::default();

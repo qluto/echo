@@ -30,7 +30,7 @@ use crate::audio_capture::StreamingCapture;
 use crate::database::{MemoStatus, TranscriptionDb};
 use crate::types::{AppState, TranscriptionSegment};
 use crate::partial::quietest_cut;
-use crate::transcription::ASREngine;
+use crate::transcription::{ASREngine, NotesLlm};
 use crate::vad::VAD_SAMPLE_RATE;
 
 /// How long to wait for the first audio frame before declaring the input dead.
@@ -57,8 +57,10 @@ const CUT_PROBE_SAMPLES: usize = samples(0.2);
 /// A final chunk shorter than this is the tail of the stop click, not words.
 const MIN_FINAL_CHUNK_SAMPLES: usize = samples(0.3);
 
-/// Transcript / notes are fed to the LLM in pieces of at most this many chars.
+/// Transcript / notes are fed to the local LLM in pieces of at most this many chars.
 const MAX_LLM_INPUT_CHARS: usize = 3500;
+/// Claude's context fits hours of transcript, so a memo is one call.
+const CLAUDE_MAX_INPUT_CHARS: usize = 150_000;
 const PART_NOTES_MAX_TOKENS: usize = 1024;
 const MINUTES_MAX_TOKENS: usize = 2048;
 
@@ -384,12 +386,13 @@ fn group_by_chars(blocks: &[String], max_chars: usize) -> Vec<String> {
 /// Turn transcript lines into meeting minutes.
 ///
 /// `llm(system, user, max_tokens)` runs one completion. A transcript
-/// that fits one LLM input is turned into minutes directly; a longer one is
+/// that fits one LLM input (`max_input_chars`) is turned into minutes directly; a longer one is
 /// first reduced part by part into notes (repeatedly, if the notes are still
 /// too long), which are then merged into the minutes.
 pub fn generate_minutes(
     lines: &[String],
     language: Option<&str>,
+    max_input_chars: usize,
     mut llm: impl FnMut(&str, &str, usize) -> Result<String>,
     mut on_progress: impl FnMut(f64),
 ) -> Result<String> {
@@ -408,7 +411,7 @@ pub fn generate_minutes(
 
     let mut blocks = lines.to_vec();
     loop {
-        let groups = group_by_chars(&blocks, MAX_LLM_INPUT_CHARS);
+        let groups = group_by_chars(&blocks, max_input_chars);
         if groups.len() <= 1 {
             break;
         }
@@ -544,15 +547,23 @@ fn process_memo(app: &AppHandle, id: i64) -> Result<()> {
         serde_json::from_str::<Vec<TranscriptionSegment>>(json)?
     };
 
-    let minutes = generate_minutes(
-        &transcript_lines(&segments),
-        language.as_deref(),
-        // Generate without the engine lock, so dictation and transcription
-        // keep running while the minutes are written.
-        |system, user, max_tokens| ASREngine::notes_llm(&state.asr_engine)?.chat(system, user, max_tokens),
-        |p| emit_progress(app, id, MemoStatus::Summarizing, Some(p)),
-    )
-    .context("Minutes generation failed");
+    // Generate without the engine lock, so dictation and transcription keep
+    // running while the minutes are written.
+    let minutes = ASREngine::notes_llm(&state.asr_engine)
+        .and_then(|llm| {
+            let max_input_chars = match llm {
+                NotesLlm::Local(_) => MAX_LLM_INPUT_CHARS,
+                NotesLlm::ClaudeCode(_) => CLAUDE_MAX_INPUT_CHARS,
+            };
+            generate_minutes(
+                &transcript_lines(&segments),
+                language.as_deref(),
+                max_input_chars,
+                |system, user, max_tokens| llm.chat(system, user, max_tokens),
+                |p| emit_progress(app, id, MemoStatus::Summarizing, Some(p)),
+            )
+        })
+        .context("Minutes generation failed");
     if let Ok(mut engine) = state.asr_engine.lock() {
         engine.release_notes_model();
     }
@@ -657,6 +668,7 @@ mod tests {
         let minutes = generate_minutes(
             &lines,
             Some("ja"),
+            MAX_LLM_INPUT_CHARS,
             |system, user, _| {
                 calls.push((system.to_string(), user.to_string()));
                 Ok("## 概要\nあいさつ".to_string())
@@ -682,6 +694,7 @@ mod tests {
         generate_minutes(
             &lines,
             None,
+            MAX_LLM_INPUT_CHARS,
             |system, user, _| {
                 assert!(user.chars().count() <= MAX_LLM_INPUT_CHARS);
                 systems.push(system.to_string());
@@ -712,6 +725,7 @@ mod tests {
         generate_minutes(
             &lines,
             None,
+            MAX_LLM_INPUT_CHARS,
             |system, user, _| {
                 max_input = max_input.max(user.chars().count());
                 Ok(if system == MINUTES_PROMPT { "## 概要".into() } else { "n".repeat(2000) })
@@ -725,7 +739,7 @@ mod tests {
     #[test]
     fn empty_llm_output_is_an_error() {
         let lines = vec!["[00:00] テスト".to_string()];
-        let err = generate_minutes(&lines, None, |_, _, _| Ok("  ".into()), |_| {}).unwrap_err();
+        let err = generate_minutes(&lines, None, MAX_LLM_INPUT_CHARS, |_, _, _| Ok("  ".into()), |_| {}).unwrap_err();
         assert!(err.to_string().contains("no text"), "{err}");
     }
 
@@ -762,6 +776,7 @@ mod tests {
         let minutes = generate_minutes(
             &lines,
             Some("ja"),
+            MAX_LLM_INPUT_CHARS,
             |system, user, max_tokens| {
                 calls += 1;
                 ASREngine::notes_llm(&engine)?.chat(system, user, max_tokens)
