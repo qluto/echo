@@ -21,25 +21,12 @@ jobs:
       # ASR + post-processing run fully in-process (Rust/MLX + whisper.cpp);
       # there is no Python sidecar to build.
 
-      # ===== Frontend & Tauri Build =====
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      # Restores the compiled dependencies cache.yml saved on main. Before the
+      # version bump below, so the cache key matches main's Cargo.toml.
+      - name: Set up the build
+        uses: ./.github/actions/setup-build
         with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: './src-tauri -> target'
-
-      - name: Install frontend dependencies
-        run: npm ci
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Update version from tag
         if: startsWith(github.ref, 'refs/tags/v')
@@ -71,28 +58,6 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN_PATH"
 
           rm $RUNNER_TEMP/certificate.p12
-
-      # With an SDK older than 26.2, MLX only warns and silently builds
-      # without its NAX kernels, so fail instead.
-      - name: Select Xcode with the macOS 26.2+ SDK
-        run: |
-          XCODE=$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -1)
-          sudo xcode-select -s "$XCODE"
-          SDK=$(xcrun --sdk macosx --show-sdk-version)
-          echo "Using $XCODE (macOS SDK $SDK)"
-          if [ "$(printf '%s\n' 26.2 "$SDK" | sort -V | head -1)" != "26.2" ]; then
-            echo "::error::macOS SDK $SDK is older than 26.2"
-            exit 1
-          fi
-
-      # mlx-rs (the in-process Cohere ASR engine) compiles MLX C++ + Metal
-      # kernels from source. On Xcode 16+ the Metal compiler is a separately
-      # installed component; download it idempotently (no-op on older Xcode).
-      - name: Ensure Metal toolchain
-        run: |
-          xcodebuild -downloadComponent MetalToolchain 2>/dev/null \
-            || echo "Metal toolchain already present or not required for this Xcode"
-          xcrun metal --version 2>&1 || true
 
       # An app shipped without the public key can never check for updates.
       - name: Check the updater public key

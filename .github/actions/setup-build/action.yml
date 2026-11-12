@@ -1,0 +1,68 @@
+name: Set up the build
+description: >
+  Node, Rust, the Rust cache, Xcode with the macOS 26.2+ SDK and the Metal
+  toolchain. Shared by release.yml and cache.yml: the Rust cache is only reused
+  when both set up the same toolchain and environment.
+
+inputs:
+  save-cache:
+    description: Whether to save the Rust cache after the job.
+    default: 'false'
+
+outputs:
+  cache-hit:
+    description: Whether the Rust cache was an exact match.
+    value: ${{ steps.rust-cache.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+
+    - name: Install Rust stable
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: aarch64-apple-darwin
+
+    # Compiled dependencies (MLX and whisper.cpp included: ~19 of a cold
+    # build's ~21 minutes). A cache saved by a tag can't be read by the next
+    # tag, so only cache.yml saves it, from main.
+    - name: Rust cache
+      id: rust-cache
+      uses: swatinem/rust-cache@v2
+      with:
+        workspaces: './src-tauri -> target'
+        shared-key: release
+        save-if: ${{ inputs.save-cache }}
+
+    - name: Install frontend dependencies
+      shell: bash
+      run: npm ci
+
+    # With an SDK older than 26.2, MLX only warns and silently builds
+    # without its NAX kernels, so fail instead.
+    - name: Select Xcode with the macOS 26.2+ SDK
+      shell: bash
+      run: |
+        XCODE=$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -1)
+        sudo xcode-select -s "$XCODE"
+        SDK=$(xcrun --sdk macosx --show-sdk-version)
+        echo "Using $XCODE (macOS SDK $SDK)"
+        if [ "$(printf '%s\n' 26.2 "$SDK" | sort -V | head -1)" != "26.2" ]; then
+          echo "::error::macOS SDK $SDK is older than 26.2"
+          exit 1
+        fi
+
+    # mlx-rs and whisper-rs compile Metal kernels from source. On Xcode 16+
+    # the Metal compiler is a separately installed component; download it
+    # idempotently (no-op on older Xcode).
+    - name: Ensure Metal toolchain
+      shell: bash
+      run: |
+        xcodebuild -downloadComponent MetalToolchain 2>/dev/null \
+          || echo "Metal toolchain already present or not required for this Xcode"
+        xcrun metal --version 2>&1 || true

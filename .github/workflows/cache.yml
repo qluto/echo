@@ -1,0 +1,38 @@
+name: Rust cache
+
+# Builds on main so release tags can restore the compiled dependencies: a
+# cache saved by a tag can't be read by other tags, one saved on main can.
+# Runs when the dependencies change, and twice a week otherwise, because
+# GitHub evicts a cache that nothing has read for 7 days.
+on:
+  push:
+    branches: [main]
+    paths:
+      - src-tauri/Cargo.lock
+      - src-tauri/Cargo.toml
+      - rust-asr/Cargo.toml
+      - .cargo/config.toml
+      - .github/actions/setup-build/**
+      - .github/workflows/cache.yml
+  schedule:
+    - cron: '17 3 * * 1,4'
+  workflow_dispatch:
+
+jobs:
+  rust:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up the build
+        id: setup
+        uses: ./.github/actions/setup-build
+        with:
+          save-cache: 'true'
+
+      # The release's compile, without signing or bundling. Skipped on an
+      # exact hit: restoring the cache already counts as using it.
+      - name: Compile like the release
+        if: steps.setup.outputs.cache-hit != 'true'
+        run: npm run tauri:build -- --target aarch64-apple-darwin --no-bundle
