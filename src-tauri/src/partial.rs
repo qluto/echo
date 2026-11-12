@@ -22,7 +22,6 @@ use std::time::Duration;
 
 use crossbeam_channel as channel;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
 
 use crate::transcription::ASREngine;
 use crate::vad::VAD_SAMPLE_RATE;
@@ -57,9 +56,11 @@ pub struct PartialDecoder {
 
 impl PartialDecoder {
     /// Spawn the decoder; `frame_rx` carries 16 kHz mono frames from the
-    /// recording tap (see `audio_capture::start_recording_with_tap`).
+    /// recording tap (see `audio_capture::start_recording_with_tap`) or a
+    /// local API stream. `on_update` gets each new draft, and an empty one
+    /// (both fields empty) when the decoder exits.
     pub fn start(
-        app: AppHandle,
+        on_update: impl Fn(HotkeyPartialEvent) + Send + 'static,
         asr_engine: Arc<Mutex<ASREngine>>,
         language: Option<String>,
         frame_rx: channel::Receiver<Vec<f32>>,
@@ -68,7 +69,7 @@ impl PartialDecoder {
         let stop_flag = Arc::clone(&stop);
         let handle = std::thread::Builder::new()
             .name("echo-partial".into())
-            .spawn(move || run(app, asr_engine, language.as_deref(), frame_rx, stop_flag))
+            .spawn(move || run(on_update, asr_engine, language.as_deref(), frame_rx, stop_flag))
             .ok();
         Self { stop, handle }
     }
@@ -92,7 +93,7 @@ impl PartialDecoder {
 }
 
 fn run(
-    app: AppHandle,
+    on_update: impl Fn(HotkeyPartialEvent),
     asr_engine: Arc<Mutex<ASREngine>>,
     language: Option<&str>,
     frame_rx: channel::Receiver<Vec<f32>>,
@@ -113,7 +114,14 @@ fn run(
             break;
         }
         match frame_rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(frame) => audio.extend_from_slice(&frame),
+            Ok(frame) => {
+                audio.extend_from_slice(&frame);
+                // Take whatever else is queued, so audio arriving faster than
+                // real time (a local API client) is decoded once, not per 0.5 s.
+                for frame in frame_rx.try_iter() {
+                    audio.extend_from_slice(&frame);
+                }
+            }
             Err(channel::RecvTimeoutError::Timeout) => continue,
             Err(channel::RecvTimeoutError::Disconnected) => break,
         }
@@ -173,10 +181,7 @@ fn run(
                 );
                 if !text.is_empty() && text != last_text {
                     last_text = text;
-                    let _ = app.emit(
-                        "hotkey-partial",
-                        HotkeyPartialEvent { committed: committed.clone(), draft },
-                    );
+                    on_update(HotkeyPartialEvent { committed: committed.clone(), draft });
                 }
             }
             Ok(_) => {}
@@ -184,10 +189,7 @@ fn run(
         }
     }
 
-    let _ = app.emit(
-        "hotkey-partial",
-        HotkeyPartialEvent { committed: String::new(), draft: String::new() },
-    );
+    on_update(HotkeyPartialEvent { committed: String::new(), draft: String::new() });
     log::debug!("Partial decoder exiting");
     if aborted || stop.load(Ordering::SeqCst) {
         return None;

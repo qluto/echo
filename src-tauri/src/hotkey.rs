@@ -92,8 +92,11 @@ fn handle_hotkey_pressed(app: &AppHandle) {
                     .ok()
                     .map(|s| s.language.clone())
                     .filter(|l| l != "auto");
+                let emitter = app.clone();
                 let decoder = crate::partial::PartialDecoder::start(
-                    app.clone(),
+                    move |update| {
+                        let _ = emitter.emit("hotkey-partial", update);
+                    },
                     Arc::clone(&state.asr_engine),
                     language,
                     tap_rx,

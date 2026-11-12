@@ -36,6 +36,10 @@ rubato = "0.16"
 enigo = "0.6.1"
 handy-keys = "0.1.4"
 
+# ローカル文字起こし API (local_api.rs)
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "multipart", "query", "ws"] }
+base64 = "0.22"
+
 # データベース
 rusqlite = { version = "0.32", features = ["bundled-full"] }
 
@@ -56,6 +60,9 @@ tauri-plugin-updater = "2"
 
 [dev-dependencies]
 tempfile = "3"
+tokio-tungstenite = "0.29"
+futures-util = "0.3"
+tauri = { version = "2.0", features = ["macos-private-api", "tray-icon", "test"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"

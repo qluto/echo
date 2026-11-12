@@ -404,6 +404,28 @@ export async function setNotesClaude(notesClaude: NotesClaudeSettings): Promise<
   return invoke("set_notes_claude", { notesClaude });
 }
 
+/** The local transcription API (HTTP on 127.0.0.1, opt-in). */
+export interface LocalApiStatus {
+  enabled: boolean;
+  port: number;
+  token: string;
+  running: boolean;
+  /** Why it isn't running although enabled (e.g. the port is in use). */
+  error: string | null;
+}
+
+export async function getLocalApi(): Promise<LocalApiStatus> {
+  return invoke("get_local_api");
+}
+
+export async function setLocalApi(
+  enabled: boolean,
+  port: number,
+  regenerateToken = false,
+): Promise<LocalApiStatus> {
+  return invoke("set_local_api", { enabled, port, regenerateToken });
+}
+
 /** Find the Claude Code CLI; rejects with the reason when it isn't usable. */
 export async function checkClaudeCode(): Promise<ClaudeCliInfo> {
   return invoke("check_claude_code");

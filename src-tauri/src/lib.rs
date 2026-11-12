@@ -9,6 +9,7 @@ mod clipboard;
 mod commands;
 mod continuous;
 mod live;
+mod local_api;
 mod database;
 mod export;
 mod handy_keys;
@@ -121,6 +122,7 @@ pub fn run() {
             // Load settings from persistent store
             let settings = load_settings_from_store(app);
             let hotkey = settings.hotkey.clone();
+            let local_api_settings = settings.local_api.clone();
 
             // Create ASR engine. Saved model selection is applied when the engine starts.
             let asr_engine = ASREngine::new();
@@ -153,6 +155,10 @@ pub fn run() {
                 meeting: Mutex::new(None),
             };
             app.manage(app_state);
+
+            if let Err(e) = local_api::apply(app.handle(), &local_api_settings) {
+                log::error!("Local API failed to start: {e:#}");
+            }
 
             // Try to initialize Enigo, but don't fail if permissions are not granted
             match EnigoState::new() {
@@ -302,6 +308,8 @@ pub fn run() {
             commands::get_notes_claude,
             commands::set_notes_claude,
             commands::check_claude_code,
+            commands::get_local_api,
+            commands::set_local_api,
             commands::start_meeting,
             commands::stop_meeting,
             commands::get_meeting_snapshot,
