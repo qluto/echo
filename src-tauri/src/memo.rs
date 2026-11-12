@@ -50,7 +50,7 @@ const fn samples(sec: f64) -> usize {
 /// bound keeps a chunk inside Whisper's 30 s window; the lower one keeps
 /// chunks long, since every engine does better with more context.
 const MIN_CHUNK_SAMPLES: usize = samples(20.0);
-const MAX_CHUNK_SAMPLES: usize = samples(28.0);
+pub(crate) const MAX_CHUNK_SAMPLES: usize = samples(28.0);
 /// Granularity for locating the quietest point: long enough that a stop
 /// consonant inside a word doesn't pass for a pause.
 const CUT_PROBE_SAMPLES: usize = samples(0.2);
@@ -276,8 +276,8 @@ fn writer_loop(
 /// length of one ASR call.
 pub fn transcribe_wav_chunked(
     path: &Path,
-    mut transcribe: impl FnMut(&[f32]) -> Result<String>,
-    mut on_progress: impl FnMut(f64),
+    transcribe: impl FnMut(&[f32]) -> Result<String>,
+    on_progress: impl FnMut(f64),
 ) -> Result<Vec<TranscriptionSegment>> {
     let mut reader = WavReader::open(path).with_context(|| format!("Failed to open {path:?}"))?;
     let spec = reader.spec();
@@ -288,8 +288,28 @@ pub fn transcribe_wav_chunked(
     {
         bail!("Unexpected memo audio format: {spec:?}");
     }
-    let total_samples = (reader.duration() as usize).max(1);
+    let total_samples = reader.duration() as usize;
+    let samples = reader.samples::<i16>().map_while(|s| match s {
+        Ok(s) => Some(s as f32 / 32768.0),
+        Err(e) => {
+            // An interrupted recording can end mid-sample; use what's there.
+            log::warn!("Memo audio ends early ({e}); transcribing what was read");
+            None
+        }
+    });
+    transcribe_chunked(samples, total_samples, transcribe, on_progress)
+}
 
+/// Cut 16 kHz mono `samples` (`total_samples` long, for progress) into
+/// contiguous 20–28 s chunks at the quietest point and transcribe each with
+/// `transcribe`. Segments carry each chunk's span; empty chunks are left out.
+pub fn transcribe_chunked(
+    samples: impl Iterator<Item = f32>,
+    total_samples: usize,
+    mut transcribe: impl FnMut(&[f32]) -> Result<String>,
+    mut on_progress: impl FnMut(f64),
+) -> Result<Vec<TranscriptionSegment>> {
+    let total_samples = total_samples.max(1);
     let mut segments = Vec::new();
     let mut run = |start: usize, chunk: &[f32]| -> Result<()> {
         let text = transcribe(chunk)?;
@@ -308,16 +328,8 @@ pub fn transcribe_wav_chunked(
     // Offset of `chunk`'s first sample within the recording.
     let mut start = 0;
     let mut chunk = Vec::with_capacity(MAX_CHUNK_SAMPLES);
-    for sample in reader.samples::<i16>() {
-        let sample = match sample {
-            Ok(s) => s,
-            Err(e) => {
-                // An interrupted recording can end mid-sample; use what's there.
-                log::warn!("Memo audio ends early ({e}); transcribing what was read");
-                break;
-            }
-        };
-        chunk.push(sample as f32 / 32768.0);
+    for sample in samples {
+        chunk.push(sample);
         if chunk.len() < MAX_CHUNK_SAMPLES {
             continue;
         }

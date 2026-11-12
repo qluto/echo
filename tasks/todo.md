@@ -94,3 +94,25 @@
 - 会議中に出力デバイスを切り替えた場合の Process Tap の挙動は未確認
 - 1 ラウンド目（項目ゼロ）では論点の拾いが控えめ。後続ラウンドで補われる
 - 相手側は話者分離なし（全員「相手」）
+
+## 2026-11-12: Local transcription API
+- [x] memo chunking → reusable `transcribe_chunked` (file + in-memory)
+- [x] `local_api.rs`: axum on 127.0.0.1, Bearer token, OpenAI-compatible endpoint, /health
+- [x] Settings (`local_api`), commands `get_local_api` / `set_local_api`, start at launch
+- [x] Settings UI (`LocalApiSection.tsx`)
+- [x] E2E with Parakeet and Whisper while another thread holds the engine lock
+### Review
+- Whisper, 53 s m4a: API 4.9 s; concurrent "dictation" waited ≤ 1.1 s (one chunk)
+- Not yet checked in the running app UI (installed Echo was running; avoided a second instance)
+
+## 2026-11-12: Realtime (WebSocket) streaming on the local API
+- [x] `PartialDecoder` takes a callback (hotkey emits `hotkey-partial` through it); drains queued frames per tick
+- [x] `FrameAccumulator::flush` so a commit keeps the last few ms
+- [x] `local_api/realtime.rs`: OpenAI Realtime transcription events + `echo.transcription.draft`, binary PCM
+- [x] Auth: subprotocol token; requests with `Origin` refused
+- [x] E2E (`realtime_end_to_end`) with Parakeet and Whisper while dictation holds the engine
+### Review
+- Parakeet, 53 s streamed at 4×: 79 drafts, 7 deltas before commit, completed 137 ms after commit; dictation waited ≤ 71 ms
+- Whisper: no drafts (as with the hotkey), whole turn at commit (4.9 s); dictation waited ≤ 0.7 s
+- Burst upload (7 s at once): final 0.98 s → 0.25 s after the drain change
+- Still not checked in the running app UI

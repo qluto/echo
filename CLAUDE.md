@@ -76,6 +76,29 @@ Built on the same live capture as the meeting companion (`live.rs`), without spe
 
 Memos left `recording`/`transcribing`/`summarizing` by an exit become `interrupted` at startup and can be re-processed from the UI.
 
+### Local Transcription API (`local_api.rs`, opt-in)
+
+Settings → Local Transcription API turns on an axum server bound to `127.0.0.1:<port>` only.
+Every request needs `Authorization: Bearer <token>` (generated on first enable, regenerable);
+that also keeps web pages out, since the server never answers CORS preflights.
+
+- `POST /v1/audio/transcriptions` — OpenAI-compatible multipart: `file` (WAV read directly;
+  m4a/mp3/aac/flac/caf via `afconvert`), `language` (default: the app's setting),
+  `response_format` = `json` | `text` | `verbose_json`. `model` is ignored — the active ASR model is used
+- `GET /v1/realtime?intent=transcription` — WebSocket streaming shaped like OpenAI's Realtime
+  transcription (`local_api/realtime.rs`): `session.update` (`audio/pcm`, 8–48 kHz, default 24 kHz;
+  `language`), `input_audio_buffer.append` (base64 PCM16, or a raw binary frame) / `.commit` / `.clear`.
+  Each turn runs the hotkey's `PartialDecoder`: committed text goes out as append-only
+  `…input_audio_transcription.delta` (already before the commit), the changing draft as
+  `echo.transcription.draft`, and `…completed` after the commit decodes only the tail.
+  Token also as subprotocol `openai-insecure-api-key.<token>`; requests with an `Origin` header
+  (web pages) are refused, since browsers don't guard WebSockets with CORS
+- `GET /health` — active model, or `busy` while the engine lock is held
+- Sharing the engine: ≤ 28 s audio is one VAD-gated call (like a hotkey clip); longer audio goes
+  through `memo::transcribe_chunked` (no VAD, lock per chunk). Dictation waits at most one chunk
+- Check with `cargo test api_end_to_end -- --ignored --nocapture` and `realtime_end_to_end`
+  (see their doc comments; run both with Parakeet and Whisper via `ECHO_API_MODEL`)
+
 ### Key Patterns
 
 - **In-Process Engines (no sidecar)**: ASR and post-processing run natively in Rust via the `rust-asr` crate. `transcription.rs`'s `ASREngine` owns the loaded engines and dispatches by active model id. See "In-Process Rust ASR Engines" under Build & Release for details.
@@ -143,6 +166,7 @@ Optional LLM-based cleanup using Gemma 4 E4B (`mlx-community/gemma-4-e4b-it-4bit
 - `src-tauri/src/audio_capture.rs` - Audio recording (hotkey mode) + streaming capture (always-on mode, with rubato resampling)
 - `src-tauri/src/database.rs` - SQLite storage with FTS5 for transcription history, plus the `memos` table
 - `src-tauri/src/claude_code.rs` - Opt-in `claude -p` backend for minutes / meeting notes
+- `src-tauri/src/local_api.rs` - Opt-in local HTTP transcription API (127.0.0.1, Bearer token, OpenAI-compatible); `local_api/realtime.rs` streams over WebSocket
 - `src-tauri/src/memo.rs` - Voice memo: long recording to disk, VAD chunking, transcript + LLM meeting minutes
 - `src/hooks/useTranscription.ts` - React hook for hotkey transcription state
 - `src/hooks/useContinuousListening.ts` - React hook for always-on listening state
@@ -164,6 +188,7 @@ Optional LLM-based cleanup using Gemma 4 E4B (`mlx-community/gemma-4-e4b-it-4bit
   - `dictionary`: Custom word replacements (e.g., "GPT" → "GPT-4")
   - `custom_prompt`: Optional custom system prompt (null = use default)
 - `notes_claude`: Write minutes / meeting notes with the local Claude Code CLI (`enabled`, `model` alias; off by default, not offline)
+- `local_api`: Local transcription API (`enabled`, `port` default 47700, `token`; off by default, set via `set_local_api`)
 - `gated_access`: Gated HuggingFace model access (off by default)
   - `enabled`: User must explicitly opt in before gated models appear in the picker
   - `hf_token`: HuggingFace personal access token (read scope) — stored in plaintext `settings.json` matching the HF CLI's own `~/.cache/huggingface/token` model

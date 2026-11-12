@@ -156,13 +156,14 @@ pub fn update_settings(
         settings.gated_access.hf_token.as_ref().is_some_and(|t| !t.is_empty()),
     );
 
-    // The notes model is changed through `set_notes_model` / `set_notes_claude`; a settings object
-    // from an older UI state must not reset it.
+    // The notes model is changed through `set_notes_model` / `set_notes_claude`, and the local API
+    // through `set_local_api`; a settings object from an older UI state must not reset them.
     let mut settings = settings;
     {
         let current = state.settings.lock().map_err(|e| e.to_string())?;
         settings.notes_model = current.notes_model.clone();
         settings.notes_claude = current.notes_claude.clone();
+        settings.local_api = current.local_api.clone();
     }
 
     // Detect whether the effective HF token changed so we can push it into the sidecar.
@@ -1090,4 +1091,44 @@ pub fn open_meeting_window(app: tauri::AppHandle) -> Result<(), String> {
         .ok_or("Meeting window not found")?;
     window.show().map_err(|e| e.to_string())?;
     window.set_focus().map_err(|e| e.to_string())
+}
+
+// ===== Local transcription API =====
+
+#[tauri::command]
+pub fn get_local_api(state: tauri::State<'_, AppState>) -> Result<crate::local_api::LocalApiStatus, String> {
+    let settings = state.settings.lock().map_err(|e| e.to_string())?;
+    Ok(crate::local_api::status(&settings.local_api))
+}
+
+/// Turn the local API on or off, or move it to another port. A token is made
+/// the first time it is turned on, and anew on `regenerate_token`. A server that
+/// can't start (port in use) is reported in the returned status's `error`.
+#[tauri::command]
+pub fn set_local_api(
+    enabled: bool,
+    port: u16,
+    regenerate_token: bool,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<crate::local_api::LocalApiStatus, String> {
+    if port < 1024 {
+        return Err("Port must be 1024 or higher".to_string());
+    }
+    let settings = {
+        let mut current = state.settings.lock().map_err(|e| e.to_string())?;
+        let api = &mut current.local_api;
+        api.enabled = enabled;
+        api.port = port;
+        if regenerate_token || (enabled && api.token.is_empty()) {
+            api.token = crate::local_api::new_token();
+        }
+        current.clone()
+    };
+    save_settings_to_store(&app, &settings)?;
+    log::info!("Local API: enabled={enabled}, port={port}, token_regenerated={regenerate_token}");
+    if let Err(e) = crate::local_api::apply(&app, &settings.local_api) {
+        log::error!("Local API: {e:#}");
+    }
+    Ok(crate::local_api::status(&settings.local_api))
 }

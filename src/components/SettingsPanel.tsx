@@ -38,6 +38,7 @@ import { DEFAULT_POSTPROCESS_PROMPT, DEFAULT_SUMMARIZE_PROMPT } from "../lib/pro
 import { AppProfilesSection } from "./AppProfilesSection";
 import { DictionarySection } from "./DictionarySection";
 import { NotesModelSection } from "./NotesModelSection";
+import { LocalApiSection } from "./LocalApiSection";
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -1133,6 +1134,9 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
 
               {/* Minutes & meeting notes LLM */}
               <NotesModelSection />
+
+              {/* Local transcription API (Advanced) */}
+              <LocalApiSection />
 
               {/* Gated Models Section (Advanced) */}
               <section className="flex flex-col gap-3">

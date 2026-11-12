@@ -25,6 +25,9 @@ pub struct Settings {
     /// Write minutes and meeting notes with Claude Code instead (opt-in).
     #[serde(default)]
     pub notes_claude: NotesClaudeSettings,
+    /// Local HTTP transcription API for other apps on this Mac (opt-in).
+    #[serde(default)]
+    pub local_api: LocalApiSettings,
 }
 
 impl Default for Settings {
@@ -39,6 +42,7 @@ impl Default for Settings {
             gated_access: GatedAccessSettings::default(),
             notes_model: None,
             notes_claude: NotesClaudeSettings::default(),
+            local_api: LocalApiSettings::default(),
         }
     }
 }
@@ -56,6 +60,24 @@ pub struct NotesClaudeSettings {
 impl Default for NotesClaudeSettings {
     fn default() -> Self {
         Self { enabled: false, model: crate::claude_code::DEFAULT_MODEL.to_string() }
+    }
+}
+
+/// The local transcription API (`local_api.rs`): an HTTP server on
+/// 127.0.0.1 that other apps on this Mac can send audio to. Off by default;
+/// every request needs `token` as a Bearer token.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LocalApiSettings {
+    pub enabled: bool,
+    pub port: u16,
+    /// Generated when the API is first turned on.
+    #[serde(default)]
+    pub token: String,
+}
+
+impl Default for LocalApiSettings {
+    fn default() -> Self {
+        Self { enabled: false, port: crate::local_api::DEFAULT_PORT, token: String::new() }
     }
 }
 

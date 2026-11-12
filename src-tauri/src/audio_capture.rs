@@ -690,6 +690,39 @@ impl FrameAccumulator {
     }
 }
 
+impl FrameAccumulator {
+    /// Emit everything still buffered: the resampler's partial chunk and
+    /// filter delay (pushed through with silence) and the last, shorter frame.
+    /// Call at the end of a stream; the accumulator can keep going after.
+    pub(crate) fn flush(&mut self) {
+        if let Some(ref mut resampler) = self.resampler {
+            if !self.resample_input_buffer.is_empty() {
+                // One chunk for the remainder, one more to drain the filter.
+                let mut input = std::mem::take(&mut self.resample_input_buffer);
+                input.resize(self.resampler_chunk_size * 2, 0.0);
+                for chunk in input.chunks(self.resampler_chunk_size) {
+                    match resampler.process(&[chunk.to_vec()], None) {
+                        Ok(output) => {
+                            if let Some(channel_data) = output.first() {
+                                self.output_buffer.extend_from_slice(channel_data);
+                            }
+                        }
+                        Err(e) => log::error!("Resampling error: {}", e),
+                    }
+                }
+            }
+            resampler.reset();
+        }
+        while !self.output_buffer.is_empty() {
+            let n = self.output_buffer.len().min(STREAM_FRAME_SIZE);
+            let frame: Vec<f32> = self.output_buffer.drain(..n).collect();
+            if self.frame_sender.send(frame).is_err() {
+                self.output_buffer.clear();
+            }
+        }
+    }
+}
+
 /// Get list of available audio input devices
 pub fn get_audio_devices() -> Result<Vec<AudioDevice>> {
     let host = cpal::default_host();
