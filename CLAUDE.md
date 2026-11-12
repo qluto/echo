@@ -412,11 +412,17 @@ npm run tauri:build:signed
 Triggered by: `git push origin v*.*.*` tags
 
 Workflow steps (`.github/workflows/release.yml`):
-1. **Ensure Metal toolchain**: `xcodebuild -downloadComponent MetalToolchain` (for the `mlx-rs` / `whisper-rs` native builds)
+1. **Set up the build** (`.github/actions/setup-build`, shared with `cache.yml`): Node, Rust, the Rust cache, Xcode with the 26.2+ SDK, `xcodebuild -downloadComponent MetalToolchain` (for the `mlx-rs` / `whisper-rs` native builds)
 2. **Version Update**: Syncs version in `package.json`, `tauri.conf.json`, `Cargo.toml`
 3. **Code Signing**: Imports Apple Developer certificate, signs app
 4. **Notarization**: Submits to Apple for notarization
 5. **Release Upload**: Uploads signed DMG and app bundle to GitHub Release
+
+**Rust cache:** a cache saved by a tag can't be read by the next tag, so tags only restore it.
+`.github/workflows/cache.yml` saves it from main: on pushes that change the dependencies, and twice a
+week (GitHub evicts caches unread for 7 days). Without it a release compiles MLX and whisper.cpp from
+scratch (~19 of ~21 minutes). Change the toolchain setup only in `setup-build`, or the two workflows'
+cache keys stop matching.
 
 There is no Python build step — the ASR + post-processing engines are compiled
 into the app binary (native MLX/whisper.cpp via `rust-asr`).
