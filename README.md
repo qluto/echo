@@ -181,6 +181,12 @@ and remain cached locally; the post-processor LLM auto-loads on startup if enabl
 
 Contributions are welcome! Please feel free to submit issues or pull requests.
 
+## Support
+
+Echo is free and open source. If you find it useful, you can support its development on Buy Me a Coffee:
+
+<a href="https://www.buymeacoffee.com/qluto"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" width="180"></a>
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details
