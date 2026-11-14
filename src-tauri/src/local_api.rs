@@ -503,6 +503,7 @@ mod tests {
             continuous_pipeline: Mutex::new(None),
             memo_recorder: Mutex::new(None),
             meeting: Mutex::new(None),
+            standby: Mutex::new(Default::default()),
         });
         apply(app.handle(), &settings.local_api).unwrap();
         assert!(status(&settings.local_api).running);

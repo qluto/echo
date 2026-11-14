@@ -711,6 +711,8 @@ export interface MeetingSnapshot {
   round: number;
   warning: string | null;
   error: string | null;
+  /** How the meeting started or ended by itself (meeting standby). */
+  notice: string | null;
 }
 
 export interface MeetingStatus {
@@ -762,6 +764,30 @@ export async function getMeetingStatus(): Promise<MeetingStatus | null> {
 
 export async function openMeetingWindow(): Promise<void> {
   return invoke("open_meeting_window");
+}
+
+/** Meeting standby: listens for a conversation and starts a meeting by itself. */
+export interface MeetingStandbyStatus {
+  enabled: boolean;
+  /** Listening now (not while a meeting runs). */
+  listening: boolean;
+  warning: string | null;
+  error: string | null;
+}
+
+export async function getMeetingStandby(): Promise<MeetingStandbyStatus> {
+  return invoke("get_meeting_standby");
+}
+
+/** Starting to listen finishes in the background; "meeting-standby" reports it. */
+export async function setMeetingStandby(enabled: boolean): Promise<MeetingStandbyStatus> {
+  return invoke("set_meeting_standby", { enabled });
+}
+
+export function onMeetingStandby(callback: (status: MeetingStandbyStatus) => void): Promise<UnlistenFn> {
+  return listen<MeetingStandbyStatus>("meeting-standby", (event) => {
+    callback(event.payload);
+  });
 }
 
 export function onMeetingLine(callback: (line: MeetingLineEvent) => void): Promise<UnlistenFn> {

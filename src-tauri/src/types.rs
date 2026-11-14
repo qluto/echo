@@ -5,6 +5,7 @@ use crate::continuous;
 use crate::database;
 use crate::meeting;
 use crate::memo;
+use crate::standby;
 use crate::transcription::ASREngine;
 
 /// Application settings
@@ -28,6 +29,9 @@ pub struct Settings {
     /// Local HTTP transcription API for other apps on this Mac (opt-in).
     #[serde(default)]
     pub local_api: LocalApiSettings,
+    /// Listen for conversations and start a meeting by itself (`standby.rs`).
+    #[serde(default)]
+    pub meeting_standby: bool,
 }
 
 impl Default for Settings {
@@ -43,6 +47,7 @@ impl Default for Settings {
             notes_model: None,
             notes_claude: NotesClaudeSettings::default(),
             local_api: LocalApiSettings::default(),
+            meeting_standby: false,
         }
     }
 }
@@ -324,6 +329,8 @@ pub struct AppState {
     pub memo_recorder: Mutex<Option<memo::MemoRecorder>>,
     /// The meeting in progress, or the last one this session (for its window).
     pub meeting: Mutex<Option<meeting::MeetingSession>>,
+    /// Meeting standby. Lock it before `meeting` when holding both.
+    pub standby: Mutex<standby::Standby>,
 }
 
 /// Recording state

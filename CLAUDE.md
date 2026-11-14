@@ -65,6 +65,17 @@ Built on the same live capture as the meeting companion (`live.rs`), without spe
 5. **Muting** → `continuous::set_muted` stops transcription of the mic during hotkey dictation, a voice memo or a meeting, and of system audio too during a meeting. The pipeline keeps running; the chunk in progress is cut where muting starts
 6. **Stop** → closes the captures and returns at once; queued chunks are transcribed and saved in the background
 
+### Data Flow: Meeting Standby (auto-start a meeting, opt-in)
+
+The main window's Meeting card toggles `meeting_standby` (`set_meeting_standby`). Nothing is transcribed or written to disk until a meeting starts.
+
+1. **Listen** → `standby::resume` starts `live::start_captures` (mic + system audio) in `standby.rs`. Every frame goes into a 5-min ring buffer in memory (~40 MB)
+2. **Detect** → a frame is speech when Silero hears it or it stays ≥ 12 dB over the noise floor for ≥ 4 frames (Silero heard ~0% of two real meetings on one mic). 10 s buckets with ≥ 10% speech count as talk. A meeting starts once a conversation has gone on for 3 min, with talk in 14 of the last 18 buckets, and the user (mic) talking in 6 of them and for ≥ 15% of the 3 min (27 s). System audio alone never starts one: listening to a recording or a webinar, even with a remark now and then, is not a meeting. Mic speech doesn't count while system audio is loud (speaker echo; a recording played through speakers as loud as −3 dB was heard as 0 s on the mic) or while dictation or a memo is muted. Check with `standby_playback` too
+3. **Handoff** → the running captures and the buffered frames from 10 s before the conversation began go to `MeetingSession::start_with(Handoff)`. `Inputs::prepend` replays them into `audio_loop` ahead of live audio, so the WAV and transcript are one recording. The memo's `created_at` is moved back (`backdate_memo`). The meeting window is shown without taking focus, with a `notice`. The first notes round runs as soon as the buffered audio is transcribed (`Shared::caught_up`: the audio thread is past it and the ASR worker is waiting for a chunk), not 3 min later
+4. **Auto-stop** → a meeting standby started stops itself after 3 min without a transcribed line (`AUTO_STOP_QUIET`)
+5. **Resume** → standby pauses while any meeting runs (`start_meeting` calls `standby::pause`) and `notes_loop` resumes it when the meeting is done. The updater won't restart within 2 min of talk standby heard (`seconds_since_talk`)
+6. Check detection with `ECHO_STANDBY_WAVS=a.wav,b.wav cargo test standby_replay -- --ignored --nocapture`; time the catch-up over the buffered audio with `standby_catch_up` (Haas-ja, M5, release: 190 s caught up in ~2 s, first line after 0.1 s)
+
 ### Data Flow: Voice Memo (record → minutes)
 
 1. **Start** → `start_memo_recording` inserts a `memos` row and `memo.rs` (`MemoRecorder`) streams 16kHz mono audio to `<app data>/recordings/memo-<timestamp>-<id>.wav` via its own `StreamingCapture` (independent of hotkey recording; header flushed every 10s so a crash keeps the audio)
@@ -167,6 +178,7 @@ Optional LLM-based cleanup using Gemma 4 E4B (`mlx-community/gemma-4-e4b-it-4bit
 - `src-tauri/src/database.rs` - SQLite storage with FTS5 for transcription history, plus the `memos` table
 - `src-tauri/src/claude_code.rs` - Opt-in `claude -p` backend for minutes / meeting notes
 - `src-tauri/src/local_api.rs` - Opt-in local HTTP transcription API (127.0.0.1, Bearer token, OpenAI-compatible); `local_api/realtime.rs` streams over WebSocket
+- `src-tauri/src/standby.rs` - Meeting standby: 5-min ring buffer + talk detector; hands its captures to a meeting when a conversation goes on for 3 min
 - `src-tauri/src/memo.rs` - Voice memo: long recording to disk, VAD chunking, transcript + LLM meeting minutes
 - `src/hooks/useTranscription.ts` - React hook for hotkey transcription state
 - `src/hooks/useContinuousListening.ts` - React hook for always-on listening state
@@ -188,6 +200,7 @@ Optional LLM-based cleanup using Gemma 4 E4B (`mlx-community/gemma-4-e4b-it-4bit
   - `dictionary`: Custom word replacements (e.g., "GPT" → "GPT-4")
   - `custom_prompt`: Optional custom system prompt (null = use default)
 - `notes_claude`: Write minutes / meeting notes with the local Claude Code CLI (`enabled`, `model` alias; off by default, not offline)
+- `meeting_standby`: Listen for conversations and start a meeting by itself (off by default, set via `set_meeting_standby`)
 - `local_api`: Local transcription API (`enabled`, `port` default 47700, `token`; off by default, set via `set_local_api`)
 - `gated_access`: Gated HuggingFace model access (off by default)
   - `enabled`: User must explicitly opt in before gated models appear in the picker

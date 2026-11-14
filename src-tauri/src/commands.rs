@@ -131,6 +131,9 @@ pub fn set_audio_device(
     let settings_clone = settings.clone();
     drop(settings);
     save_settings_to_store(&app, &settings_clone)?;
+    if settings_clone.meeting_standby {
+        crate::standby::restart(&app);
+    }
     Ok(())
 }
 
@@ -156,14 +159,16 @@ pub fn update_settings(
         settings.gated_access.hf_token.as_ref().is_some_and(|t| !t.is_empty()),
     );
 
-    // The notes model is changed through `set_notes_model` / `set_notes_claude`, and the local API
-    // through `set_local_api`; a settings object from an older UI state must not reset them.
+    // The notes model is changed through `set_notes_model` / `set_notes_claude`, the local API
+    // through `set_local_api` and meeting standby through `set_meeting_standby`; a settings object
+    // from an older UI state must not reset them.
     let mut settings = settings;
     {
         let current = state.settings.lock().map_err(|e| e.to_string())?;
         settings.notes_model = current.notes_model.clone();
         settings.notes_claude = current.notes_claude.clone();
         settings.local_api = current.local_api.clone();
+        settings.meeting_standby = current.meeting_standby;
     }
 
     // Detect whether the effective HF token changed so we can push it into the sidecar.
@@ -1042,15 +1047,24 @@ pub fn start_meeting(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<meeting::MeetingSnapshot, String> {
-    let mut current = state.meeting.lock().map_err(|e| e.to_string())?;
-    if current.as_ref().is_some_and(|m| m.is_active()) {
-        return Err("A meeting is already in progress".to_string());
+    // Standby lets go of the audio (lock order: standby, then meeting).
+    crate::standby::pause(&app);
+    let started = (|| {
+        let mut current = state.meeting.lock().map_err(|e| e.to_string())?;
+        if current.as_ref().is_some_and(|m| m.is_active()) {
+            return Err("A meeting is already in progress".to_string());
+        }
+        let session = meeting::MeetingSession::start(&app).map_err(|e| format!("{e:#}"))?;
+        continuous::set_muted(continuous::Mute::Meeting, true);
+        let snapshot = session.snapshot();
+        *current = Some(session);
+        Ok(snapshot)
+    })();
+    if started.is_err() {
+        // A meeting that does start resumes standby when it is done.
+        crate::standby::resume(&app);
     }
-    let session = meeting::MeetingSession::start(&app).map_err(|e| format!("{e:#}"))?;
-    continuous::set_muted(continuous::Mute::Meeting, true);
-    let snapshot = session.snapshot();
-    *current = Some(session);
-    Ok(snapshot)
+    started
 }
 
 /// Stop capturing; the final revision and saving finish in the background
@@ -1091,6 +1105,35 @@ pub fn open_meeting_window(app: tauri::AppHandle) -> Result<(), String> {
         .ok_or("Meeting window not found")?;
     window.show().map_err(|e| e.to_string())?;
     window.set_focus().map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+pub fn get_meeting_standby(app: tauri::AppHandle) -> crate::standby::StandbyStatus {
+    crate::standby::status(&app)
+}
+
+/// Turn meeting standby on or off. Starting to listen happens in the
+/// background ("meeting-standby" reports it).
+#[tauri::command(async)]
+pub fn set_meeting_standby(
+    enabled: bool,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<crate::standby::StandbyStatus, String> {
+    let settings = {
+        let mut current = state.settings.lock().map_err(|e| e.to_string())?;
+        current.meeting_standby = enabled;
+        current.clone()
+    };
+    save_settings_to_store(&app, &settings)?;
+    log::info!("Meeting standby: enabled={enabled}");
+    crate::standby::clear_error(&app);
+    if enabled {
+        crate::standby::resume(&app);
+    } else {
+        crate::standby::pause(&app);
+    }
+    Ok(crate::standby::status(&app))
 }
 
 // ===== Local transcription API =====

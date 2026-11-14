@@ -69,6 +69,7 @@ fn restart_when_quiet(app: &AppHandle) {
 fn quiet(app: &AppHandle) -> bool {
     idle_seconds() >= QUIET_SECONDS
         && crate::continuous::seconds_since_sound() >= QUIET_SECONDS
+        && crate::standby::seconds_since_talk() >= QUIET_SECONDS
         && !busy(app)
 }
 

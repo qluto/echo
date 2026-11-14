@@ -116,3 +116,26 @@
 - Whisper: no drafts (as with the hotkey), whole turn at commit (4.9 s); dictation waited ≤ 0.7 s
 - Burst upload (7 s at once): final 0.98 s → 0.25 s after the drain change
 - Still not checked in the running app UI
+
+# Meeting standby (auto-detect conversations) — 2026-11-13
+
+- [x] live.rs: `Inputs` gains a backlog + `next_frame()` (fair when both channels are backed up); audio_loop uses it
+- [x] standby.rs: captures + 5 min ring + talk detector (Silero VAD or sustained +12 dB over the floor); hands captures to a meeting
+- [x] meeting.rs: `start_with(Handoff)` (preroll, backdated memo, notice), auto-stop after 3 min without lines, resume standby when done
+- [x] commands/settings: `meeting_standby`, get/set commands, pause around manual meetings, restart on device change, updater waits
+- [x] frontend: toggle + status in MeetingCard, notice banner in meeting window
+- [x] tests: detector, ring, prominence, handoff contiguity; `standby_replay` over real recordings
+- [x] first notes round right after the buffered audio is transcribed (`Shared::caught_up`)
+- [ ] in-app check: talk 3+ min near the mic with standby on (needs a person)
+
+## Review
+- Silero heard ~0% of two real meetings on the user's mic → added prominence fallback, calibrated on 5 talk sections
+  (120 s floor window, p5, +12 dB, runs ≥ 4 frames, 10% share, 14/18 buckets)
+- Replay: continuous-talk composites fire exactly 3:00 after talk starts, recording from 10 s before;
+  meetings with a 90 s pause and two memos 90 s apart don't fire
+- 2026-11-13 follow-up: system audio alone must never start a meeting (watching a recorded MTG).
+  Added `MIN_MIC_SHARE` (user ≥ 27 s of the 3 min). `standby_playback`: playback with speaker echo −20…−3 dB → mic 0 s,
+  no meeting; playback + 1.5 s remarks every 20 s → none; a turn-taking call → meeting at 3.5–4.6 min, from 10 s before
+- 2026-11-14 catch-up (Haas-ja, M5, release, `standby_catch_up`): 190 s buffered → transcribed in 1.7–2.2 s, first line
+  after 0.1 s. The first notes round now runs once that is done instead of 3 min (1 min with Claude Code) after the start;
+  `caught_up_once_buffered_audio_is_transcribed` fails without the ASR-idle check (1 of 13 buffered lines ready)

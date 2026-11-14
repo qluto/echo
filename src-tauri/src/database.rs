@@ -443,6 +443,16 @@ impl TranscriptionDb {
         Ok(())
     }
 
+    /// Move a memo's start back by `seconds` (a meeting that begins with audio
+    /// from before it was started). Returns the new `created_at`.
+    pub fn backdate_memo(&self, id: i64, seconds: u64) -> Result<String> {
+        Ok(self.conn.query_row(
+            "UPDATE memos SET created_at = datetime(created_at, ?2) WHERE id = ?1 RETURNING created_at",
+            params![id, format!("-{seconds} seconds")],
+            |row| row.get(0),
+        )?)
+    }
+
     /// Delete a memo row. Returns its audio path so the caller can remove the file.
     pub fn delete_memo(&self, id: i64) -> Result<Option<String>> {
         let path = self.get_memo(id)?.map(|m| m.audio_path);

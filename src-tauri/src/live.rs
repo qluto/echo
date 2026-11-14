@@ -90,7 +90,7 @@ impl Source {
         }
     }
 
-    fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         self as usize
     }
 }
@@ -125,23 +125,108 @@ impl Drop for Captures {
     }
 }
 
-/// The frame streams of `Captures`, consumed by `audio_loop`.
+/// The frame streams of `Captures`, consumed by `audio_loop` (or by meeting
+/// standby, which hands them on to a meeting).
 pub struct Inputs {
-    first: Vec<f32>,
+    /// Frames already received, delivered before the live streams.
+    backlog: VecDeque<(Source, Vec<f32>)>,
     mic_rx: channel::Receiver<Vec<f32>>,
     sys_rx: channel::Receiver<Vec<f32>>,
     has_system: bool,
+    mic_open: bool,
+    sys_open: bool,
+    /// Frames delivered per source.
+    delivered: [usize; 2],
 }
 
-#[cfg(test)]
 impl Inputs {
+    fn new(
+        first: Vec<f32>,
+        mic_rx: channel::Receiver<Vec<f32>>,
+        sys_rx: channel::Receiver<Vec<f32>>,
+        has_system: bool,
+    ) -> Self {
+        Self {
+            backlog: VecDeque::from([(Source::Me, first)]),
+            mic_rx,
+            sys_rx,
+            has_system,
+            mic_open: true,
+            sys_open: has_system,
+            delivered: [0, 0],
+        }
+    }
+
     /// Recorded streams fed as if captured; `first` is the mic's first frame.
+    #[cfg(test)]
     pub fn for_test(
         first: Vec<f32>,
         mic_rx: channel::Receiver<Vec<f32>>,
         sys_rx: channel::Receiver<Vec<f32>>,
     ) -> Self {
-        Self { first, mic_rx, sys_rx, has_system: true }
+        Self::new(first, mic_rx, sys_rx, true)
+    }
+
+    /// Only these frames (in arrival order), as if the captures then stopped.
+    #[cfg(test)]
+    pub fn from_frames(frames: impl IntoIterator<Item = (Source, Vec<f32>)>) -> Self {
+        Self {
+            backlog: frames.into_iter().collect(),
+            mic_rx: channel::never(),
+            sys_rx: channel::never(),
+            has_system: true,
+            mic_open: false,
+            sys_open: false,
+            delivered: [0, 0],
+        }
+    }
+
+    /// The next frame, in arrival order; None once both captures have stopped.
+    pub fn next_frame(&mut self) -> Option<(Source, Vec<f32>)> {
+        let next = self.receive();
+        if let Some((source, _)) = &next {
+            self.delivered[source.index()] += 1;
+        }
+        next
+    }
+
+    fn receive(&mut self) -> Option<(Source, Vec<f32>)> {
+        if let Some(frame) = self.backlog.pop_front() {
+            return Some(frame);
+        }
+        // When frames have piled up in both channels (while a meeting starts),
+        // take them from the source that is behind: `select!` picks at random,
+        // and a source a second ahead looks to the mixer like the other stalled.
+        let behind = if self.delivered[0] <= self.delivered[1] { [Source::Me, Source::Others] } else { [Source::Others, Source::Me] };
+        for source in behind {
+            let (open, rx) = match source {
+                Source::Me => (self.mic_open, &self.mic_rx),
+                Source::Others => (self.sys_open, &self.sys_rx),
+            };
+            if let Some(frame) = open.then(|| rx.try_recv().ok()).flatten() {
+                return Some((source, frame));
+            }
+        }
+        let never = channel::never::<Vec<f32>>();
+        while self.mic_open || self.sys_open {
+            channel::select! {
+                recv(if self.mic_open { &self.mic_rx } else { &never }) -> msg => match msg {
+                    Ok(frame) => return Some((Source::Me, frame)),
+                    Err(_) => self.mic_open = false,
+                },
+                recv(if self.sys_open { &self.sys_rx } else { &never }) -> msg => match msg {
+                    Ok(frame) => return Some((Source::Others, frame)),
+                    Err(_) => self.sys_open = false,
+                },
+            }
+        }
+        None
+    }
+
+    /// Deliver `frames` (in arrival order) before anything not yet delivered.
+    pub fn prepend(&mut self, frames: impl IntoIterator<Item = (Source, Vec<f32>)>) {
+        let rest = std::mem::take(&mut self.backlog);
+        self.backlog = frames.into_iter().chain(rest).collect();
     }
 }
 
@@ -168,11 +253,7 @@ pub fn start_captures(device_name: Option<String>) -> Result<(Captures, Inputs, 
         }
     };
     let has_system = system.is_some();
-    Ok((
-        Captures { mic: Some(mic), system },
-        Inputs { first, mic_rx, sys_rx, has_system },
-        system_error,
-    ))
+    Ok((Captures { mic: Some(mic), system }, Inputs::new(first, mic_rx, sys_rx, has_system), system_error))
 }
 
 // ---------------------------------------------------------------------------
@@ -344,12 +425,12 @@ pub trait AudioObserver {
 /// ASR worker. With a `writer`, also record both sources mixed into it.
 /// Never waits on ASR (`chunk_tx` should be unbounded).
 pub fn audio_loop(
-    inputs: Inputs,
+    mut inputs: Inputs,
     chunk_tx: channel::Sender<Chunk>,
     mut writer: Option<WavWriter<BufWriter<File>>>,
     observer: &impl AudioObserver,
 ) -> Result<()> {
-    let Inputs { first, mic_rx, sys_rx, has_system } = inputs;
+    let has_system = inputs.has_system;
     let mut chunkers = [Chunker::new(Source::Me), Chunker::new(Source::Others)];
     let mut muted = [false, false];
     let mut others = OthersLoudness::default();
@@ -366,26 +447,7 @@ pub fn audio_loop(
         let _ = chunk_tx.send(chunk);
     };
 
-    let mut mic_open = true;
-    let mut sys_open = has_system;
-    let mut pending_first = Some(first);
-    let never = channel::never::<Vec<f32>>();
-    while mic_open || sys_open {
-        let (source, frame) = if let Some(frame) = pending_first.take() {
-            (Source::Me, frame)
-        } else {
-            channel::select! {
-                recv(if mic_open { &mic_rx } else { &never }) -> msg => match msg {
-                    Ok(frame) => (Source::Me, frame),
-                    Err(_) => { mic_open = false; continue; }
-                },
-                recv(if sys_open { &sys_rx } else { &never }) -> msg => match msg {
-                    Ok(frame) => (Source::Others, frame),
-                    Err(_) => { sys_open = false; continue; }
-                },
-            }
-        };
-
+    while let Some((source, frame)) = inputs.next_frame() {
         let i = source.index();
         let dbfs = frame_dbfs(&frame);
         observer.on_frame(source, meter_level(&frame), dbfs);
@@ -526,7 +588,7 @@ fn recognize(
 /// held until the other side's transcript covers its time, and dropped if it
 /// is an echo of it.
 pub fn asr_worker(
-    chunk_rx: channel::Receiver<Chunk>,
+    chunks: impl IntoIterator<Item = Chunk>,
     mut has_speech: impl FnMut(&[f32]) -> Result<bool>,
     mut transcribe: impl FnMut(&[f32]) -> Result<String>,
     mut on_line: impl FnMut(Line),
@@ -556,7 +618,7 @@ pub fn asr_worker(
         }
     };
 
-    for chunk in chunk_rx.iter() {
+    for chunk in chunks {
         let (start, end) = (chunk.start_sec(), chunk.end_sec());
         let text = if chunk.silent {
             String::new()
@@ -743,7 +805,7 @@ mod tests {
             mic_tx.send(f).unwrap();
         }
         drop(mic_tx);
-        let inputs = Inputs { first, mic_rx, sys_rx: channel::never(), has_system: false };
+        let inputs = Inputs::new(first, mic_rx, channel::never(), false);
         let (chunk_tx, chunk_rx) = channel::unbounded();
         audio_loop(inputs, chunk_tx, None, observer).unwrap();
         chunk_rx.iter().map(|c| (c.start_sec(), c.end_sec())).collect()
@@ -764,6 +826,50 @@ mod tests {
         assert!(chunks.iter().any(|&(_, e)| (e - 6.0).abs() < 0.05), "{chunks:?}");
         assert!(chunks.iter().any(|&(s, _)| (s - 9.0).abs() < 0.05), "{chunks:?}");
         assert!((chunks.last().unwrap().1 - 20.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn buffered_audio_prepended_to_live_audio_is_one_recording() {
+        // Standby buffered 20 s of both sources (in arrival order), then the
+        // live captures go on for 10 s more.
+        let mic = tone(30.0, 0.3);
+        let sys = tone(30.0, 0.1);
+        let frames = |a: &[f32]| a.chunks(VAD_FRAME_SIZE).map(<[f32]>::to_vec).collect::<Vec<_>>();
+        let (mic_frames, sys_frames) = (frames(&mic), frames(&sys));
+        let split = samples(20.0) / VAD_FRAME_SIZE;
+        let (mic_tx, mic_rx) = channel::unbounded();
+        let (sys_tx, sys_rx) = channel::unbounded();
+        let mut inputs = Inputs::new(mic_frames[split].clone(), mic_rx, sys_rx, true);
+        let backlog = (0..split).flat_map(|i| [(Source::Me, mic_frames[i].clone()), (Source::Others, sys_frames[i].clone())]);
+        inputs.prepend(backlog);
+        for i in split..mic_frames.len() {
+            if i > split {
+                mic_tx.send(mic_frames[i].clone()).unwrap();
+            }
+            sys_tx.send(sys_frames[i].clone()).unwrap();
+        }
+        drop((mic_tx, sys_tx));
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mixed.wav");
+        let spec = hound::WavSpec { channels: 1, sample_rate: VAD_SAMPLE_RATE, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+        let writer = WavWriter::create(&path, spec).unwrap();
+        let (chunk_tx, chunk_rx) = channel::unbounded();
+        audio_loop(inputs, chunk_tx, Some(writer), &MuteMic { frames: Cell::new(0), range: 0..0 }).unwrap();
+
+        let mixed: Vec<i16> = hound::WavReader::open(&path).unwrap().samples().map(Result::unwrap).collect();
+        assert_eq!(mixed.len(), mic.len());
+        // Both sources everywhere: no stretch of either was padded with silence.
+        let expected = |i: usize| to_i16(mic[i] + sys[i]);
+        assert!((0..mixed.len()).step_by(997).all(|i| mixed[i] == expected(i)));
+        // Each source is chunked contiguously from 0 s to 30 s.
+        let chunks: Vec<Chunk> = chunk_rx.iter().collect();
+        for source in [Source::Me, Source::Others] {
+            let spans: Vec<_> = chunks.iter().filter(|c| c.source == source).map(|c| (c.start_sec(), c.end_sec())).collect();
+            assert_eq!(spans[0].0, 0.0, "{source:?}");
+            assert!(spans.windows(2).all(|w| w[0].1 == w[1].0), "{source:?}: {spans:?}");
+            assert!((spans.last().unwrap().1 - 30.0).abs() < 0.05, "{source:?}: {spans:?}");
+        }
     }
 
     /// The audio thread + ASR worker with a real engine on a two-track recording:
