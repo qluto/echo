@@ -1,12 +1,22 @@
 import { useEffect, useState } from "react";
 import { formatClock } from "../lib/format";
-import { getMeetingStatus, onMeetingState, openMeetingWindow, MeetingStatus } from "../lib/tauri";
+import {
+  getMeetingStandby,
+  getMeetingStatus,
+  onMeetingStandby,
+  onMeetingState,
+  openMeetingWindow,
+  setMeetingStandby,
+  MeetingStandbyStatus,
+  MeetingStatus,
+} from "../lib/tauri";
 
 const STATUS_POLL_MS = 1000;
 
 /** Main-window entry to the meeting companion; the meeting itself runs in its own window. */
 export function MeetingCard() {
   const [status, setStatus] = useState<MeetingStatus | null>(null);
+  const [standby, setStandby] = useState<MeetingStandbyStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const active = status?.phase === "running" || status?.phase === "finalizing";
@@ -23,6 +33,26 @@ export function MeetingCard() {
       unlisten.then((fn) => fn());
     };
   }, []);
+
+  useEffect(() => {
+    getMeetingStandby()
+      .then(setStandby)
+      .catch((e) => console.error("Failed to get meeting standby:", e));
+    const unlisten = onMeetingStandby(setStandby);
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  const toggleStandby = async () => {
+    if (!standby) return;
+    setError(null);
+    try {
+      setStandby(await setMeetingStandby(!standby.enabled));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   // Slow poll for the elapsed time while a meeting is running
   useEffect(() => {
@@ -78,6 +108,49 @@ export function MeetingCard() {
           開く
         </button>
       </div>
+
+      {standby && (
+        <div className="flex items-center gap-3 px-3">
+          <div className="flex flex-col min-w-0 flex-1">
+            <span className="text-[11px] leading-tight" style={{ color: "var(--text-secondary)" }}>
+              会話を自動検知
+            </span>
+            <span
+              className="text-[10px] leading-tight truncate"
+              style={{ color: "var(--text-tertiary)" }}
+              title="Keeps the last 5 minutes of audio in memory (never on disk) and starts a meeting from the beginning of a conversation that goes on for 3 minutes"
+            >
+              {!standby.enabled
+                ? "3分続く会話を、始まりから記録"
+                : standby.listening
+                  ? "待機中・直近5分をメモリに保持"
+                  : active
+                    ? "会議の終了後に待機を再開"
+                    : "待機を準備中…"}
+            </span>
+          </div>
+          <button
+            onClick={toggleStandby}
+            className="relative w-10 h-5 rounded-full transition-colors flex-shrink-0"
+            style={{ backgroundColor: standby.enabled ? "var(--glow-idle)" : "var(--border-subtle)" }}
+            aria-label="Toggle automatic meeting detection"
+          >
+            <div
+              className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform"
+              style={{ transform: standby.enabled ? "translateX(22px)" : "translateX(2px)" }}
+            />
+          </button>
+        </div>
+      )}
+
+      {(standby?.error || (standby?.listening && standby.warning)) && (
+        <div
+          className="px-3 py-2 rounded-lg text-xs"
+          style={{ backgroundColor: "var(--glow-processing-soft)", color: "#8A6438" }}
+        >
+          {standby.error ?? standby.warning}
+        </div>
+      )}
 
       {error && (
         <div

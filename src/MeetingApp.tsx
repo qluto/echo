@@ -185,8 +185,16 @@ export default function MeetingApp() {
       </div>
 
       {/* Banners */}
-      {(banner || meeting?.warning) && (
+      {(banner || meeting?.warning || meeting?.notice) && (
         <div className="flex flex-col gap-1.5 px-5 pt-3 shrink-0">
+          {meeting?.notice && (
+            <div
+              className="px-3 py-2 rounded-lg text-xs"
+              style={{ backgroundColor: "var(--glow-success-soft)", color: "var(--text-primary)" }}
+            >
+              {meeting.notice}
+            </div>
+          )}
           {banner && (
             <div
               className="px-3 py-2 rounded-lg text-xs"

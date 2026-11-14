@@ -49,7 +49,7 @@ pub fn set_muted(reason: Mute, on: bool) {
     }
 }
 
-fn is_muted(source: Source) -> bool {
+pub fn is_muted(source: Source) -> bool {
     let muted = MUTED.load(Ordering::SeqCst);
     match source {
         Source::Me => muted != 0,

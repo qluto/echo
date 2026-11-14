@@ -6,7 +6,8 @@
 //!   ├→ mixed 16 kHz WAV (saved as a voice memo)
 //!   └→ lines ("自分" / "相手") → `meeting-line`
 //!                                   ↓
-//!      [notes thread] every 3 min: items + new lines (+ 60 s of already
+//!      [notes thread] every 3 min (and, for a meeting standby started, as
+//!      soon as its buffered audio is transcribed): items + new lines (+ 60 s of already
 //!      reviewed context) → LLM → ADD / UPDATE / DELETE → `meeting-items`
 //! ```
 //!
@@ -16,7 +17,7 @@
 //! (mixed audio, speaker-labelled transcript, items as minutes).
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -33,7 +34,7 @@ pub use crate::live::Source;
 use crate::memo::{self, format_timestamp, with_db};
 use crate::transcription::ASREngine;
 use crate::types::{AppState, TranscriptionSegment};
-use crate::vad::VAD_SAMPLE_RATE;
+use crate::vad::{VAD_FRAME_SIZE, VAD_SAMPLE_RATE};
 
 /// The item list is revised this often (wall clock) by the local notes model…
 const UPDATE_EVERY: Duration = Duration::from_secs(180);
@@ -41,6 +42,9 @@ const UPDATE_EVERY: Duration = Duration::from_secs(180);
 const CLAUDE_UPDATE_EVERY: Duration = Duration::from_secs(60);
 /// …showing the model this much of the already-reviewed transcript as context.
 const UPDATE_OVERLAP_SEC: f64 = 60.0;
+/// A meeting that meeting standby started stops itself after this long without a
+/// transcribed line.
+const AUTO_STOP_QUIET: Duration = Duration::from_secs(180);
 /// A round is skipped while less than this much new text has come in.
 const MIN_NEW_CHARS: usize = 20;
 const ITEMS_MAX_TOKENS: usize = 2048;
@@ -209,6 +213,8 @@ pub struct MeetingSnapshot {
     pub round: u32,
     pub warning: Option<String>,
     pub error: Option<String>,
+    /// How the meeting started or ended by itself (meeting standby).
+    pub notice: Option<String>,
 }
 
 /// Polled while the meeting window is open.
@@ -532,27 +538,46 @@ struct State {
     ended_after: Option<Duration>,
     warning: Option<String>,
     error: Option<String>,
+    notice: Option<String>,
+    /// Started by meeting standby: stops itself when the talk is over.
+    auto: bool,
 }
 
 struct Shared {
     memo_id: i64,
     started_at: String,
     started: Instant,
+    /// How much audio from before the meeting started it begins with.
+    preroll: Duration,
     state: Mutex<State>,
     mic_level: AtomicU32,
     system_level: AtomicU32,
     updating: AtomicBool,
     /// The ASR worker has transcribed everything; the final round can run.
     transcribed: AtomicBool,
+    /// Mic frames the audio thread has taken in (buffered ones first).
+    mic_frames: AtomicUsize,
+    /// The ASR worker is waiting for a chunk: everything cut so far is transcribed.
+    asr_idle: AtomicBool,
     update_every: Duration,
 }
 
 impl Shared {
-    fn new(memo_id: i64, started_at: String, warning: Option<String>, update_every: Duration) -> Self {
+    fn new(
+        memo_id: i64,
+        started_at: String,
+        warning: Option<String>,
+        update_every: Duration,
+        preroll: Duration,
+        notice: Option<String>,
+    ) -> Self {
+        let now = Instant::now();
         Self {
             memo_id,
             started_at,
-            started: Instant::now(),
+            // The audio starts `preroll` before now.
+            started: now.checked_sub(preroll).unwrap_or(now),
+            preroll,
             state: Mutex::new(State {
                 phase: MeetingPhase::Running,
                 lines: Vec::new(),
@@ -562,13 +587,36 @@ impl Shared {
                 ended_after: None,
                 warning,
                 error: None,
+                auto: notice.is_some(),
+                notice,
             }),
             mic_level: AtomicU32::new(0f32.to_bits()),
             system_level: AtomicU32::new(0f32.to_bits()),
             updating: AtomicBool::new(false),
             transcribed: AtomicBool::new(false),
+            mic_frames: AtomicUsize::new(0),
+            asr_idle: AtomicBool::new(false),
             update_every,
         }
+    }
+
+    /// The ASR worker's chunks, keeping `asr_idle` up to date: the worker
+    /// asks for the next chunk only when it is done with the last.
+    fn chunks<'a>(&'a self, rx: &'a channel::Receiver<Chunk>) -> impl Iterator<Item = Chunk> + 'a {
+        std::iter::from_fn(move || {
+            self.asr_idle.store(rx.is_empty(), Ordering::SeqCst);
+            let chunk = rx.recv().ok();
+            self.asr_idle.store(false, Ordering::SeqCst);
+            chunk
+        })
+    }
+
+    /// The buffered audio standby started the meeting with is transcribed:
+    /// the audio thread has moved on to live audio and the ASR worker has
+    /// nothing left. (The chunk still open at the handoff ends in live audio.)
+    fn caught_up(&self) -> bool {
+        let buffered = (self.preroll.as_secs_f64() * VAD_SAMPLE_RATE as f64 / VAD_FRAME_SIZE as f64).round() as usize;
+        self.mic_frames.load(Ordering::SeqCst) > buffered && self.asr_idle.load(Ordering::SeqCst)
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -579,6 +627,17 @@ impl Shared {
 
     fn elapsed(&self, state: &State) -> Duration {
         state.ended_after.unwrap_or_else(|| self.started.elapsed())
+    }
+
+    /// A meeting standby started has gone `AUTO_STOP_QUIET` without a line.
+    fn talk_is_over(&self) -> bool {
+        let state = self.state();
+        if !state.auto || state.phase != MeetingPhase::Running {
+            return false;
+        }
+        // The buffered audio standby started it with was talk.
+        let last_talk = state.lines.iter().map(|l| l.end).fold(self.preroll.as_secs_f64(), f64::max);
+        self.started.elapsed().as_secs_f64() - last_talk > AUTO_STOP_QUIET.as_secs_f64()
     }
 
     /// Number a transcribed line and add it to the meeting.
@@ -612,11 +671,25 @@ impl Shared {
 impl AudioObserver for Shared {
     fn on_frame(&self, source: Source, level: f32, _dbfs: f32) {
         let meter = match source {
-            Source::Me => &self.mic_level,
+            Source::Me => {
+                self.mic_frames.fetch_add(1, Ordering::SeqCst);
+                &self.mic_level
+            }
             Source::Others => &self.system_level,
         };
         meter.store(level.to_bits(), Ordering::Relaxed);
     }
+}
+
+/// Captures meeting standby has been running, handed over to a meeting that
+/// starts `preroll` back: `inputs` delivers the buffered audio first.
+pub struct Handoff {
+    pub captures: Captures,
+    pub inputs: live::Inputs,
+    pub system_error: Option<String>,
+    pub preroll: Duration,
+    /// Shown in the meeting window.
+    pub notice: String,
 }
 
 /// A meeting in progress, or the last one (kept for the window to show).
@@ -629,17 +702,32 @@ impl MeetingSession {
     /// Start capturing and transcribing. Fails if the microphone delivers no
     /// audio; system audio is optional (mic only, with a warning, without it).
     pub fn start(app: &AppHandle) -> Result<Self> {
+        Self::start_with(app, None)
+    }
+
+    /// Start from captures that are already running (meeting standby), or
+    /// start new ones.
+    pub fn start_with(app: &AppHandle, handoff: Option<Handoff>) -> Result<Self> {
         let state = app.state::<AppState>();
         let (device_name, language) = {
             let settings = state.settings.lock().map_err(|e| anyhow!("{e}"))?;
             (settings.device_name.clone(), (settings.language != "auto").then(|| settings.language.clone()))
         };
         let dir = memo::recordings_dir(app)?;
-        let new_memo = with_db(app, |db| db.insert_memo(&dir))?;
+        let mut new_memo = with_db(app, |db| db.insert_memo(&dir))?;
         let audio_path = Path::new(&new_memo.audio_path).to_path_buf();
 
         let started = (|| -> Result<Self> {
-            let (captures, inputs, system_error) = live::start_captures(device_name)?;
+            let (captures, inputs, system_error, preroll, notice) = match handoff {
+                Some(h) => (h.captures, h.inputs, h.system_error, h.preroll, Some(h.notice)),
+                None => {
+                    let (captures, inputs, system_error) = live::start_captures(device_name)?;
+                    (captures, inputs, system_error, Duration::ZERO, None)
+                }
+            };
+            if !preroll.is_zero() {
+                new_memo.created_at = with_db(app, |db| db.backdate_memo(new_memo.id, preroll.as_secs()))?;
+            }
             let warning = system_error
                 .map(|e| format!("相手の音声（システム音声）を取得できないため、マイクのみで記録します: {e}"));
 
@@ -656,7 +744,7 @@ impl MeetingSession {
 
             let claude = state.asr_engine.lock().map_err(|e| anyhow!("{e}"))?.notes_use_claude();
             let update_every = if claude { CLAUDE_UPDATE_EVERY } else { UPDATE_EVERY };
-            let shared = Arc::new(Shared::new(new_memo.id, new_memo.created_at.clone(), warning, update_every));
+            let shared = Arc::new(Shared::new(new_memo.id, new_memo.created_at.clone(), warning, update_every, preroll, notice));
 
             let (chunk_tx, chunk_rx) = channel::unbounded::<Chunk>();
             {
@@ -674,7 +762,7 @@ impl MeetingSession {
                     .spawn(move || {
                         let engine = &app.state::<AppState>().asr_engine;
                         live::asr_worker(
-                            chunk_rx,
+                            shared.chunks(&chunk_rx),
                             |samples| Ok(engine.lock().map_err(|e| anyhow!("{e}"))?.has_speech(samples)),
                             |samples| {
                                 // Lock per chunk so hotkey dictation can run in between.
@@ -750,6 +838,7 @@ impl MeetingSession {
             round: state.board.round,
             warning: state.warning.clone(),
             error: state.error.clone(),
+            notice: state.notice.clone(),
         }
     }
 
@@ -824,10 +913,22 @@ fn notes_loop(worker: JoinHandle<()>, shared: &Shared, app: &AppHandle, language
         // The first round retries and reports the failure.
         Err(e) => log::warn!("Preparing the notes model failed: {e:#}"),
     }
+    // A meeting standby started begins with minutes of talk: write the first
+    // notes as soon as that is transcribed, not a round later.
+    let mut catching_up = !shared.preroll.is_zero();
     loop {
         thread::sleep(Duration::from_millis(500));
         if shared.transcribed.load(Ordering::SeqCst) {
             break;
+        }
+        if shared.talk_is_over() {
+            stop_by_itself(shared, app);
+            continue;
+        }
+        if catching_up && shared.caught_up() {
+            catching_up = false;
+            log::info!("Meeting {}: buffered audio transcribed; first round now", shared.memo_id);
+            shared.state().next_update = Instant::now();
         }
         let due = {
             let state = shared.state();
@@ -865,6 +966,18 @@ fn notes_loop(worker: JoinHandle<()>, shared: &Shared, app: &AppHandle, language
     memo::emit_progress(app, shared.memo_id, MemoStatus::Done, None);
     shared.emit_state(app);
     log::info!("Meeting {} finished", shared.memo_id);
+    crate::standby::resume(app);
+}
+
+/// Stop a meeting standby started, now that nobody is talking.
+fn stop_by_itself(shared: &Shared, app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let Ok(mut current) = state.meeting.lock() else { return };
+    let Some(session) = current.as_mut().filter(|m| m.memo_id() == shared.memo_id) else { return };
+    log::info!("Meeting {}: no speech for {}s; stopping", shared.memo_id, AUTO_STOP_QUIET.as_secs());
+    shared.state().notice = Some("会話が途切れたため、自動で終了しました".to_string());
+    session.stop(app);
+    crate::continuous::set_muted(crate::continuous::Mute::Meeting, false);
 }
 
 /// Store the meeting in its voice memo row: transcript, items as minutes.
@@ -909,7 +1022,62 @@ fn save(shared: &Shared, app: &AppHandle, language: Option<&str>) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vad::VAD_FRAME_SIZE;
+
+    #[test]
+    fn caught_up_once_buffered_audio_is_transcribed() {
+        // Standby hands over 60 s of talk; live audio goes on for 30 s more,
+        // arriving much slower than the buffered audio is transcribed.
+        let frame = || (0..VAD_FRAME_SIZE).map(|i| 0.3 * (i as f32 / 16_000.0 * 220.0 * std::f32::consts::TAU).sin()).collect::<Vec<f32>>();
+        let buffered = 60 * VAD_SAMPLE_RATE as usize / VAD_FRAME_SIZE;
+        let preroll = Duration::from_secs_f64((buffered * VAD_FRAME_SIZE) as f64 / VAD_SAMPLE_RATE as f64);
+        let shared = Arc::new(Shared::new(0, String::new(), None, UPDATE_EVERY, preroll, Some(String::new())));
+        let (mic_tx, mic_rx) = channel::unbounded();
+        let (_, sys_rx) = channel::unbounded();
+        let mut inputs = live::Inputs::for_test(frame(), mic_rx, sys_rx);
+        inputs.prepend((0..buffered).map(|_| (Source::Me, frame())));
+        let feeder = thread::spawn(move || {
+            for _ in 0..30 * VAD_SAMPLE_RATE as usize / VAD_FRAME_SIZE {
+                thread::sleep(Duration::from_millis(1));
+                mic_tx.send(frame()).unwrap();
+            }
+        });
+        let (chunk_tx, chunk_rx) = channel::unbounded();
+        let audio = {
+            let shared = Arc::clone(&shared);
+            thread::spawn(move || live::audio_loop(inputs, chunk_tx, None, &*shared).unwrap())
+        };
+        let watcher = {
+            let shared = Arc::clone(&shared);
+            thread::spawn(move || loop {
+                if shared.caught_up() {
+                    return shared.state().lines.clone();
+                }
+                thread::sleep(Duration::from_millis(1));
+            })
+        };
+        assert!(!shared.caught_up());
+        live::asr_worker(
+            shared.chunks(&chunk_rx),
+            |_| Ok(true),
+            |_| {
+                thread::sleep(Duration::from_millis(30));
+                Ok("話".to_string())
+            },
+            |line| {
+                shared.push_line(line);
+            },
+        );
+        let at_catch_up = watcher.join().unwrap();
+        feeder.join().unwrap();
+        audio.join().unwrap();
+
+        // Every chunk that ended within the buffered audio was transcribed by then…
+        let buffered_lines = shared.state().lines.iter().filter(|l| l.end <= preroll.as_secs_f64()).count();
+        assert!(buffered_lines >= 3);
+        assert!(at_catch_up.len() >= buffered_lines, "{} of {buffered_lines}", at_catch_up.len());
+        // …and it came well before the live audio ended (the 3rd chunk ends at ~45 s).
+        assert!(at_catch_up.iter().all(|l| l.end < 75.0), "{:?}", at_catch_up.iter().map(|l| l.end).collect::<Vec<_>>());
+    }
 
     #[test]
     fn notes_are_parsed_leniently() {
@@ -1058,7 +1226,7 @@ mod tests {
         engine.set_model(&model).unwrap();
 
         // Feed both tracks in lockstep, as live capture would.
-        let shared = Arc::new(Shared::new(0, String::new(), None, UPDATE_EVERY));
+        let shared = Arc::new(Shared::new(0, String::new(), None, UPDATE_EVERY, Duration::ZERO, None));
         let (mic_tx, mic_rx) = channel::bounded(2);
         let (sys_tx, sys_rx) = channel::bounded(2);
         let (chunk_tx, chunk_rx) = channel::unbounded();

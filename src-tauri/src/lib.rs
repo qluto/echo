@@ -18,6 +18,7 @@ mod partial;
 mod input;
 mod memo;
 mod meeting;
+mod standby;
 mod system_audio;
 mod transcription;
 mod types;
@@ -153,6 +154,7 @@ pub fn run() {
                 continuous_pipeline: Mutex::new(None),
                 memo_recorder: Mutex::new(None),
                 meeting: Mutex::new(None),
+                standby: Mutex::new(standby::Standby::default()),
             };
             app.manage(app_state);
 
@@ -185,6 +187,7 @@ pub fn run() {
             setup_system_tray(app)?;
 
             update::resume_listening(app.handle());
+            standby::resume(app.handle());
             update::start(app.handle().clone());
 
             // Initialize handy-keys and register saved hotkey
@@ -315,6 +318,8 @@ pub fn run() {
             commands::get_meeting_snapshot,
             commands::get_meeting_status,
             commands::open_meeting_window,
+            commands::get_meeting_standby,
+            commands::set_meeting_standby,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
