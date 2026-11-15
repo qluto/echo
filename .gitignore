@@ -10,20 +10,17 @@ target/
 # Tauri
 src-tauri/target/
 
-# Python
-python-engine/build/
-python-engine/dist/
+# Python (echo-cli)
 **/__pycache__/
-python-engine/*.spec
-python-engine/transcript.txt
 *.pyc
 *.pyo
 **/.venv/
 **/venv/
 
-# Conductor / Claude Code
+# Conductor / Claude Code / Playwright MCP
 .context/
 .claude/
+.playwright-mcp/
 
 # IDE
 .vscode/
@@ -50,11 +47,6 @@ coverage/
 # Temp files
 *.tmp
 *.temp
-
-# Sidecar binaries (built via python-engine/build.sh)
-# These are 350-500MB PyInstaller bundles - not committed to git
-# Run 'cd python-engine && ./build.sh' before development
-src-tauri/binaries/mlx-asr-engine-*
 
 # MLX Metal shader library staged by scripts/stage-mlx-metallib.sh (a build
 # artifact bundled into Contents/MacOS via externalBin)
