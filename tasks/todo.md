@@ -151,7 +151,7 @@ Meeting standby replaces always-on; meetings cover voice memos (both land in the
 - [x] echo-cli: delete (broken since python-engine went away); add `scripts/echo-transcribe` (Local API)
 - [x] docs: CLAUDE.md, README, docs/index.html
 - [x] verify: cargo test, tsc/vite build
-- [ ] app smoke test (hotkey, meeting, standby, Meetings tab list) — user
+- [x] app smoke test (signed release build, run from target/): hotkey, meeting, standby, Meetings tab — user
 
 ## Review
 - cargo test --lib: 63 passed, 13 ignored (was 76 + removed history/export/recorder/mute tests)
