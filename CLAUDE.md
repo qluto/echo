@@ -169,6 +169,7 @@ Optional LLM-based cleanup using Gemma 4 E4B (`mlx-community/gemma-4-e4b-it-4bit
 
 - `src-tauri/src/lib.rs` - Tauri commands, app state (Settings, RecordingState, ASREngine, PostProcessSettings)
 - `src-tauri/src/hotkey.rs` - Hotkey press/release handling, coordinates recording + transcription
+- `src-tauri/src/sound.rs` - Dictation sounds (`sounds/dictation-start.wav` when the popup appears, `dictation-done.wav` when the transcript is ready), embedded and played with NSSound
 - `src-tauri/src/transcription.rs` - `ASREngine`: owns + dispatches the in-process Rust engines (ASR + post-processing)
 - `src-tauri/src/active_app.rs` - Active application detection via NSWorkspace API
 - `src-tauri/src/live.rs` - Live capture shared by always-on and meetings: mic + system audio, chunking at pauses, ASR worker with echo check
