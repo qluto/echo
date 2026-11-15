@@ -319,7 +319,7 @@ fn resolve_language<R: Runtime>(app: &AppHandle<R>, language: Option<String>) ->
 
 /// Transcribe a whole 16 kHz mono buffer, sharing the engine: up to 28 s is
 /// one VAD-gated call (like a hotkey recording, so a silent clip comes back
-/// empty instead of hallucinated); longer audio is cut like a voice memo,
+/// empty instead of hallucinated); longer audio is cut like a stored memo,
 /// without the VAD, taking the engine lock per chunk.
 fn transcribe_samples<R: Runtime>(
     app: &AppHandle<R>,

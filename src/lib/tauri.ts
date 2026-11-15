@@ -51,7 +51,7 @@ export interface AppSettings {
   model_name: string | null;
   postprocess: PostProcessSettings;
   gated_access: GatedAccessSettings;
-  /** LLM for voice-memo minutes and meeting notes (set via setNotesModel). */
+  /** LLM for meeting notes and minutes (set via setNotesModel). */
   notes_model?: string | null;
   /** Minutes and meeting notes via Claude Code (set via setNotesClaude). */
   notes_claude?: NotesClaudeSettings;
@@ -379,7 +379,7 @@ export async function getPostprocessModelStatus(): Promise<PostProcessModelStatu
   return invoke("get_postprocess_model_status");
 }
 
-// Notes model: the LLM for voice-memo minutes and meeting notes, separate from
+// Notes model: the LLM for meeting notes and minutes, separate from
 // dictation post-processing. In these statuses `loaded` means "downloaded".
 export async function getNotesModelStatus(): Promise<PostProcessModelStatus> {
   return invoke("get_notes_model_status");

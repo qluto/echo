@@ -219,7 +219,7 @@ export default function MeetingApp() {
           className="mx-5 mt-3 px-3 py-2 rounded-lg text-xs flex items-center gap-3 shrink-0"
           style={{ backgroundColor: "var(--glow-success-soft)", color: "var(--text-primary)" }}
         >
-          <span className="flex-1">ボイスメモに保存しました。メイン画面のメモ一覧から開けます。</span>
+          <span className="flex-1">保存しました。メイン画面の Meetings タブから開けます。</span>
           <button onClick={handleCopy} className={`${actionButton} bg-surface`} style={{ color: "var(--text-secondary)" }}>
             {copied ? "コピーしました" : "Markdown でコピー"}
           </button>

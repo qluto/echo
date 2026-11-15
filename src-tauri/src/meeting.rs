@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! live capture (mic + system audio → chunks → ASR, see `live`)
-//!   ├→ mixed 16 kHz WAV (saved as a voice memo)
+//!   ├→ mixed 16 kHz WAV (saved in its memo row)
 //!   └→ lines ("自分" / "相手") → `meeting-line`
 //!                                   ↓
 //!      [notes thread] every 3 min (and, for a meeting standby started, as
@@ -13,7 +13,7 @@
 //!
 //! Items are never edited by hand: a wrong item is corrected by saying so in
 //! the meeting, which the next round picks up. On stop, the remaining audio is
-//! transcribed, a final round runs, and the meeting is stored as a voice memo
+//! transcribed, a final round runs, and the meeting is stored in its memo row
 //! (mixed audio, speaker-labelled transcript, items as minutes).
 
 use std::path::Path;
@@ -979,7 +979,7 @@ fn stop_by_itself(shared: &Shared, app: &AppHandle) {
     session.stop(app);
 }
 
-/// Store the meeting in its voice memo row: transcript, items as minutes.
+/// Store the meeting in its memo row: transcript, items as minutes.
 fn save(shared: &Shared, app: &AppHandle, language: Option<&str>) -> Result<()> {
     let (mut lines, minutes, duration) = {
         let state = shared.state();

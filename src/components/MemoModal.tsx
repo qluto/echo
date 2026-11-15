@@ -133,7 +133,7 @@ export function MemoModal({ memoId, progress, onClose, onDelete, onChanged }: Me
         <div className="flex items-center justify-between px-5 py-3 border-b border-subtle flex-shrink-0">
           <div className="min-w-0">
             <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-              Voice Memo
+              Meeting
             </h2>
             <p className="text-[10px] mt-0.5 font-mono truncate" style={{ color: "var(--text-tertiary)" }}>
               {memo?.created_at.slice(0, 16)}

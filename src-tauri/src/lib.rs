@@ -140,7 +140,7 @@ pub fn run() {
             log::info!("Transcription database opened at {:?}", db_path);
             match db.mark_interrupted_memos() {
                 Ok(0) => {}
-                Ok(n) => log::warn!("{} voice memo(s) were interrupted by the last exit", n),
+                Ok(n) => log::warn!("{} memo(s) were interrupted by the last exit", n),
                 Err(e) => log::warn!("Failed to mark interrupted memos: {}", e),
             }
 

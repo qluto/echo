@@ -587,7 +587,7 @@ pub fn check_claude_code() -> Result<crate::claude_code::CliInfo, String> {
     crate::claude_code::cli_info().map_err(|e| format!("{e:#}"))
 }
 
-// ===== Voice memo commands =====
+// ===== Memo commands (stored meetings) =====
 
 #[tauri::command]
 pub fn list_memos(state: tauri::State<'_, AppState>) -> Result<Vec<database::MemoListItem>, String> {

@@ -19,7 +19,7 @@ use rust_asr::{CohereEngine, HaasEngine, ParakeetEngine, PostProcessor, WhisperE
 use crate::claude_code::ClaudeCode;
 use crate::{TranscriptionResult, TranscriptionSegment};
 
-/// The LLM that writes voice-memo minutes and meeting notes.
+/// The LLM that writes meeting notes and minutes.
 pub enum NotesLlm {
     /// In-process MLX model (offline).
     Local(Arc<PostProcessor>),
@@ -73,7 +73,7 @@ const POSTPROCESS_MODELS: [&str; 6] = [
     "mlx-community/Qwen3-1.7B-4bit",
 ];
 const DEFAULT_POSTPROCESS_MODEL: &str = "mlx-community/gemma-4-e4b-it-4bit";
-/// LLMs for voice-memo minutes and meeting notes, chosen separately from the
+/// LLMs for meeting notes and minutes, chosen separately from the
 /// dictation post-processor: these favor quality over speed. Qwen3.6-27B
 /// (Qwen3.5 architecture, ~16 GB) got 22/23 on the meeting-notes evaluation
 /// against 17 for Gemma 4 E4B, which left a real meeting's notes empty; it
@@ -607,7 +607,7 @@ impl ASREngine {
         Self::shared_llm(engine, |e| &e.postproc_model)
     }
 
-    /// The LLM for voice-memo minutes and meeting notes: Claude Code if the
+    /// The LLM for meeting notes and minutes: Claude Code if the
     /// user opted in, else the local notes model (loaded if needed). Generate
     /// with it after the engine lock is released.
     pub fn notes_llm(engine: &Mutex<Self>) -> Result<NotesLlm> {

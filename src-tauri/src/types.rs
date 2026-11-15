@@ -18,7 +18,7 @@ pub struct Settings {
     pub postprocess: PostProcessSettings,
     #[serde(default)]
     pub gated_access: GatedAccessSettings,
-    /// LLM for voice-memo minutes and meeting notes. None = default.
+    /// LLM for meeting notes and minutes. None = default.
     #[serde(default)]
     pub notes_model: Option<String>,
     /// Write minutes and meeting notes with Claude Code instead (opt-in).

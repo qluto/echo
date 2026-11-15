@@ -49,7 +49,7 @@ for file in "$@"; do
   fi
   [ $# -gt 1 ] && echo "== $file =="
   args=(-sS --fail-with-body -H "Authorization: Bearer $token"
-    -F "file=@$file" --form-string "response_format=$format")
+    -F "file=@\"$file\"" --form-string "response_format=$format")  # quoted: names may hold , or ;
   [ -n "$language" ] && args+=(--form-string "language=$language")
   if ! curl "${args[@]}" "http://127.0.0.1:$port/v1/audio/transcriptions"; then
     echo >&2

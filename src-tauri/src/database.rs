@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS memos (
 );
 ";
 
-/// Lifecycle of a voice memo.
+/// Lifecycle of a memo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoStatus {
@@ -71,7 +71,7 @@ impl MemoStatus {
     }
 }
 
-/// A voice memo with its full transcript and minutes.
+/// A memo with its full transcript and minutes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Memo {
     pub id: i64,
@@ -88,7 +88,7 @@ pub struct Memo {
     pub error: Option<String>,
 }
 
-/// List row for a voice memo: metadata plus a short preview, without the
+/// List row for a memo: metadata plus a short preview, without the
 /// (potentially large) transcript and minutes bodies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoListItem {
@@ -121,7 +121,7 @@ impl TranscriptionDb {
         Ok(Self { conn })
     }
 
-    // ===== Voice memos =====
+    // ===== Memos =====
 
     /// Create a memo row for a recording that is starting now. The audio file
     /// path is `<audio_dir>/memo-<local timestamp>-<id>.wav`.
