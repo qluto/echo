@@ -18,6 +18,7 @@ mod partial;
 mod input;
 mod memo;
 mod meeting;
+mod sound;
 mod standby;
 mod system_audio;
 mod transcription;

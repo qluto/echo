@@ -65,6 +65,7 @@ fn handle_hotkey_pressed(app: &AppHandle) {
         serde_json::json!({"state": "recording"}),
     )
     .ok();
+    crate::sound::play(app, crate::sound::Sound::DictationStart);
 
     // Get device name from settings
     let device_name = if let Some(state) = app.try_state::<crate::AppState>() {
@@ -370,6 +371,10 @@ fn handle_hotkey_released(app: &AppHandle) {
                         }),
                     )
                     .ok();
+
+                if !final_text.is_empty() && !is_no_speech {
+                    crate::sound::play(&app_clone, crate::sound::Sound::DictationDone);
+                }
 
                 // Auto-insert if enabled (skip if no speech detected)
                 if auto_insert && !final_text.is_empty() && !is_no_speech {
