@@ -16,7 +16,7 @@ const CLAUDE_MODELS = ["sonnet", "opus", "haiku", "fable"];
 import { POSTPROCESS_MODEL_SIZES, getPostprocessModelName } from "../lib/models";
 
 /**
- * The LLM for voice-memo minutes and meeting notes, chosen separately from
+ * The LLM for meeting notes and minutes, chosen separately from
  * the dictation post-processor: these favor quality over speed. A model that
  * isn't downloaded yet is fetched on selection, so a memo or meeting never
  * waits for the download.
@@ -122,7 +122,7 @@ export function NotesModelSection() {
             LLM Model
           </span>
           <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
-            {claudeOn ? "Not used while Claude Code is on" : "Voice Memo / Meeting"}
+            {claudeOn ? "Not used while Claude Code is on" : "Meeting notes & minutes"}
           </span>
         </div>
         <div className="flex items-center gap-2 w-[140px] justify-end">
@@ -243,7 +243,7 @@ export function NotesModelSection() {
                 className="px-4 py-2 rounded-lg text-xs"
                 style={{ backgroundColor: "rgba(212, 165, 116, 0.12)", color: "var(--text-secondary)" }}
               >
-                Transcripts of voice memos and meetings are sent to Anthropic through your Claude Code login,
+                Meeting transcripts are sent to Anthropic through your Claude Code login,
                 and count toward its usage. Live meeting notes update every minute instead of every three.
                 Dictation and transcription stay on this Mac.
               </div>
@@ -265,7 +265,7 @@ export function NotesModelSection() {
         className="px-4 py-2 rounded-lg text-xs"
         style={{ backgroundColor: "rgba(198, 125, 99, 0.08)", color: "var(--text-tertiary)" }}
       >
-        Writes voice-memo minutes and live meeting notes. Separate from the dictation model, so a larger, slower model only costs time here. Transcription keeps running while it works.
+        Writes live meeting notes and minutes. Separate from the dictation model, so a larger, slower model only costs time here. Transcription keeps running while it works.
       </div>
     </section>
   );

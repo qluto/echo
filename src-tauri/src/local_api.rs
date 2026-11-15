@@ -16,7 +16,7 @@
 //! an `Origin` header are refused: that is a web page, and while browsers
 //! guard cross-origin HTTP with CORS, they don't guard WebSockets.
 //!
-//! Requests share the engine with dictation, always-on, memos and meetings
+//! Requests share the engine with dictation, memos and meetings
 //! through `AppState::asr_engine`'s lock, taken once per chunk of at most
 //! 28 s. So a long upload never holds up the hotkey for more than one chunk,
 //! and the app never waits on the API for longer either.
@@ -319,7 +319,7 @@ fn resolve_language<R: Runtime>(app: &AppHandle<R>, language: Option<String>) ->
 
 /// Transcribe a whole 16 kHz mono buffer, sharing the engine: up to 28 s is
 /// one VAD-gated call (like a hotkey recording, so a silent clip comes back
-/// empty instead of hallucinated); longer audio is cut like a voice memo,
+/// empty instead of hallucinated); longer audio is cut like a stored memo,
 /// without the VAD, taking the engine lock per chunk.
 fn transcribe_samples<R: Runtime>(
     app: &AppHandle<R>,
@@ -500,8 +500,6 @@ mod tests {
             transcription_db: Arc::new(Mutex::new(
                 crate::database::TranscriptionDb::open(&dir.path().join("t.db")).unwrap(),
             )),
-            continuous_pipeline: Mutex::new(None),
-            memo_recorder: Mutex::new(None),
             meeting: Mutex::new(None),
             standby: Mutex::new(Default::default()),
         });

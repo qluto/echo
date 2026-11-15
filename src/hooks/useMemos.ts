@@ -1,25 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
-import {
-  startMemoRecording,
-  stopMemoRecording,
-  getMemoRecordingStatus,
-  listMemos,
-  deleteMemo,
-  onMemoProgress,
-  MemoListItem,
-  MemoRecordingStatus,
-} from "../lib/tauri";
+import { listMemos, deleteMemo, onMemoProgress, MemoListItem } from "../lib/tauri";
 
-const RECORDING_POLL_MS = 150;
-
+/** Stored meeting recordings (and voice memos from earlier versions). */
 export function useMemos() {
   const [memos, setMemos] = useState<MemoListItem[]>([]);
-  /** Live status of the in-progress recording; null when not recording. */
-  const [recording, setRecording] = useState<MemoRecordingStatus | null>(null);
   /** Stage progress (0–1) per memo id, while known. */
   const [progress, setProgress] = useState<Record<number, number>>({});
-  /** True while a start/stop request is in flight. */
-  const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -30,25 +16,9 @@ export function useMemos() {
     }
   }, []);
 
-  // Initial state (a recording may already be running if the window reloaded)
   useEffect(() => {
     refresh();
-    getMemoRecordingStatus()
-      .then(setRecording)
-      .catch((e) => console.error("Failed to get memo recording status:", e));
   }, [refresh]);
-
-  // Poll elapsed time + input level while recording
-  const isRecording = recording !== null;
-  useEffect(() => {
-    if (!isRecording) return;
-    const timer = setInterval(() => {
-      getMemoRecordingStatus()
-        .then(setRecording)
-        .catch(() => {});
-    }, RECORDING_POLL_MS);
-    return () => clearInterval(timer);
-  }, [isRecording]);
 
   // Follow background processing
   useEffect(() => {
@@ -76,34 +46,6 @@ export function useMemos() {
     };
   }, [refresh]);
 
-  const start = useCallback(async () => {
-    setIsBusy(true);
-    setError(null);
-    try {
-      const memo = await startMemoRecording();
-      setRecording({ memo_id: memo.id, elapsed_seconds: 0, level: 0 });
-      await refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setIsBusy(false);
-    }
-  }, [refresh]);
-
-  const stop = useCallback(async () => {
-    setIsBusy(true);
-    setError(null);
-    try {
-      await stopMemoRecording();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setRecording(null);
-      setIsBusy(false);
-      await refresh();
-    }
-  }, [refresh]);
-
   const remove = useCallback(
     async (id: number) => {
       try {
@@ -116,5 +58,5 @@ export function useMemos() {
     [refresh]
   );
 
-  return { memos, recording, progress, isBusy, error, start, stop, remove, refresh };
+  return { memos, progress, error, remove, refresh };
 }

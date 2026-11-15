@@ -9,11 +9,11 @@ Offline voice input desktop application optimized for Apple Silicon
 - **LLM-Based Post-Processing**: Optional on-device cleanup of filler words and self-corrections (Qwen3, in-process via MLX)
 - **Context-Aware Formatting**: Detects active application for context-appropriate output
 - **Customizable Prompts**: Edit post-processing behavior via Advanced Settings
-- **Always-On Transcription**: Continuous listening mode with automatic speech detection (Silero VAD)
+- **Meeting Notes**: Live transcript of both sides of a call (mic + system audio) with topics, decisions and action items kept up to date; optionally starts by itself when a conversation goes on for 3 minutes
 - **Global Hotkey**: System-wide keyboard shortcut for instant recording
 - **Real-time Transcription**: Immediate transcription after recording ends
 - **Auto Text Insertion**: Automatically paste transcription into active applications
-- **Transcription History**: SQLite-backed history with full-text search for always-on mode
+- **Local Transcription API**: Opt-in OpenAI-compatible API on 127.0.0.1; `scripts/echo-transcribe <file>` transcribes files from the shell
 - **Fully Offline**: No internet connection required — all processing happens locally
 
 ## System Requirements
@@ -63,17 +63,17 @@ The app is fully self-contained — no Python or other runtime installation requ
 5. Transcription appears automatically
 6. Text is auto-inserted into the active application (if enabled in Settings)
 
-### Always-On Transcription
+### Meetings
 
-Echo also supports continuous listening mode, which runs in the background and automatically detects speech:
+The Meetings tab records calls and in-person meetings:
 
-1. Click the "Start Listening" button in the app
-2. Echo continuously monitors the microphone using Silero VAD (Voice Activity Detection)
-3. When speech is detected, it automatically records the segment
-4. After a silence pause (1.5s), the segment is transcribed and saved to history
-5. Click "Stop Listening" to end the session
+1. Click "開く" on the Meeting card and start the meeting, or turn on "会話を自動検知" to have Echo start one by itself once a conversation has gone on for 3 minutes (it keeps the last 5 minutes in memory only, so the recording begins with the conversation)
+2. Echo transcribes your microphone and the other side's audio, and keeps the notes (topics, decisions, action items, open questions) up to date
+3. When the meeting ends, it is saved with its audio, transcript and minutes, listed under the Meeting card
 
-Transcription history is stored in a local SQLite database and can be searched via the History panel.
+### Transcribing files
+
+With Settings → Local Transcription API on, `scripts/echo-transcribe [-l ja] <audio>...` transcribes WAV / m4a / mp3 files with the app's current model.
 
 ## Settings
 
@@ -159,7 +159,7 @@ cd rust-asr && cargo build --release
 - **ASR Engines (in-process)**: Whisper via `whisper-rs` (whisper.cpp/Metal); Parakeet-JA + Cohere via `mlx-rs` (Apple MLX)
 - **VAD**: Silero VAD v5 via ONNX Runtime, rubato for resampling
 - **Post-Processing**: Qwen3 (4-bit, default 4B) ported to `mlx-rs`, in-process
-- **Database**: SQLite with FTS5 full-text search (`rusqlite`)
+- **Database**: SQLite (`rusqlite`) for meeting recordings
 - **Platform**: macOS 26.2+ on Apple Silicon
 
 ## Architecture
@@ -168,10 +168,10 @@ Echo runs entirely in a single process — speech recognition and post-processin
 are native Rust, with no Python sidecar.
 
 1. **Tauri App (Rust)**: Main application, hotkey handling, audio capture, VAD, active app detection
-2. **React Frontend**: User interface, settings management, transcription history
+2. **React Frontend**: User interface, settings management, meetings
 3. **In-Process ASR Engines (`rust-asr`)**: Whisper (whisper.cpp/Metal), Parakeet-JA and Cohere (Apple MLX). `ASREngine` in `transcription.rs` owns the loaded engines and dispatches by the active model id.
 4. **In-Process Post-Processor**: Optional on-device cleanup using Qwen3 (full-Rust MLX port), context-aware via active-app detection
-5. **Continuous Pipeline (Rust)**: Streaming audio → Silero VAD (ONNX) → segment detection → ASR → SQLite
+5. **Live Capture (Rust)**: Mic + system audio → chunks cut at pauses → ASR → meeting transcript and notes (notes LLM) → SQLite
 
 Both Metal backends (whisper.cpp and MLX) coexist in-process and are serialized
 by the `ASREngine` mutex. Models are lazily loaded — they download on first use

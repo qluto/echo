@@ -203,7 +203,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         "pk-loop" => {
-            // Reproduce the always-on memory growth: transcribe variable-length
+            // Reproduce the memory growth of long live transcription: transcribe variable-length
             // slices of <wav> repeatedly and watch MLX active/cache memory.
             // usage: pk-loop <wav> [iters] [cache_limit_mb]  (0 = unlimited)
             let wav = args.get(2).ok_or_else(|| anyhow!("usage: pk-loop <wav> [iters] [cache_limit_mb]"))?;

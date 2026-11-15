@@ -4,7 +4,7 @@
 //! Cohere via Apple MLX) and LLMs (post-processing, memo minutes, meeting notes; via MLX) run natively in Rust
 //! through the `rust-asr` crate. `ASREngine` owns the loaded engines and
 //! dispatches by the active model id. The dispatch is internal so all call
-//! sites (hotkey, commands, always-on pipeline) are unchanged.
+//! sites (hotkey, commands, meetings) are unchanged.
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,7 @@ use rust_asr::{CohereEngine, HaasEngine, ParakeetEngine, PostProcessor, WhisperE
 use crate::claude_code::ClaudeCode;
 use crate::{TranscriptionResult, TranscriptionSegment};
 
-/// The LLM that writes voice-memo minutes and meeting notes.
+/// The LLM that writes meeting notes and minutes.
 pub enum NotesLlm {
     /// In-process MLX model (offline).
     Local(Arc<PostProcessor>),
@@ -73,7 +73,7 @@ const POSTPROCESS_MODELS: [&str; 6] = [
     "mlx-community/Qwen3-1.7B-4bit",
 ];
 const DEFAULT_POSTPROCESS_MODEL: &str = "mlx-community/gemma-4-e4b-it-4bit";
-/// LLMs for voice-memo minutes and meeting notes, chosen separately from the
+/// LLMs for meeting notes and minutes, chosen separately from the
 /// dictation post-processor: these favor quality over speed. Qwen3.6-27B
 /// (Qwen3.5 architecture, ~16 GB) got 22/23 on the meeting-notes evaluation
 /// against 17 for Gemma 4 E4B, which left a real meeting's notes empty; it
@@ -221,7 +221,7 @@ impl ASREngine {
         self.hub_dir = Some(cache_dir.join("hub"));
         self.hf_token = hf_token.filter(|t| !t.is_empty()).map(|t| t.to_string());
         // Cap MLX's freed-buffer cache. Without a limit (default ≈ device
-        // memory), continuous transcription grows process memory unboundedly:
+        // memory), long transcription (meetings) grows process memory unboundedly:
         // every variable-length segment leaves differently-sized buffers in
         // the cache. 512 MB keeps steady-state buffer reuse while returning
         // the excess to the OS.
@@ -513,7 +513,7 @@ impl ASREngine {
     }
 
     /// Run Silero VAD over the whole 16 kHz clip; speech if enough frames clear
-    /// the threshold. Always-on segments (already speech) pass; silent hotkey
+    /// the threshold. Segments that are already speech pass; silent hotkey
     /// recordings are rejected.
     pub fn has_speech(&mut self, samples: &[f32]) -> bool {
         use crate::vad::{VadEvent, VadProcessor, VAD_FRAME_SIZE};
@@ -607,7 +607,7 @@ impl ASREngine {
         Self::shared_llm(engine, |e| &e.postproc_model)
     }
 
-    /// The LLM for voice-memo minutes and meeting notes: Claude Code if the
+    /// The LLM for meeting notes and minutes: Claude Code if the
     /// user opted in, else the local notes model (loaded if needed). Generate
     /// with it after the engine lock is released.
     pub fn notes_llm(engine: &Mutex<Self>) -> Result<NotesLlm> {
@@ -741,46 +741,6 @@ impl ASREngine {
                 processed_text: text.to_string(),
                 processing_time_ms: None,
                 error: Some(e.to_string()),
-            }),
-        }
-    }
-
-    /// Summarize history entries with the post-processor, without the engine lock.
-    pub fn summarize_transcriptions(
-        engine: &Mutex<Self>,
-        texts: &[crate::SummarizeEntry],
-        language_hint: Option<&str>,
-        custom_prompt: Option<&str>,
-    ) -> Result<crate::SummarizeResult> {
-        if texts.is_empty() {
-            return Ok(crate::SummarizeResult {
-                success: true,
-                summary: String::new(),
-                processing_time_ms: Some(0.0),
-                error: None,
-                entry_count: 0,
-            });
-        }
-        let pp = Self::postprocessor(engine)?;
-        let entries: Vec<(String, String)> = texts
-            .iter()
-            .map(|e| (e.created_at.clone(), e.text.clone()))
-            .collect();
-        let start = std::time::Instant::now();
-        match pp.summarize(&entries, language_hint, custom_prompt) {
-            Ok(summary) => Ok(crate::SummarizeResult {
-                success: true,
-                summary,
-                processing_time_ms: Some(start.elapsed().as_secs_f64() * 1000.0),
-                error: None,
-                entry_count: texts.len(),
-            }),
-            Err(e) => Ok(crate::SummarizeResult {
-                success: false,
-                summary: String::new(),
-                processing_time_ms: None,
-                error: Some(e.to_string()),
-                entry_count: texts.len(),
             }),
         }
     }

@@ -412,7 +412,7 @@ pub fn stop_recording() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Streaming capture for continuous listening (16kHz mono, 512-sample frames)
+// Streaming capture for live capture: meetings and standby (16kHz mono, 512-sample frames)
 // ---------------------------------------------------------------------------
 
 use crate::vad::VAD_SAMPLE_RATE;

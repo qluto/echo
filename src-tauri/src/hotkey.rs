@@ -57,8 +57,8 @@ pub fn trigger_hotkey_released(app: &AppHandle) {
 fn handle_hotkey_pressed(app: &AppHandle) {
     log::info!("Hotkey pressed - starting recording");
 
-    // Always-on logging must not transcribe the dictation too.
-    crate::continuous::set_muted(crate::continuous::Mute::Dictation, true);
+    // Meeting standby must not take the dictation for conversation.
+    crate::standby::set_dictating(true);
 
     app.emit(
         "recording-state-change",
@@ -186,7 +186,7 @@ fn handle_hotkey_released(app: &AppHandle) {
     std::thread::spawn(move || {
         // Stop recording
         let stopped = crate::audio_capture::stop_recording();
-        crate::continuous::set_muted(crate::continuous::Mute::Dictation, false);
+        crate::standby::set_dictating(false);
         if let Err(e) = stopped {
             log::error!("Failed to stop recording: {}", e);
             crate::TranscriptionStatusEvent::emit(

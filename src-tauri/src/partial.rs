@@ -13,7 +13,7 @@
 //! `committed + current window`.
 //!
 //! The decoder only ever `try_lock`s the ASR engine and skips a tick when it
-//! is busy, so it can never delay the final decode or the always-on pipeline.
+//! is busy, so it can never delay the final decode or a meeting's transcription.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -130,7 +130,7 @@ fn run(
             continue;
         }
 
-        // Engine busy (final decode, always-on, model load): skip this tick,
+        // Engine busy (final decode, a meeting, model load): skip this tick,
         // the next one will cover the same audio anyway.
         let Ok(mut engine) = asr_engine.try_lock() else {
             continue;

@@ -35,7 +35,6 @@ export interface PostProcessSettings {
   dictionary: Record<string, string>;
   custom_prompt?: string | null;
   model_name?: string | null;
-  custom_summary_prompt?: string | null;
   app_profiles?: AppProfile[];
 }
 
@@ -52,7 +51,7 @@ export interface AppSettings {
   model_name: string | null;
   postprocess: PostProcessSettings;
   gated_access: GatedAccessSettings;
-  /** LLM for voice-memo minutes and meeting notes (set via setNotesModel). */
+  /** LLM for meeting notes and minutes (set via setNotesModel). */
   notes_model?: string | null;
   /** Minutes and meeting notes via Claude Code (set via setNotesClaude). */
   notes_claude?: NotesClaudeSettings;
@@ -238,19 +237,18 @@ export interface TranscriptionEvent {
   error: TranscriptionError | null;
 }
 
-// Structured status events ("transcription-status") from both the hotkey and
-// always-on paths. no_speech is a normal outcome, not an error.
+// Structured status events ("transcription-status") from the hotkey path.
+// no_speech is a normal outcome, not an error.
 export type StatusKind =
   | "no_speech"
   | "asr_error"
   | "engine_busy"
-  | "db_error"
   | "audio_error"
   | "permission_denied";
 
 export interface TranscriptionStatusEvent {
   kind: StatusKind;
-  source: "hotkey" | "continuous";
+  source: "hotkey";
   message: string | null;
 }
 
@@ -381,7 +379,7 @@ export async function getPostprocessModelStatus(): Promise<PostProcessModelStatu
   return invoke("get_postprocess_model_status");
 }
 
-// Notes model: the LLM for voice-memo minutes and meeting notes, separate from
+// Notes model: the LLM for meeting notes and minutes, separate from
 // dictation post-processing. In these statuses `loaded` means "downloaded".
 export async function getNotesModelStatus(): Promise<PostProcessModelStatus> {
   return invoke("get_notes_model_status");
@@ -431,46 +429,6 @@ export async function checkClaudeCode(): Promise<ClaudeCliInfo> {
   return invoke("check_claude_code");
 }
 
-// Continuous listening types and commands
-export interface ContinuousListeningStatus {
-  is_listening: boolean;
-  /** Lines saved since listening started. */
-  segment_count: number;
-  /** System audio is captured along with the mic. */
-  system_audio: boolean;
-  /** Why system audio isn't captured, if it couldn't start. */
-  warning: string | null;
-}
-
-export interface ContinuousTranscriptionEvent {
-  id: number;
-  text: string;
-  created_at: string;
-  duration_seconds: number | null;
-  language: string | null;
-  model_name: string | null;
-}
-
-export async function startContinuousListening(): Promise<ContinuousListeningStatus> {
-  return invoke("start_continuous_listening");
-}
-
-export async function stopContinuousListening(): Promise<number> {
-  return invoke("stop_continuous_listening");
-}
-
-export async function getContinuousListeningStatus(): Promise<ContinuousListeningStatus> {
-  return invoke("get_continuous_listening_status");
-}
-
-export function onContinuousTranscription(
-  callback: (event: ContinuousTranscriptionEvent) => void
-): Promise<UnlistenFn> {
-  return listen<ContinuousTranscriptionEvent>("continuous-transcription", (event) => {
-    callback(event.payload);
-  });
-}
-
 // Draft of the hotkey recording in progress (both empty = cleared).
 // `committed` is final for this recording; `draft` is still tentative.
 export interface HotkeyPartialEvent {
@@ -486,105 +444,7 @@ export function onHotkeyPartial(
   });
 }
 
-// Always-on sound activity (for the ambient float indicator)
-export interface ContinuousActivityEvent {
-  active: boolean;
-}
-
-export function onContinuousListeningResumed(
-  callback: (status: ContinuousListeningStatus) => void
-): Promise<UnlistenFn> {
-  return listen<ContinuousListeningStatus>("continuous-listening-resumed", (event) => {
-    callback(event.payload);
-  });
-}
-
-export function onContinuousActivity(
-  callback: (event: ContinuousActivityEvent) => void
-): Promise<UnlistenFn> {
-  return listen<ContinuousActivityEvent>("continuous-activity", (event) => {
-    callback(event.payload);
-  });
-}
-
-// Transcription history types and commands
-export interface TranscriptionHistoryEntry {
-  id: number;
-  created_at: string;
-  duration_seconds: number | null;
-  text: string;
-  raw_text: string | null;
-  language: string | null;
-  model_name: string | null;
-  segments_json: string | null;
-}
-
-export interface TranscriptionHistoryPage {
-  entries: TranscriptionHistoryEntry[];
-  total_count: number;
-  has_more: boolean;
-}
-
-export async function getTranscriptionHistory(
-  limit?: number,
-  offset?: number
-): Promise<TranscriptionHistoryPage> {
-  return invoke("get_transcription_history", {
-    limit: limit ?? null,
-    offset: offset ?? null,
-  });
-}
-
-export async function searchTranscriptionHistory(
-  query: string,
-  limit?: number,
-  offset?: number
-): Promise<TranscriptionHistoryPage> {
-  return invoke("search_transcription_history", {
-    query,
-    limit: limit ?? null,
-    offset: offset ?? null,
-  });
-}
-
-export async function deleteTranscriptionEntry(id: number): Promise<boolean> {
-  return invoke("delete_transcription_entry", { id });
-}
-
-export async function clearTranscriptionHistory(): Promise<number> {
-  return invoke("clear_transcription_history");
-}
-
-export type ExportFormat = "json" | "csv" | "markdown";
-
-/**
- * Export the full transcription history via a native save dialog.
- * Resolves to the saved file path, or null if the user cancelled.
- */
-export async function exportTranscriptionHistory(
-  format: ExportFormat
-): Promise<string | null> {
-  return invoke("export_transcription_history", { format });
-}
-
-// Summarization types and commands
-export interface SummarizeResult {
-  success: boolean;
-  summary: string;
-  processing_time_ms: number | null;
-  error: string | null;
-  entry_count: number;
-}
-
-export async function summarizeRecentTranscriptions(
-  minutes?: number
-): Promise<SummarizeResult> {
-  return invoke("summarize_recent_transcriptions", {
-    minutes: minutes ?? null,
-  });
-}
-
-// Voice memo types and commands
+// Memo (meeting recording) types and commands
 export type MemoStatus =
   | "recording"
   | "transcribing"
@@ -617,31 +477,11 @@ export interface MemoListItem {
   error: string | null;
 }
 
-export interface MemoRecordingStatus {
-  memo_id: number;
-  elapsed_seconds: number;
-  /** Input level, 0.0–1.0. */
-  level: number;
-}
-
 export interface MemoProgressEvent {
   id: number;
   status: MemoStatus;
   /** 0.0–1.0 within the current stage, when known. */
   progress: number | null;
-}
-
-export async function startMemoRecording(): Promise<Memo> {
-  return invoke("start_memo_recording");
-}
-
-/** Stops the recording; transcription + minutes continue in the background. */
-export async function stopMemoRecording(): Promise<Memo> {
-  return invoke("stop_memo_recording");
-}
-
-export async function getMemoRecordingStatus(): Promise<MemoRecordingStatus | null> {
-  return invoke("get_memo_recording_status");
 }
 
 export async function listMemos(): Promise<MemoListItem[]> {

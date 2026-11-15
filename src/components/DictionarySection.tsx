@@ -61,7 +61,7 @@ export function DictionarySection({ dictionary, onChange }: DictionarySectionPro
       <span className="text-xs px-1" style={{ color: "var(--text-tertiary)" }}>
         Correct recurring mishearings (e.g. proper nouns) during AI
         enhancement. Applied as a hint to the model — not a guaranteed literal
-        replacement — and only in hotkey mode, not always-on transcription.
+        replacement — and only for hotkey dictation, not meetings.
       </span>
 
       {/* Add form */}
