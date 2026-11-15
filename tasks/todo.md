@@ -139,3 +139,25 @@
 - 2026-11-14 catch-up (Haas-ja, M5, release, `standby_catch_up`): 190 s buffered → transcribed in 1.7–2.2 s, first line
   after 0.1 s. The first notes round now runs once that is done instead of 3 min (1 min with Claude Code) after the start;
   `caught_up_once_buffered_audio_is_transcribed` fails without the ASR-idle check (1 of 13 buffered lines ready)
+
+# Remove always-on logging and the voice memo recorder (2026-11-15)
+Meeting standby replaces always-on; meetings cover voice memos (both land in the memos list).
+- [x] Rust: delete `continuous.rs`, `export.rs`, history/summarize commands, transcription-history DB fns
+      (keep the tables on disk: no DROP, existing data untouched)
+- [x] mic-busy flag for standby moves into `standby.rs` (dictation only); drop meeting/memo mutes and live.rs's mute hook
+- [x] update.rs: drop `seconds_since_sound` and `resume_listening`
+- [x] voice memo recorder: drop `MemoRecorder` + start/stop/status commands; keep list, modal, reprocess
+- [x] frontend: Log tab, float hover panel/ambient states, summary prompt, Clear history, Voice Memo card
+- [x] echo-cli: delete (broken since python-engine went away); add `scripts/echo-transcribe` (Local API)
+- [x] docs: CLAUDE.md, README, docs/index.html
+- [x] verify: cargo test, tsc/vite build
+- [ ] app smoke test (hotkey, meeting, standby, Meetings tab list) — user
+
+## Review
+- cargo test --lib: 63 passed, 13 ignored (was 76 + removed history/export/recorder/mute tests)
+- live_end_to_end / meeting_end_to_end on a synthetic two-track `say` conversation (34 s): both sides
+  transcribed, 3 notes rounds + minutes with Gemma E4B
+- scripts/echo-transcribe against the running app: wav + m4a, text and json, multi-file, bad port → exit 1
+- every frontend `invoke("…")` (58) is a registered command; tsc + vite build clean
+- Kept: `transcriptions` table on disk (not dropped, no longer created), `resume_listening` store key unused
+- Gotcha: `say -v Otoya/Reed` writes a 0.01 s file with exit 0 when the voice isn't downloaded — check durations

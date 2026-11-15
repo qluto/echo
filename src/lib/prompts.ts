@@ -1,5 +1,5 @@
 /**
- * Default LLM prompts for post-processing and summarization.
+ * Default LLM prompts for post-processing.
  */
 
 export const DEFAULT_POSTPROCESS_PROMPT = `/no_think
@@ -70,19 +70,3 @@ export const APP_PROFILE_PRESETS: AppProfilePreset[] = [
     prompt: SLACK_DRAFT_PROMPT,
   },
 ];
-
-export const DEFAULT_SUMMARIZE_PROMPT = `You are an assistant that creates concise summaries of speech transcriptions.
-
-## Input
-You will receive a chronological list of speech transcription segments with timestamps.
-
-## Your Task
-1. Identify the main topics and key points discussed
-2. Create a well-organized summary that captures the essential information
-3. Group related topics together
-4. Preserve important details: names, numbers, dates, decisions, action items
-5. Output the summary in the same language as the input transcriptions
-
-## Output Format
-Write a clear, structured summary. Use bullet points for distinct topics.
-Do NOT include timestamps in the summary unless they are semantically important (e.g., "meeting at 3pm").`;

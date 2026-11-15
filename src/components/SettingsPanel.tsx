@@ -18,7 +18,6 @@ import {
   isPostprocessModelCached,
   setPostprocessModel,
   getPostprocessModelStatus,
-  clearTranscriptionHistory,
   AppSettings,
   AudioDevice,
   HandyKeysEvent,
@@ -34,7 +33,7 @@ import {
   isGatedModel,
 } from "../lib/models";
 import { formatHotkey } from "../lib/format";
-import { DEFAULT_POSTPROCESS_PROMPT, DEFAULT_SUMMARIZE_PROMPT } from "../lib/prompts";
+import { DEFAULT_POSTPROCESS_PROMPT } from "../lib/prompts";
 import { AppProfilesSection } from "./AppProfilesSection";
 import { DictionarySection } from "./DictionarySection";
 import { NotesModelSection } from "./NotesModelSection";
@@ -69,13 +68,11 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [postprocessLoadPhase, setPostprocessLoadPhase] = useState<"idle" | "checking" | "downloading" | "loading">("idle");
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [customPrompt, setCustomPrompt] = useState<string | null>(null);
-  const [customSummaryPrompt, setCustomSummaryPrompt] = useState<string | null>(null);
   const [postprocessModelName, setPostprocessModelName] = useState<string>("mlx-community/gemma-4-e4b-it-4bit");
   const [availablePostprocessModels, setAvailablePostprocessModels] = useState<string[]>(
     Object.keys(POSTPROCESS_MODEL_SIZES)
   );
   const [isPostprocessModelChanging, setIsPostprocessModelChanging] = useState(false);
-  const [showClearConfirm, setShowClearConfirm] = useState(false);
   const currentKeysRef = useRef("");
   const unlistenRef = useRef<(() => void) | null>(null);
 
@@ -98,7 +95,6 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       setDevices(loadedDevices);
       setHotkeyInput(loadedSettings.hotkey);
       setCustomPrompt(loadedSettings.postprocess?.custom_prompt ?? null);
-      setCustomSummaryPrompt(loadedSettings.postprocess?.custom_summary_prompt ?? null);
       if (modelStatus.model_name) {
         setModelName(modelStatus.model_name);
       }
@@ -1072,60 +1068,6 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                               : "Using default prompt"}
                           </span>
                         </div>
-
-                        {/* Custom Summary Prompt */}
-                        <div className="flex flex-col gap-2">
-                          <div className="flex items-center justify-between">
-                            <span
-                              className="text-xs font-medium"
-                              style={{ color: "var(--text-secondary)" }}
-                            >
-                              Summary Prompt
-                            </span>
-                            <button
-                              onClick={() => {
-                                setCustomSummaryPrompt(null);
-                                const newPostprocess: PostProcessSettings = {
-                                  ...settings.postprocess,
-                                  custom_summary_prompt: null,
-                                };
-                                const newSettings = { ...settings, postprocess: newPostprocess };
-                                setSettings(newSettings);
-                                updatePostprocessSettings(newPostprocess).catch(console.error);
-                              }}
-                              className="text-xs px-2 py-1 rounded transition-colors hover:bg-surface-elevated"
-                              style={{ color: "var(--text-tertiary)" }}
-                            >
-                              Reset to Default
-                            </button>
-                          </div>
-                          <textarea
-                            value={customSummaryPrompt === null ? DEFAULT_SUMMARIZE_PROMPT : customSummaryPrompt}
-                            onChange={(e) => {
-                              const value = e.target.value;
-                              setCustomSummaryPrompt(value);
-                              const customValue = value === DEFAULT_SUMMARIZE_PROMPT ? null : value;
-                              const newPostprocess: PostProcessSettings = {
-                                ...settings.postprocess,
-                                custom_summary_prompt: customValue,
-                              };
-                              const newSettings = { ...settings, postprocess: newPostprocess };
-                              setSettings(newSettings);
-                              updatePostprocessSettings(newPostprocess).catch(console.error);
-                            }}
-                            className="w-full h-48 px-3 py-2 rounded-lg bg-surface border border-subtle text-xs font-mono resize-none focus:outline-none focus:border-glow-idle"
-                            style={{ color: "var(--text-primary)" }}
-                            placeholder={DEFAULT_SUMMARIZE_PROMPT}
-                          />
-                          <span
-                            className="text-xs"
-                            style={{ color: "var(--text-tertiary)" }}
-                          >
-                            {customSummaryPrompt !== null
-                              ? "Using custom prompt"
-                              : "Using default prompt"}
-                          </span>
-                        </div>
                       </div>
                     )}
                   </div>
@@ -1274,94 +1216,6 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 </div>
               </section>
 
-              {/* Data Section */}
-              <section className="flex flex-col gap-3">
-                <div className="flex items-center gap-2.5">
-                  <div
-                    className="w-6 h-6 rounded-md flex items-center justify-center"
-                    style={{ backgroundColor: "rgba(198, 125, 99, 0.12)" }}
-                  >
-                    <svg
-                      className="w-3.5 h-3.5"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="var(--glow-recording)"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <path d="M3 6h18" />
-                      <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
-                      <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
-                      <line x1="10" y1="11" x2="10" y2="17" />
-                      <line x1="14" y1="11" x2="14" y2="17" />
-                    </svg>
-                  </div>
-                  <span
-                    className="text-sm font-medium"
-                    style={{ color: "var(--text-primary)" }}
-                  >
-                    Data
-                  </span>
-                </div>
-
-                <div className="flex flex-col gap-2">
-                  {!showClearConfirm ? (
-                    <button
-                      onClick={() => setShowClearConfirm(true)}
-                      className="h-12 px-4 rounded-xl bg-surface border border-subtle flex items-center justify-between hover:bg-surface-elevated transition-colors"
-                    >
-                      <span className="text-sm" style={{ color: "var(--glow-recording)" }}>
-                        Clear All History
-                      </span>
-                      <svg
-                        className="w-4 h-4"
-                        fill="none"
-                        stroke="var(--text-tertiary)"
-                        strokeWidth={2}
-                        viewBox="0 0 24 24"
-                      >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
-                      </svg>
-                    </button>
-                  ) : (
-                    <div
-                      className="px-4 py-3 rounded-xl border flex flex-col gap-3"
-                      style={{
-                        backgroundColor: "rgba(198, 125, 99, 0.08)",
-                        borderColor: "rgba(198, 125, 99, 0.3)",
-                      }}
-                    >
-                      <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
-                        This will permanently delete all transcription history. This action cannot be undone.
-                      </p>
-                      <div className="flex items-center gap-2 justify-end">
-                        <button
-                          onClick={() => setShowClearConfirm(false)}
-                          className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors hover:bg-surface-elevated"
-                          style={{ color: "var(--text-secondary)" }}
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          onClick={async () => {
-                            try {
-                              await clearTranscriptionHistory();
-                              setShowClearConfirm(false);
-                            } catch (e) {
-                              console.error("Failed to clear history:", e);
-                            }
-                          }}
-                          className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors text-white"
-                          style={{ backgroundColor: "var(--glow-recording)" }}
-                        >
-                          Delete All
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </section>
             </>
           )}
         </main>

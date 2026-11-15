@@ -1,0 +1,62 @@
+#!/bin/bash
+# Transcribe audio files with the running Echo app, through its Local
+# Transcription API (Settings → Local Transcription API). Same model, language
+# and engine as dictation; the app must be running with the API turned on.
+#
+#   echo-transcribe [-l <lang>] [-f text|json|verbose_json] <audio>...
+#
+# WAV is read directly; m4a/mp3/aac/flac/caf are converted by the app.
+# The port and token come from Echo's settings.json (override with
+# ECHO_API_PORT / ECHO_API_TOKEN). With several files, each transcript is
+# preceded by a "== <file> ==" line.
+set -euo pipefail
+
+usage() {
+  echo "usage: $(basename "$0") [-l <lang>] [-f text|json|verbose_json] <audio>..." >&2
+  exit 2
+}
+
+language=""
+format="text"
+while getopts "l:f:h" opt; do
+  case "$opt" in
+    l) language="$OPTARG" ;;
+    f) format="$OPTARG" ;;
+    *) usage ;;
+  esac
+done
+shift $((OPTIND - 1))
+[ $# -gt 0 ] || usage
+
+settings="$HOME/Library/Application Support/io.qluto.echo/settings.json"
+setting() {
+  plutil -extract "settings.local_api.$1" raw -o - "$settings" 2>/dev/null || true
+}
+port="${ECHO_API_PORT:-$(setting port)}"
+token="${ECHO_API_TOKEN:-$(setting token)}"
+port="${port:-47700}"
+if [ -z "$token" ]; then
+  echo "No API token: turn on Settings → Local Transcription API in Echo first." >&2
+  exit 1
+fi
+
+status=0
+for file in "$@"; do
+  if [ ! -f "$file" ]; then
+    echo "Not found: $file" >&2
+    status=1
+    continue
+  fi
+  [ $# -gt 1 ] && echo "== $file =="
+  args=(-sS --fail-with-body -H "Authorization: Bearer $token"
+    -F "file=@$file" --form-string "response_format=$format")
+  [ -n "$language" ] && args+=(--form-string "language=$language")
+  if ! curl "${args[@]}" "http://127.0.0.1:$port/v1/audio/transcriptions"; then
+    echo >&2
+    echo "Failed: $file (is Echo running with the Local Transcription API on, port $port?)" >&2
+    status=1
+    continue
+  fi
+  echo # responses don't end with a newline
+done
+exit $status

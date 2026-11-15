@@ -16,7 +16,7 @@
 //! an `Origin` header are refused: that is a web page, and while browsers
 //! guard cross-origin HTTP with CORS, they don't guard WebSockets.
 //!
-//! Requests share the engine with dictation, always-on, memos and meetings
+//! Requests share the engine with dictation, memos and meetings
 //! through `AppState::asr_engine`'s lock, taken once per chunk of at most
 //! 28 s. So a long upload never holds up the hotkey for more than one chunk,
 //! and the app never waits on the API for longer either.
@@ -500,8 +500,6 @@ mod tests {
             transcription_db: Arc::new(Mutex::new(
                 crate::database::TranscriptionDb::open(&dir.path().join("t.db")).unwrap(),
             )),
-            continuous_pipeline: Mutex::new(None),
-            memo_recorder: Mutex::new(None),
             meeting: Mutex::new(None),
             standby: Mutex::new(Default::default()),
         });

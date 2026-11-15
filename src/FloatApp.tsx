@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useLayoutEffect, useState, useRef } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import type {
@@ -11,37 +11,20 @@ import {
   LogicalSize,
   LogicalPosition,
   primaryMonitor,
-  cursorPosition,
 } from "@tauri-apps/api/window";
 
-type IndicatorState =
-  | "idle"
-  | "recording"
-  | "processing"
-  | "success"
-  | "ambient"
-  | "ambient-active";
+type IndicatorState = "idle" | "recording" | "processing" | "success";
 
 type MorphPhase = "ambient" | "expanding" | "indicator" | "collapsing";
 
 interface FloatStatePayload {
   state: IndicatorState;
   duration: number;
-  isListening: boolean;
 }
 
-interface RecentEntry {
-  id: number;
-  text: string;
-  created_at: string;
-}
-
-interface HistoryPage {
-  entries: RecentEntry[];
-}
-
-const HOVER_WIDTH = 264;
-const HOVER_HEIGHT = 300;
+/** The window: wide enough for the draft pill; it grows taller with a long draft. */
+const WINDOW_WIDTH = 264;
+const WINDOW_HEIGHT = 300;
 const BOTTOM_MARGIN = 12;
 const AMBIENT_PILL_WIDTH = 44;
 const AMBIENT_PILL_HEIGHT = 10;
@@ -106,12 +89,6 @@ function joinDraft(a: string, b: string): string {
   return a + (needsSpace ? " " : "") + b;
 }
 
-function formatTime(createdAt: string): string {
-  const timePart = createdAt.split(" ")[1];
-  if (!timePart) return "";
-  return timePart.slice(0, 5);
-}
-
 /** Short user-facing label for a transcription status. */
 function statusLabel(kind: StatusKind): string {
   switch (kind) {
@@ -121,8 +98,6 @@ function statusLabel(kind: StatusKind): string {
       return "Transcription failed";
     case "engine_busy":
       return "Engine busy";
-    case "db_error":
-      return "Failed to save";
     case "audio_error":
       return "Audio error";
     case "permission_denied":
@@ -358,11 +333,7 @@ function IndicatorContent({
 function FloatApp() {
   const [state, setState] = useState<IndicatorState>("idle");
   const [duration, setDuration] = useState(0);
-  const [isListening, setIsListening] = useState(false);
   const [visible, setVisible] = useState(false);
-  const [isHovered, setIsHovered] = useState(false);
-  const [isHoverPanelMounted, setIsHoverPanelMounted] = useState(false);
-  const [recentEntries, setRecentEntries] = useState<RecentEntry[]>([]);
   const [partialText, setPartialText] = useState(""); // committed + draft, for layout
   const [partial, setPartial] = useState<HotkeyPartialEvent>({ committed: "", draft: "" });
   const [draftLines, setDraftLines] = useState(1);
@@ -376,9 +347,6 @@ function FloatApp() {
   const prevModeRef = useRef<"ambient" | "normal" | "hidden">("hidden");
   const prevStateRef = useRef<IndicatorState>("idle");
   const morphTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hoveredRef = useRef(false);
-  const hoverPanelMountedRef = useRef(false);
 
   // ---- Audio level polling during recording ----
   useEffect(() => {
@@ -404,28 +372,14 @@ function FloatApp() {
     const unlistenState = listen<FloatStatePayload>(
       "float-state",
       async (event) => {
-        const {
-          state: rawState,
-          duration: newDuration,
-          isListening: nextIsListening,
-        } = event.payload;
+        const { state: newState, duration: newDuration } = event.payload;
         setDuration(newDuration);
-        setIsListening(nextIsListening);
+        setState(newState);
+        const newMode = newState === "idle" ? "ambient" : "normal";
 
-        // Normalize: when not listening, ambient states mean "idle" (no persistent indicator)
-        const isAmbientLike =
-          rawState === "ambient" || rawState === "ambient-active";
-        const newState =
-          !nextIsListening && isAmbientLike ? "idle" : rawState;
-        setState(newState as IndicatorState);
-
-        const isAmbient =
-          newState === "ambient" || newState === "ambient-active" || newState === "idle";
-        const newMode = isAmbient ? "ambient" : "normal";
-
-        // Always use HOVER size (bottom-aligned pill lives in this window)
+        // The bottom-aligned pill lives in this fixed-size window
         if (prevModeRef.current === "hidden") {
-          await resizeAndPosition(HOVER_WIDTH, HOVER_HEIGHT);
+          await resizeAndPosition(WINDOW_WIDTH, WINDOW_HEIGHT);
         }
 
         prevModeRef.current = newMode;
@@ -438,7 +392,7 @@ function FloatApp() {
     // window for the current state: its initial float-state may have been
     // emitted before this webview was listening.
     void (async () => {
-      await resizeAndPosition(HOVER_WIDTH, HOVER_HEIGHT);
+      await resizeAndPosition(WINDOW_WIDTH, WINDOW_HEIGHT);
       setVisible(true);
       await win.show();
       await emit("float-ready", {});
@@ -446,19 +400,6 @@ function FloatApp() {
 
     return () => {
       unlistenState.then((fn) => fn());
-    };
-  }, []);
-
-  // Accumulate transcription entries for hover panel
-  useEffect(() => {
-    const unlisten = listen<RecentEntry>(
-      "continuous-transcription",
-      (event) => {
-        setRecentEntries((prev) => [event.payload, ...prev].slice(0, 10));
-      },
-    );
-    return () => {
-      unlisten.then((fn) => fn());
     };
   }, []);
 
@@ -490,7 +431,7 @@ function FloatApp() {
     setDraftLines(Math.min(Math.max(lines, 1), DRAFT_MAX_LINES));
   }, [partialText]);
 
-  // Transient status toast (no_speech / errors) from either pipeline
+  // Transient status toast (no_speech / errors)
   useEffect(() => {
     const unlisten = listen<TranscriptionStatusEvent>(
       "transcription-status",
@@ -513,41 +454,7 @@ function FloatApp() {
     };
   }, []);
 
-  const isAmbientState = state === "ambient" || state === "ambient-active" || state === "idle";
-
-  // Backfill recent entries from DB when hover panel opens.
-  useEffect(() => {
-    if (!isAmbientState || !isHovered) return;
-    const loadRecentEntries = async () => {
-      try {
-        const page = await invoke<HistoryPage>("get_transcription_history", {
-          limit: 10,
-          offset: 0,
-        });
-        if (!page?.entries?.length) return;
-        setRecentEntries((prev) => {
-          const merged = [...prev, ...page.entries];
-          const deduped = Array.from(
-            new Map(merged.map((entry) => [entry.id, entry])).values(),
-          );
-          return deduped
-            .sort((a, b) => b.id - a.id)
-            .slice(0, 10);
-        });
-      } catch (_) {
-        // ignore history fetch errors in float window
-      }
-    };
-    void loadRecentEntries();
-  }, [isAmbientState, isHovered]);
-
-  // Reset hover on non-ambient state transitions
-  useEffect(() => {
-    if (state !== "ambient" && state !== "ambient-active" && state !== "idle") {
-      setIsHovered(false);
-      setIsHoverPanelMounted(false);
-    }
-  }, [state]);
+  const isIdle = state === "idle";
 
   // ---- Ripple on success ----
   useEffect(() => {
@@ -572,65 +479,54 @@ function FloatApp() {
       morphTimerRef.current = null;
     }
 
-    const prevIsAmbientOrIdle =
-      prev === "ambient" || prev === "ambient-active" || prev === "idle";
-    const curIsAmbientOrIdle =
-      state === "ambient" || state === "ambient-active" || state === "idle";
+    const prevIsIdle = prev === "idle";
+    const curIsIdle = state === "idle";
     const curIsIndicator =
       state === "recording" || state === "processing" || state === "success";
     const prevIsIndicator =
       prev === "recording" || prev === "processing" || prev === "success";
 
-    if (prevIsAmbientOrIdle && curIsIndicator) {
-      // Ambient/Idle -> Indicator: start expanding (matches spring duration)
+    if (prevIsIdle && curIsIndicator) {
+      // Idle -> Indicator: start expanding (matches spring duration)
       setMorphPhase("expanding");
       morphTimerRef.current = setTimeout(() => {
         setMorphPhase("indicator");
       }, 320);
-    } else if (prevIsIndicator && curIsAmbientOrIdle) {
-      // Indicator -> Ambient/Idle: start collapsing
+    } else if (prevIsIndicator && curIsIdle) {
+      // Indicator -> Idle: start collapsing
       setMorphPhase("collapsing");
       morphTimerRef.current = setTimeout(() => {
         setMorphPhase("ambient");
       }, 280);
-    } else if (curIsAmbientOrIdle) {
+    } else if (curIsIdle) {
       setMorphPhase("ambient");
     } else if (curIsIndicator) {
       setMorphPhase("indicator");
     }
-  }, [state, isListening]);
+  }, [state]);
 
   // Cleanup timers on unmount
   useEffect(() => {
     return () => {
-      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
       if (morphTimerRef.current) clearTimeout(morphTimerRef.current);
     };
   }, []);
 
-  useEffect(() => {
-    hoveredRef.current = isHovered;
-  }, [isHovered]);
-
-  useEffect(() => {
-    hoverPanelMountedRef.current = isHoverPanelMounted;
-  }, [isHoverPanelMounted]);
-
   // ---- Window sizing ----
 
-  // Always use HOVER size — ambient pill lives at bottom of this window.
-  // While a draft is shown the window grows with the pill so long
-  // utterances stay fully visible, then returns to HOVER size.
+  // The resting pill lives at the bottom of this window. While a draft is
+  // shown the window grows with the pill so long utterances stay fully
+  // visible, then returns to its usual size.
   const draftWindowHeight =
     state === "recording" && partialText
       ? Math.max(
-          HOVER_HEIGHT,
+          WINDOW_HEIGHT,
           INDICATOR_HEIGHT + DRAFT_PADDING_Y + draftLines * DRAFT_LINE_HEIGHT + 6 + DRAFT_WINDOW_EXTRA,
         )
-      : HOVER_HEIGHT;
+      : WINDOW_HEIGHT;
   useEffect(() => {
     if (!visible) return;
-    void resizeAndPosition(HOVER_WIDTH, draftWindowHeight);
+    void resizeAndPosition(WINDOW_WIDTH, draftWindowHeight);
   }, [visible, draftWindowHeight]);
 
   // Reposition when monitor configuration changes (display connect/disconnect).
@@ -643,7 +539,7 @@ function FloatApp() {
         if (!monitor) return;
         const key = `${monitor.position.x},${monitor.position.y},${monitor.size.width},${monitor.size.height},${monitor.scaleFactor}`;
         if (lastKey && key !== lastKey) {
-          await resizeAndPosition(HOVER_WIDTH, HOVER_HEIGHT);
+          await resizeAndPosition(WINDOW_WIDTH, WINDOW_HEIGHT);
         }
         lastKey = key;
       } catch (_) {
@@ -653,117 +549,15 @@ function FloatApp() {
     return () => clearInterval(id);
   }, [visible]);
 
-  // Make the window click-through when ambient and not morphing/hovered.
+  // Make the window click-through while it only shows the resting pill.
   useEffect(() => {
     if (!visible) return;
     const win = getCurrentWindow();
-    const shouldIgnore =
-      isAmbientState && !isHovered && morphPhase === "ambient";
+    const shouldIgnore = isIdle && morphPhase === "ambient";
     void win.setIgnoreCursorEvents(shouldIgnore).catch((error) => {
       console.error("Failed to set ignore cursor events:", error);
     });
-  }, [visible, isAmbientState, isHovered, morphPhase]);
-
-  // ---- Hover helpers ----
-
-  const showHoverPanel = useCallback(() => {
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-      hoverTimeoutRef.current = null;
-    }
-    if (!hoveredRef.current) {
-      hoveredRef.current = true;
-      setIsHovered(true);
-    }
-    if (!hoverPanelMountedRef.current) {
-      hoverPanelMountedRef.current = true;
-      setIsHoverPanelMounted(true);
-    }
-  }, []);
-
-  const hideHoverPanel = useCallback((delay = 140) => {
-    if (hoveredRef.current) {
-      hoveredRef.current = false;
-      setIsHovered(false);
-    }
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-      hoverTimeoutRef.current = null;
-    }
-    hoverTimeoutRef.current = setTimeout(() => {
-      hoverPanelMountedRef.current = false;
-      setIsHoverPanelMounted(false);
-      hoverTimeoutRef.current = null;
-    }, delay);
-  }, []);
-
-  // Hover state machine driven by cursor position polling
-  useEffect(() => {
-    if (!visible || !isAmbientState) return;
-    let disposed = false;
-
-    const tick = async () => {
-      if (disposed) return;
-      try {
-        const win = getCurrentWindow();
-        const [cursor, winPos, winSize, scaleFactor] = await Promise.all([
-          cursorPosition(),
-          win.innerPosition(),
-          win.innerSize(),
-          win.scaleFactor(),
-        ]);
-
-        const wx = winPos.x;
-        const wy = winPos.y;
-        const ww = winSize.width;
-        const wh = winSize.height;
-        const cx = cursor.x;
-        const cy = cursor.y;
-
-        const insideWindow =
-          cx >= wx && cx <= wx + ww && cy >= wy && cy <= wy + wh;
-        const pillWidth = Math.round(AMBIENT_PILL_WIDTH * scaleFactor);
-        const pillHeight = Math.round(AMBIENT_PILL_HEIGHT * scaleFactor);
-        const pillBottomPadding = Math.round(15 * scaleFactor);
-        const pillX = wx + Math.round((ww - pillWidth) / 2);
-        const pillY = wy + (wh - pillBottomPadding - pillHeight);
-        const insidePill =
-          cx >= pillX &&
-          cx <= pillX + pillWidth &&
-          cy >= pillY &&
-          cy <= pillY + pillHeight;
-
-        if (hoverPanelMountedRef.current) {
-          if (!hoveredRef.current) {
-            return;
-          }
-          if (insideWindow) {
-            showHoverPanel();
-          } else {
-            hideHoverPanel(80);
-          }
-        } else if (insidePill) {
-          showHoverPanel();
-        }
-      } catch (_) {
-        // ignore transient cursor/window query failures
-      }
-    };
-
-    const intervalId = setInterval(() => {
-      void tick();
-    }, 60);
-    void tick();
-
-    return () => {
-      disposed = true;
-      clearInterval(intervalId);
-    };
-  }, [visible, isAmbientState, showHoverPanel, hideHoverPanel]);
-
-  const handleToggleListening = useCallback(async () => {
-    await emit("request-toggle-listening", {});
-  }, []);
+  }, [visible, isIdle, morphPhase]);
 
   // ---- Render ----
 
@@ -774,8 +568,6 @@ function FloatApp() {
   // ---- Unified morph render (always bottom-aligned pill) ----
   const isInIndicatorPhase =
       morphPhase === "expanding" || morphPhase === "indicator";
-  const isInAmbientPhase =
-    morphPhase === "ambient" || morphPhase === "collapsing";
 
   // Morph pill dimensions. While recording with a draft, the pill widens and
   // grows to fit the text (one component changing shape, no extra window).
@@ -791,20 +583,16 @@ function FloatApp() {
       : INDICATOR_HEIGHT
     : AMBIENT_PILL_HEIGHT;
   const pillRadius = isInIndicatorPhase ? INDICATOR_RADIUS : AMBIENT_PILL_RADIUS;
-  const pillBg = isInIndicatorPhase ? "#FFFFFF" : (state === "ambient-active" ? "#7C9082" : "#1A1A1C");
+  const pillBg = isInIndicatorPhase ? "#FFFFFF" : "#1A1A1C";
   const pillBorder = isInIndicatorPhase
     ? "1px solid var(--border-subtle)"
     : "1px solid rgba(255, 255, 255, 0.25)";
   const pillShadow = isInIndicatorPhase
     ? getIndicatorShadow(state)
-    : state === "ambient-active"
-      ? "0 0 3px 1px rgba(124, 144, 130, 0.6), 0 0 8px rgba(124, 144, 130, 0.3)"
-      : "0 1px 4px rgba(0, 0, 0, 0.12)";
+    : "0 1px 4px rgba(0, 0, 0, 0.12)";
 
   // Content is visible only when fully expanded
   const contentVisible = morphPhase === "indicator";
-
-  const displayEntries = recentEntries.slice(0, 4);
 
   return (
     <div
@@ -839,153 +627,6 @@ function FloatApp() {
         </div>
       )}
 
-      {/* Hover panel — only in ambient phase while listening */}
-      {isHoverPanelMounted && isAmbientState && morphPhase === "ambient" && (
-          <div
-            className="absolute inset-0 flex items-end justify-center bg-transparent p-[2px]"
-            style={{ paddingBottom: 15 + AMBIENT_PILL_HEIGHT + 8 }}
-          >
-            <div
-              className={`flex flex-col min-h-0 overflow-hidden origin-bottom ${
-                isHovered
-                  ? "animate-ambient-hover-in"
-                  : "animate-ambient-hover-out"
-              }`}
-              style={{
-                width: "100%",
-                height: "100%",
-                backgroundColor: "#FFFFFF",
-                borderRadius: 16,
-                border: "1px solid #E8E4DF",
-                boxShadow:
-                  "0 4px 24px rgba(0,0,0,0.07), 0 8px 48px rgba(0,0,0,0.03)",
-              }}
-            >
-              {/* Header */}
-              <div
-                className="flex items-center justify-between flex-shrink-0"
-                style={{
-                  padding: "12px 16px",
-                  borderBottom: "1px solid #E8E4DF",
-                }}
-              >
-                <div className="flex items-center gap-2">
-                  <div
-                    style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: 3,
-                      backgroundColor: "#7C9082",
-                      boxShadow: "0 0 4px rgba(124,144,130,0.5)",
-                    }}
-                  />
-                  <span
-                    style={{
-                      fontFamily: "'Plus Jakarta Sans', sans-serif",
-                      fontSize: 12,
-                      fontWeight: 600,
-                      color: "#2D2D2D",
-                    }}
-                  >
-                    Always-on
-                  </span>
-                </div>
-                <button
-                  onClick={handleToggleListening}
-                  aria-pressed={isListening}
-                  style={{
-                    position: "relative",
-                    width: 40,
-                    height: 22,
-                    borderRadius: 11,
-                    backgroundColor: isListening ? "#7C9082" : "#C8CEC9",
-                    border: "none",
-                    cursor: "pointer",
-                    padding: 0,
-                    flexShrink: 0,
-                    transition: "background-color 120ms ease",
-                  }}
-                >
-                  <div
-                    style={{
-                      position: "absolute",
-                      top: 2,
-                      [isListening ? "right" : "left"]: 2,
-                      width: 18,
-                      height: 18,
-                      borderRadius: 9,
-                      backgroundColor: "#FFFFFF",
-                      boxShadow: "0 1px 2px rgba(0,0,0,0.1)",
-                      transition: "left 120ms ease, right 120ms ease",
-                    }}
-                  />
-                </button>
-              </div>
-
-              {/* History list */}
-              <div
-                className="flex flex-col flex-1 min-h-0"
-                style={{ overflowY: "auto" }}
-              >
-                {displayEntries.length === 0 ? (
-                  <div
-                    className="flex items-center justify-center flex-1"
-                    style={{
-                      padding: "24px 16px",
-                      color: "#ADADAD",
-                      fontSize: 12,
-                      fontFamily: "'Plus Jakarta Sans', sans-serif",
-                    }}
-                  >
-                    No transcriptions yet
-                  </div>
-                ) : (
-                  displayEntries.map((entry, i) => (
-                    <div
-                      key={entry.id}
-                      className="flex flex-shrink-0"
-                      style={{
-                        gap: 10,
-                        padding: "10px 16px",
-                        borderBottom:
-                          i < displayEntries.length - 1
-                            ? "1px solid #F0EFEC"
-                            : "none",
-                      }}
-                    >
-                      <span
-                        style={{
-                          fontFamily: "'IBM Plex Mono', monospace",
-                          fontSize: 10,
-                          color: "#ADADAD",
-                          flexShrink: 0,
-                          lineHeight: 1.4,
-                        }}
-                      >
-                        {formatTime(entry.created_at)}
-                      </span>
-                      <span
-                        style={{
-                          fontFamily: "'Plus Jakarta Sans', sans-serif",
-                          fontSize: 12,
-                          color: "#2D2D2D",
-                          lineHeight: 1.4,
-                          overflow: "hidden",
-                          display: "-webkit-box",
-                          WebkitLineClamp: 2,
-                          WebkitBoxOrient: "vertical" as const,
-                        }}
-                      >
-                        {entry.text}
-                      </span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* Morph pill with ripple wrapper */}
         <div style={{ position: "relative", flexShrink: 0 }}>
           {showRipple &&
@@ -1005,10 +646,8 @@ function FloatApp() {
             ))}
           <div
             className={`morph-pill flex items-center justify-center ${
-              isInAmbientPhase && state === "ambient-active" && morphPhase === "ambient"
-                ? "animate-ambient-breathe"
-                : ""
-            } ${showRipple ? "animate-success-bounce" : ""}`}
+              showRipple ? "animate-success-bounce" : ""
+            }`}
             data-morph-phase={morphPhase}
             style={{
               width: pillWidth,

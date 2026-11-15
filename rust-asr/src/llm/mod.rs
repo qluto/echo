@@ -1,7 +1,7 @@
 //! In-process LLM post-processing (Qwen3.5 / Qwen3) — the full-Rust
 //! replacement for the Python `PostProcessor`. Cleans up ASR text (filler
-//! removal, self-correction, dictionary, app-context formatting) and
-//! summarizes transcription history.
+//! removal, self-correction, dictionary, app-context formatting) and writes
+//! meeting minutes / notes through `chat`.
 
 pub mod decode;
 pub mod gated_delta;
@@ -45,22 +45,6 @@ Remove verbal noise while keeping the speaker's message intact:
 
 ## Output
 Output ONLY the cleaned text. No explanations.";
-
-pub const SUMMARIZE_PROMPT: &str = "You are an assistant that creates concise summaries of speech transcriptions.
-
-## Input
-You will receive a chronological list of speech transcription segments with timestamps.
-
-## Your Task
-1. Identify the main topics and key points discussed
-2. Create a well-organized summary that captures the essential information
-3. Group related topics together
-4. Preserve important details: names, numbers, dates, decisions, action items
-5. Output the summary in the same language as the input transcriptions
-
-## Output Format
-Write a clear, structured summary. Use bullet points for distinct topics.
-Do NOT include timestamps in the summary unless they are semantically important (e.g., \"meeting at 3pm\").";
 
 /// The loaded LLM, by architecture (picked from config.json's `model_type`).
 enum Model {
@@ -143,33 +127,6 @@ impl PostProcessor {
         let max_tokens = text.chars().count() + 100;
         let out = self.run(&prompt, max_tokens)?;
         Ok(out)
-    }
-
-    /// Summarize transcription entries (single pass). `entries` = (created_at, text).
-    pub fn summarize(
-        &self,
-        entries: &[(String, String)],
-        language_hint: Option<&str>,
-        custom_prompt: Option<&str>,
-    ) -> Result<String> {
-        if entries.is_empty() {
-            return Ok(String::new());
-        }
-        let system = custom_prompt.unwrap_or(SUMMARIZE_PROMPT);
-        let mut user = entries
-            .iter()
-            .map(|(ts, t)| format!("[{ts}] {t}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        if let Some(lang) = language_hint {
-            user.push_str(&format!("\n\n(Primary language: {lang})"));
-        }
-        // Qwen3 summarizes in thinking mode (matches Python summarize).
-        // Qwen3.5 doesn't: under greedy decoding its reasoning trace falls
-        // into a repetition loop and never reaches the answer.
-        let thinking = matches!(self.model, Model::Qwen3(_));
-        let prompt = self.chat_prompt(system, &user, thinking);
-        self.run(&prompt, 2048)
     }
 
     /// Free-form completion (no thinking): system + user message → assistant

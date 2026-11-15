@@ -977,7 +977,6 @@ fn stop_by_itself(shared: &Shared, app: &AppHandle) {
     log::info!("Meeting {}: no speech for {}s; stopping", shared.memo_id, AUTO_STOP_QUIET.as_secs());
     shared.state().notice = Some("会話が途切れたため、自動で終了しました".to_string());
     session.stop(app);
-    crate::continuous::set_muted(crate::continuous::Mute::Meeting, false);
 }
 
 /// Store the meeting in its voice memo row: transcript, items as minutes.

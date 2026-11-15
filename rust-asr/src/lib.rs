@@ -47,7 +47,7 @@ pub fn mlx_memory() -> (usize, usize) {
 /// Cap MLX's freed-buffer cache at `limit` bytes. Returns the previous limit.
 ///
 /// MLX recycles freed GPU buffers through an allocator cache whose default
-/// limit is effectively the device memory size. Continuous transcription feeds
+/// limit is effectively the device memory size. Long transcription (meetings) feeds
 /// variable-length segments, so every new shape adds differently-sized buffers
 /// to the cache and process memory grows without bound. A modest cap keeps the
 /// reuse benefit for steady-state shapes while returning the excess to the OS.

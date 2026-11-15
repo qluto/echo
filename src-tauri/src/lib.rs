@@ -7,11 +7,9 @@ mod claude_code;
 mod audio_capture;
 mod clipboard;
 mod commands;
-mod continuous;
 mod live;
 mod local_api;
 mod database;
-mod export;
 mod handy_keys;
 mod hotkey;
 mod partial;
@@ -111,7 +109,6 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
-        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -152,8 +149,6 @@ pub fn run() {
                 settings: Mutex::new(settings),
                 recording_state: Mutex::new(RecordingState::default()),
                 transcription_db: Arc::new(Mutex::new(db)),
-                continuous_pipeline: Mutex::new(None),
-                memo_recorder: Mutex::new(None),
                 meeting: Mutex::new(None),
                 standby: Mutex::new(standby::Standby::default()),
             };
@@ -187,7 +182,6 @@ pub fn run() {
             // Setup system tray
             setup_system_tray(app)?;
 
-            update::resume_listening(app.handle());
             standby::resume(app.handle());
             update::start(app.handle().clone());
 
@@ -289,18 +283,6 @@ pub fn run() {
             commands::postprocess_text,
             commands::set_postprocess_model,
             commands::get_postprocess_model_status,
-            commands::start_continuous_listening,
-            commands::stop_continuous_listening,
-            commands::get_continuous_listening_status,
-            commands::get_transcription_history,
-            commands::search_transcription_history,
-            commands::delete_transcription_entry,
-            commands::clear_transcription_history,
-            commands::export_transcription_history,
-            commands::summarize_recent_transcriptions,
-            commands::start_memo_recording,
-            commands::stop_memo_recording,
-            commands::get_memo_recording_status,
             commands::list_memos,
             commands::get_memo,
             commands::delete_memo,

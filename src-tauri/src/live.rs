@@ -1,4 +1,4 @@
-//! Live capture shared by the meeting companion and always-on logging:
+//! Live capture shared by the meeting companion and meeting standby:
 //! microphone + system audio, cut into chunks at pauses, transcribed as they
 //! come, with the other side's voice picked up by the mic dropped as echo.
 //!
@@ -335,11 +335,6 @@ impl Chunker {
         Some(self.cut(self.buf.len()))
     }
 
-    /// Everything buffered so far, however short.
-    fn take_all(&mut self) -> Option<Chunk> {
-        (!self.buf.is_empty()).then(|| self.cut(self.buf.len()))
-    }
-
     fn ends_in_pause(&self) -> bool {
         if self.frame_db.len() <= PAUSE_FRAMES {
             return false;
@@ -409,16 +404,10 @@ impl OthersLoudness {
 // Audio thread: levels, chunking, optional mixed recording
 // ---------------------------------------------------------------------------
 
-/// What the audio thread reports to, and asks of, its owner.
+/// What the audio thread reports to its owner.
 pub trait AudioObserver {
     /// Every captured frame, before chunking: its meter level and dBFS.
     fn on_frame(&self, _source: Source, _level: f32, _dbfs: f32) {}
-
-    /// While a source is muted its audio is not transcribed (it is still
-    /// recorded). The chunk in progress is cut where muting starts.
-    fn muted(&self, _source: Source) -> bool {
-        false
-    }
 }
 
 /// Chunk both sources until their captures stop, sending each chunk to the
@@ -432,7 +421,6 @@ pub fn audio_loop(
 ) -> Result<()> {
     let has_system = inputs.has_system;
     let mut chunkers = [Chunker::new(Source::Me), Chunker::new(Source::Others)];
-    let mut muted = [false, false];
     let mut others = OthersLoudness::default();
     // Samples not yet mixed into the recording, per source.
     let mut pending: [Vec<f32>; 2] = [Vec::new(), Vec::new()];
@@ -455,23 +443,8 @@ pub fn audio_loop(
             others.push(dbfs > OTHERS_ACTIVE_DBFS);
         }
 
-        let now_muted = observer.muted(source);
-        if now_muted != muted[i] {
-            muted[i] = now_muted;
-            if now_muted {
-                // What was said up to now still counts.
-                if let Some(chunk) = chunkers[i].flush() {
-                    send(chunk, &others);
-                }
-            } else {
-                // Discard what was heard while muted.
-                chunkers[i].take_all();
-            }
-        }
         if let Some(chunk) = chunkers[i].push(&frame) {
-            if !muted[i] {
-                send(chunk, &others);
-            }
+            send(chunk, &others);
         }
 
         let Some(writer) = writer.as_mut() else { continue };
@@ -498,8 +471,8 @@ pub fn audio_loop(
         }
     }
 
-    for (chunker, muted) in chunkers.iter_mut().zip(muted) {
-        if let Some(chunk) = chunker.flush().filter(|_| !muted) {
+    for chunker in &mut chunkers {
+        if let Some(chunk) = chunker.flush() {
             send(chunk, &others);
         }
     }
@@ -658,7 +631,6 @@ pub fn asr_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
 
     fn tone(seconds: f64, amplitude: f32) -> Vec<f32> {
         (0..samples(seconds))
@@ -778,55 +750,8 @@ mod tests {
         assert!(!others.active(0, 10));
     }
 
-    /// Mutes the mic while the frame counter is in `range`.
-    struct MuteMic {
-        frames: Cell<usize>,
-        range: std::ops::Range<usize>,
-    }
-
-    impl AudioObserver for MuteMic {
-        fn on_frame(&self, source: Source, _level: f32, _dbfs: f32) {
-            if source == Source::Me {
-                self.frames.set(self.frames.get() + 1);
-            }
-        }
-
-        fn muted(&self, source: Source) -> bool {
-            source == Source::Me && self.range.contains(&(self.frames.get() - 1))
-        }
-    }
-
-    /// Run `audio_loop` over a mic-only stream; return the `(start, end)` of the chunks sent.
-    fn mic_chunks(audio: &[f32], observer: &impl AudioObserver) -> Vec<(f64, f64)> {
-        let mut frames = audio.chunks(VAD_FRAME_SIZE).map(<[f32]>::to_vec);
-        let (mic_tx, mic_rx) = channel::unbounded();
-        let first = frames.next().unwrap();
-        for f in frames {
-            mic_tx.send(f).unwrap();
-        }
-        drop(mic_tx);
-        let inputs = Inputs::new(first, mic_rx, channel::never(), false);
-        let (chunk_tx, chunk_rx) = channel::unbounded();
-        audio_loop(inputs, chunk_tx, None, observer).unwrap();
-        chunk_rx.iter().map(|c| (c.start_sec(), c.end_sec())).collect()
-    }
-
-    #[test]
-    fn audio_heard_while_muted_is_not_transcribed() {
-        // Speech throughout; the mic is muted from 6 s to 9 s (hotkey dictation).
-        let audio = tone(20.0, 0.3);
-        let frame_at = |sec: f64| samples(sec) / VAD_FRAME_SIZE;
-        let observer = MuteMic { frames: Cell::new(0), range: frame_at(6.0)..frame_at(9.0) };
-        let chunks = mic_chunks(&audio, &observer);
-        assert!(!chunks.is_empty());
-        for &(s, e) in &chunks {
-            assert!(e <= 6.0 + 0.05 || s >= 9.0 - 0.05, "chunk {s}..{e} overlaps the muted span: {chunks:?}");
-        }
-        // Speech before and after muting is kept, up to the cut.
-        assert!(chunks.iter().any(|&(_, e)| (e - 6.0).abs() < 0.05), "{chunks:?}");
-        assert!(chunks.iter().any(|&(s, _)| (s - 9.0).abs() < 0.05), "{chunks:?}");
-        assert!((chunks.last().unwrap().1 - 20.0).abs() < 0.05);
-    }
+    struct NoObserver;
+    impl AudioObserver for NoObserver {}
 
     #[test]
     fn buffered_audio_prepended_to_live_audio_is_one_recording() {
@@ -855,7 +780,7 @@ mod tests {
         let spec = hound::WavSpec { channels: 1, sample_rate: VAD_SAMPLE_RATE, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
         let writer = WavWriter::create(&path, spec).unwrap();
         let (chunk_tx, chunk_rx) = channel::unbounded();
-        audio_loop(inputs, chunk_tx, Some(writer), &MuteMic { frames: Cell::new(0), range: 0..0 }).unwrap();
+        audio_loop(inputs, chunk_tx, Some(writer), &NoObserver).unwrap();
 
         let mixed: Vec<i16> = hound::WavReader::open(&path).unwrap().samples().map(Result::unwrap).collect();
         assert_eq!(mixed.len(), mic.len());
@@ -874,7 +799,7 @@ mod tests {
 
     /// The audio thread + ASR worker with a real engine on a two-track recording:
     /// `ECHO_LIVE_DIR=<dir with me.wav, others.wav (16 kHz mono)> [ECHO_LIVE_MIC=me_echo.wav]
-    ///  [ECHO_LIVE_MODEL=<asr model>] [ECHO_LIVE_MUTE=<from>-<to> (mic, seconds)] \
+    ///  [ECHO_LIVE_MODEL=<asr model>] \
     ///  cargo test live_end_to_end -- --ignored --nocapture --test-threads=1`
     #[test]
     #[ignore]
@@ -889,11 +814,6 @@ mod tests {
         let others = read_wav(dir.join("others.wav"));
         let model = std::env::var("ECHO_LIVE_MODEL")
             .unwrap_or_else(|_| "mlx-community/parakeet-tdt_ctc-0.6b-ja".to_string());
-        let mute = std::env::var("ECHO_LIVE_MUTE").ok().map(|r| {
-            let (a, b) = r.split_once('-').unwrap();
-            let frame = |s: &str| samples(s.parse().unwrap()) / VAD_FRAME_SIZE;
-            frame(a)..frame(b)
-        });
 
         let hub = std::path::PathBuf::from(std::env::var("HOME").unwrap())
             .join("Library/Caches/io.qluto.echo/huggingface/hub");
@@ -912,8 +832,7 @@ mod tests {
         });
         let (chunk_tx, chunk_rx) = channel::unbounded();
         let audio = std::thread::spawn(move || {
-            let observer = MuteMic { frames: Cell::new(0), range: mute.unwrap_or(0..0) };
-            audio_loop(Inputs::for_test(first, mic_rx, sys_rx), chunk_tx, None, &observer).unwrap()
+            audio_loop(Inputs::for_test(first, mic_rx, sys_rx), chunk_tx, None, &NoObserver).unwrap()
         });
         let engine = std::cell::RefCell::new(engine);
         let mut lines = Vec::new();

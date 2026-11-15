@@ -1,9 +1,8 @@
 //! Updates the installed app from GitHub Releases (`latest.json`, signed with
 //! the updater key). The download and the install happen in the background;
-//! the restart waits until nothing would be cut off: no dictation, memo or
-//! meeting, no memo still being processed, no sound for always-on to
-//! transcribe, and no input from the user for a while. Always-on listening
-//! that was on before the restart is turned back on after it.
+//! the restart waits until nothing would be cut off: no dictation or meeting,
+//! no memo still being processed, no talk heard by meeting standby, and no
+//! input from the user for a while.
 
 use std::{path::PathBuf, process::Command, sync::Mutex, thread, time::Duration};
 
@@ -17,11 +16,10 @@ use crate::AppState;
 const FIRST_CHECK: Duration = Duration::from_secs(60);
 const CHECK_EVERY: Duration = Duration::from_secs(6 * 3600);
 const RETRY_RESTART: Duration = Duration::from_secs(60);
-/// No keyboard or mouse input — and no sound for always-on — for this long counts as away.
+/// No keyboard or mouse input — and no talk for meeting standby — for this long counts as away.
 const QUIET_SECONDS: f64 = 120.0;
-/// Store keys: the version the app last ran as, and whether to restart always-on.
+/// Store key: the version the app last ran as.
 const VERSION_KEY: &str = "last_version";
-const RESUME_LISTENING_KEY: &str = "resume_listening";
 /// The version installed into the bundle and waiting for a restart.
 static READY: Mutex<Option<String>> = Mutex::new(None);
 
@@ -68,7 +66,6 @@ fn restart_when_quiet(app: &AppHandle) {
 
 fn quiet(app: &AppHandle) -> bool {
     idle_seconds() >= QUIET_SECONDS
-        && crate::continuous::seconds_since_sound() >= QUIET_SECONDS
         && crate::standby::seconds_since_talk() >= QUIET_SECONDS
         && !busy(app)
 }
@@ -77,10 +74,9 @@ fn quiet(app: &AppHandle) -> bool {
 fn busy(app: &AppHandle) -> bool {
     let state = app.state::<AppState>();
     let dictating = state.recording_state.lock().map_or(true, |r| r.is_recording);
-    let memo_recording = state.memo_recorder.lock().map_or(true, |r| r.is_some());
     let in_meeting = state.meeting.lock().map_or(true, |m| m.as_ref().is_some_and(|m| m.is_active()));
     let memo_processing = state.transcription_db.lock().map_or(true, |db| db.has_memo_in_progress().unwrap_or(true));
-    dictating || memo_recording || in_meeting || memo_processing
+    dictating || in_meeting || memo_processing
 }
 
 /// Quit and start the bundle again. The new copy is started once this
@@ -88,8 +84,6 @@ fn busy(app: &AppHandle) -> bool {
 /// the same time; `open` starts it through Launch Services like a normal launch.
 fn relaunch(app: &AppHandle) -> Result<(), String> {
     let bundle = bundle().ok_or("not running from an app bundle")?;
-    let listening = app.state::<AppState>().continuous_pipeline.lock().is_ok_and(|p| p.is_some());
-    save(app, RESUME_LISTENING_KEY, serde_json::json!(listening))?;
     Command::new("/bin/sh")
         .args(["-c", "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; open \"$2\"", "sh"])
         .arg(std::process::id().to_string())
@@ -120,33 +114,6 @@ fn save(app: &AppHandle, key: &str, value: serde_json::Value) -> Result<(), Stri
     let store = app.store(SETTINGS_STORE_FILE).map_err(|e| e.to_string())?;
     store.set(key, value);
     store.save().map_err(|e| e.to_string())
-}
-
-/// After a restart for an update, turn always-on listening back on. It waits
-/// for the microphone, so it runs off the setup thread; the frontend learns
-/// the new status from `continuous-listening-resumed`.
-pub fn resume_listening(app: &AppHandle) {
-    let resume = app
-        .store(SETTINGS_STORE_FILE)
-        .ok()
-        .and_then(|s| s.get(RESUME_LISTENING_KEY))
-        .is_some_and(|v| v.as_bool() == Some(true));
-    if !resume {
-        return;
-    }
-    if let Err(e) = save(app, RESUME_LISTENING_KEY, serde_json::json!(false)) {
-        log::warn!("Failed to clear {RESUME_LISTENING_KEY}: {e}");
-    }
-    let app = app.clone();
-    thread::spawn(move || {
-        match crate::commands::start_continuous_listening(app.clone(), app.state()) {
-            Ok(status) => {
-                log::info!("Always-on listening resumed after the update");
-                let _ = app.emit("continuous-listening-resumed", status);
-            }
-            Err(e) => log::error!("Failed to resume always-on listening after the update: {e}"),
-        }
-    });
 }
 
 /// The installed version waiting for a restart, if any.

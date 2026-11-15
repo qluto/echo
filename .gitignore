@@ -11,13 +11,6 @@ target/
 src-tauri/target/
 src-tauri/gen/schemas/
 
-# Python (echo-cli)
-**/__pycache__/
-*.pyc
-*.pyo
-**/.venv/
-**/venv/
-
 # Conductor / Claude Code / Playwright MCP
 .context/
 .claude/

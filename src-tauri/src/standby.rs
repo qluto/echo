@@ -17,11 +17,11 @@
 //!
 //! The mic only counts as talk while system audio is quiet, so a video playing
 //! through the speakers doesn't start a meeting, and it doesn't count while
-//! hotkey dictation or a voice memo has it. Standby pauses while a meeting
-//! runs and resumes when the meeting is done.
+//! hotkey dictation has it. Standby pauses while a meeting runs and resumes
+//! when the meeting is done.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -30,12 +30,18 @@ use anyhow::{anyhow, Result};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::continuous;
 use crate::live::{self, Captures, Inputs, Source};
 use crate::meeting::{Handoff, MeetingSession};
 use crate::memo::frame_dbfs;
 use crate::types::AppState;
 use crate::vad::{VadProcessor, VAD_FRAME_SIZE, VAD_SAMPLE_RATE};
+
+/// Hotkey dictation has the mic: what the user says then is not talk.
+static DICTATING: AtomicBool = AtomicBool::new(false);
+
+pub fn set_dictating(on: bool) {
+    DICTATING.store(on, Ordering::SeqCst);
+}
 
 /// The ring buffer keeps this much audio (per source)…
 const RING_FRAMES: usize = live::samples(300.0) / VAD_FRAME_SIZE;
@@ -268,10 +274,10 @@ impl Listener {
         if source == Source::Others {
             self.echo_hold = if dbfs > OTHERS_LOUD_DBFS { ECHO_HOLD_FRAMES } else { self.echo_hold.saturating_sub(1) };
         }
-        if frame.len() != VAD_FRAME_SIZE || dbfs < SILENT_DBFS || continuous::is_muted(source) {
+        if frame.len() != VAD_FRAME_SIZE || dbfs < SILENT_DBFS {
             return false;
         }
-        if source == Source::Me && self.echo_hold > 0 {
+        if source == Source::Me && (self.echo_hold > 0 || DICTATING.load(Ordering::SeqCst)) {
             return false;
         }
         prominent || self.vad[i].predict(frame) > VAD_THRESHOLD
@@ -370,7 +376,6 @@ fn start_meeting(app: &AppHandle, handoff: Handoff) {
             return Ok(false);
         }
         let session = MeetingSession::start_with(app, Some(handoff))?;
-        continuous::set_muted(continuous::Mute::Meeting, true);
         *current = Some(session);
         Ok(true)
     })();

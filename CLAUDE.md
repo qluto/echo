@@ -13,7 +13,7 @@ Echo is an offline voice input desktop application optimized for Apple Silicon. 
 - **ASR Engine**: fully in-process Rust — Whisper (whisper.cpp via `whisper-rs`), Parakeet-JA + Cohere (Apple MLX via `mlx-rs`). No Python sidecar.
 - **VAD**: Silero VAD v5 via ONNX Runtime (`voice_activity_detector` crate), rubato for audio resampling
 - **Post-Processing**: MLX LLM (Gemma 4 E4B 4-bit by default) for cleaning up transcription results and writing memo minutes
-- **Database**: SQLite with FTS5 full-text search (`rusqlite` crate) for transcription history
+- **Database**: SQLite (`rusqlite` crate) for meeting recordings (the `memos` table)
 - **Target Platform**: macOS 26.2+ on Apple Silicon (M1 or later; M5 gets MLX's NAX kernels)
 
 ## Common Commands
@@ -54,38 +54,39 @@ git push origin v0.x.x
 7. **Result** → Emitted via Tauri events to React frontend
 8. **Auto-insert** → Text inserted via clipboard + simulated paste
 
-### Data Flow: Always-On Transcription Mode
+### Data Flow: Meeting (live transcript + notes)
 
-Built on the same live capture as the meeting companion (`live.rs`), without speaker labels, recording or LLM notes.
+The Meetings tab's Meeting card opens the meeting window (`start_meeting`), or meeting standby starts one by itself (below).
 
-1. **Start listening** → `start_continuous_listening` → `ContinuousPipeline::start` (`continuous.rs`). `live::start_captures` starts the mic (`StreamingCapture`) and the system audio tap (`SystemAudioCapture`), and fails if the mic delivers no first frame within 3 s. If system audio can't start, it logs the mic only and `status().warning` says why
-2. **Chunking** → `live::audio_loop` cuts each source into 4–15 s chunks at pauses. There is no VAD segmentation. The VAD is a second opinion, not a gate (`live::recognize`): a chunk it hears speech in is kept; one it hears none in is skipped unless it stands out from the noise floor, and then transcribed but kept only with ≥ 6 letters (`MIN_UNHEARD_LETTERS`). This drops keyboard-click hallucinations ("キュウリ", "ピッ!") without losing speech Silero misses on some mics
-3. **ASR** → `live::asr_worker` calls `ASREngine::transcribe_samples`, taking the engine lock per chunk. A mic line said while system audio was loud is held, then dropped if it is an echo of the other side's transcript
-4. **Storage** → each line becomes one `transcriptions` row (`database.rs`, FTS5), and `continuous-transcription` is emitted to `TranscriptionHistory.tsx`
-5. **Muting** → `continuous::set_muted` stops transcription of the mic during hotkey dictation, a voice memo or a meeting, and of system audio too during a meeting. The pipeline keeps running; the chunk in progress is cut where muting starts
-6. **Stop** → closes the captures and returns at once; queued chunks are transcribed and saved in the background
+1. **Start** → `MeetingSession::start` (`meeting.rs`) inserts a `memos` row and `live::start_captures` starts the mic (`StreamingCapture`) and the system audio tap (`SystemAudioCapture`); it fails if the mic delivers no first frame within 3 s. If system audio can't start, only the mic is captured and the meeting shows a warning
+2. **Chunking** → `live::audio_loop` cuts each source into 4–15 s chunks at pauses and records both sources mixed into `<app data>/recordings/memo-<timestamp>-<id>.wav`. There is no VAD segmentation. The VAD is a second opinion, not a gate (`live::recognize`): a chunk it hears speech in is kept; one it hears none in is skipped unless it stands out from the noise floor, and then transcribed but kept only with ≥ 6 letters (`MIN_UNHEARD_LETTERS`). This drops keyboard-click hallucinations ("キュウリ", "ピッ!") without losing speech Silero misses on some mics
+3. **ASR** → `live::asr_worker` calls `ASREngine::transcribe_samples`, taking the engine lock per chunk. A mic line said while system audio was loud is held, then dropped if it is an echo of the other side's transcript. Lines ("自分" / "相手") go out as `meeting-line`
+4. **Notes** → every 3 min (60 s with Claude Code) the notes LLM revises the topics / decisions / actions / open questions (`meeting-items`)
+5. **Stop** → the rest of the audio is transcribed, a final round runs, and the meeting is stored in its `memos` row (speaker-labelled transcript, items as minutes)
 
 ### Data Flow: Meeting Standby (auto-start a meeting, opt-in)
 
 The main window's Meeting card toggles `meeting_standby` (`set_meeting_standby`). Nothing is transcribed or written to disk until a meeting starts.
 
 1. **Listen** → `standby::resume` starts `live::start_captures` (mic + system audio) in `standby.rs`. Every frame goes into a 5-min ring buffer in memory (~40 MB)
-2. **Detect** → a frame is speech when Silero hears it or it stays ≥ 12 dB over the noise floor for ≥ 4 frames (Silero heard ~0% of two real meetings on one mic). 10 s buckets with ≥ 10% speech count as talk. A meeting starts once a conversation has gone on for 3 min, with talk in 14 of the last 18 buckets, and the user (mic) talking in 6 of them and for ≥ 15% of the 3 min (27 s). System audio alone never starts one: listening to a recording or a webinar, even with a remark now and then, is not a meeting. Mic speech doesn't count while system audio is loud (speaker echo; a recording played through speakers as loud as −3 dB was heard as 0 s on the mic) or while dictation or a memo is muted. Check with `standby_playback` too
+2. **Detect** → a frame is speech when Silero hears it or it stays ≥ 12 dB over the noise floor for ≥ 4 frames (Silero heard ~0% of two real meetings on one mic). 10 s buckets with ≥ 10% speech count as talk. A meeting starts once a conversation has gone on for 3 min, with talk in 14 of the last 18 buckets, and the user (mic) talking in 6 of them and for ≥ 15% of the 3 min (27 s). System audio alone never starts one: listening to a recording or a webinar, even with a remark now and then, is not a meeting. Mic speech doesn't count while system audio is loud (speaker echo; a recording played through speakers as loud as −3 dB was heard as 0 s on the mic) or during hotkey dictation (`standby::set_dictating`). Check with `standby_playback` too
 3. **Handoff** → the running captures and the buffered frames from 10 s before the conversation began go to `MeetingSession::start_with(Handoff)`. `Inputs::prepend` replays them into `audio_loop` ahead of live audio, so the WAV and transcript are one recording. The memo's `created_at` is moved back (`backdate_memo`). The meeting window is shown without taking focus, with a `notice`. The first notes round runs as soon as the buffered audio is transcribed (`Shared::caught_up`: the audio thread is past it and the ASR worker is waiting for a chunk), not 3 min later
 4. **Auto-stop** → a meeting standby started stops itself after 3 min without a transcribed line (`AUTO_STOP_QUIET`)
 5. **Resume** → standby pauses while any meeting runs (`start_meeting` calls `standby::pause`) and `notes_loop` resumes it when the meeting is done. The updater won't restart within 2 min of talk standby heard (`seconds_since_talk`)
 6. Check detection with `ECHO_STANDBY_WAVS=a.wav,b.wav cargo test standby_replay -- --ignored --nocapture`; time the catch-up over the buffered audio with `standby_catch_up` (Haas-ja, M5, release: 190 s caught up in ~2 s, first line after 0.1 s)
 
-### Data Flow: Voice Memo (record → minutes)
+### Memos (stored meetings → minutes)
 
-1. **Start** → `start_memo_recording` inserts a `memos` row and `memo.rs` (`MemoRecorder`) streams 16kHz mono audio to `<app data>/recordings/memo-<timestamp>-<id>.wav` via its own `StreamingCapture` (independent of hotkey recording; header flushed every 10s so a crash keeps the audio)
-2. **Stop** → `stop_memo_recording` finalizes the WAV and starts a background thread
-3. **Chunking** → the WAV is streamed and cut into contiguous 20–28s chunks at the quietest point (`quietest_cut`). No VAD: every sample reaches the engine, because Silero misses audible speech on some microphones and anything it drops is gone from the transcript
-4. **ASR** → each chunk goes through `ASREngine::transcribe_samples` (engine lock taken per chunk, so dictation can run between chunks) → `[MM:SS] text` transcript
-5. **Minutes** → `generate_minutes` asks the notes LLM (`ASREngine::notes_llm`, chosen separately from the dictation post-processor) for 概要 / 議題と要点 / 決定事項 / アクションアイテム; transcripts over ~3500 chars are first reduced part-by-part into notes, then merged
-6. **Frontend** → `memo-progress` events drive `useMemos.ts` / `MemoSection.tsx` / `MemoModal.tsx`
+Finished meetings, and voice memos recorded by earlier versions, are rows of the `memos` table, listed under the Meeting card (`MemoSection.tsx`, `MemoModal.tsx`). Re-processing one (`reprocess_memo` → `memo::start_processing`) works on its WAV:
+
+1. **Chunking** → the WAV is streamed and cut into contiguous 20–28s chunks at the quietest point (`quietest_cut`). No VAD: every sample reaches the engine, because Silero misses audible speech on some microphones and anything it drops is gone from the transcript
+2. **ASR** → each chunk goes through `ASREngine::transcribe_samples` (engine lock taken per chunk, so dictation can run between chunks) → `[MM:SS] text` transcript
+3. **Minutes** → `generate_minutes` asks the notes LLM (`ASREngine::notes_llm`, chosen separately from the dictation post-processor) for 概要 / 議題と要点 / 決定事項 / アクションアイテム; transcripts over ~3500 chars are first reduced part-by-part into notes, then merged
+4. **Frontend** → `memo-progress` events drive `useMemos.ts` / `MemoSection.tsx` / `MemoModal.tsx`
 
 Memos left `recording`/`transcribing`/`summarizing` by an exit become `interrupted` at startup and can be re-processed from the UI.
+
+Databases from before always-on was removed still hold its history (`transcriptions` + FTS). Nothing reads or creates it any more; it is left in place, not dropped.
 
 ### Local Transcription API (`local_api.rs`, opt-in)
 
@@ -109,6 +110,8 @@ that also keeps web pages out, since the server never answers CORS preflights.
   through `memo::transcribe_chunked` (no VAD, lock per chunk). Dictation waits at most one chunk
 - Check with `cargo test api_end_to_end -- --ignored --nocapture` and `realtime_end_to_end`
   (see their doc comments; run both with Parakeet and Whisper via `ECHO_API_MODEL`)
+- `scripts/echo-transcribe [-l ja] [-f text|json|verbose_json] <audio>...` transcribes files from the
+  shell through this API (port and token from `settings.json`; needs the app running with the API on)
 
 ### Key Patterns
 
@@ -118,8 +121,7 @@ that also keeps web pages out, since the server never answers CORS preflights.
 - **Dual Transcription Paths**: Transcription can be triggered via hotkey (handled entirely in Rust) or manual stop (via frontend hook).
 - **Model Switching**: Users can switch between Whisper and Qwen3-ASR models at runtime via Settings panel.
 - **Context-Aware Post-Processing**: Active app detection (via NSWorkspace API in `active_app.rs`) provides context for LLM-based cleanup. Customizable system prompts in Advanced Settings.
-- **Live Capture (`live.rs`)**: shared by always-on and the meeting companion. It captures mic + system audio as 512-sample (32 ms) 16 kHz frames and runs an audio thread that chunks at pauses and never waits on ASR (the chunk channel is unbounded). An ASR worker thread does the echo check. Callers plug in through `AudioObserver` (levels, muting) and the `on_line` callback.
-- **Transcription History DB**: `database.rs` provides SQLite storage with FTS5 full-text search for always-on transcriptions.
+- **Live Capture (`live.rs`)**: shared by meetings and meeting standby. It captures mic + system audio as 512-sample (32 ms) 16 kHz frames and runs an audio thread that chunks at pauses and never waits on ASR (the chunk channel is unbounded). An ASR worker thread does the echo check. Callers plug in through `AudioObserver` (levels) and the `on_line` callback.
 
 ### ASR Model Support
 
@@ -172,19 +174,18 @@ Optional LLM-based cleanup using Gemma 4 E4B (`mlx-community/gemma-4-e4b-it-4bit
 - `src-tauri/src/sound.rs` - Dictation sounds (`sounds/dictation-start.wav` when the popup appears, `dictation-done.wav` when the transcript is ready), embedded and played with NSSound
 - `src-tauri/src/transcription.rs` - `ASREngine`: owns + dispatches the in-process Rust engines (ASR + post-processing)
 - `src-tauri/src/active_app.rs` - Active application detection via NSWorkspace API
-- `src-tauri/src/live.rs` - Live capture shared by always-on and meetings: mic + system audio, chunking at pauses, ASR worker with echo check
-- `src-tauri/src/continuous.rs` - Always-on logging on `live.rs`: history rows, muting while dictation / memo / meeting use the audio
+- `src-tauri/src/live.rs` - Live capture shared by meetings and standby: mic + system audio, chunking at pauses, ASR worker with echo check
+- `src-tauri/src/meeting.rs` - Meeting companion: live transcript, notes rounds, stored as a memo
 - `src-tauri/src/vad.rs` - Silero VAD v5 wrapper (ONNX Runtime via `voice_activity_detector` crate)
-- `src-tauri/src/audio_capture.rs` - Audio recording (hotkey mode) + streaming capture (always-on mode, with rubato resampling)
-- `src-tauri/src/database.rs` - SQLite storage with FTS5 for transcription history, plus the `memos` table
+- `src-tauri/src/audio_capture.rs` - Audio recording (hotkey mode) + streaming capture (live capture, with rubato resampling)
+- `src-tauri/src/database.rs` - SQLite storage for the `memos` table
 - `src-tauri/src/claude_code.rs` - Opt-in `claude -p` backend for minutes / meeting notes
 - `src-tauri/src/local_api.rs` - Opt-in local HTTP transcription API (127.0.0.1, Bearer token, OpenAI-compatible); `local_api/realtime.rs` streams over WebSocket
 - `src-tauri/src/standby.rs` - Meeting standby: 5-min ring buffer + talk detector; hands its captures to a meeting when a conversation goes on for 3 min
-- `src-tauri/src/memo.rs` - Voice memo: long recording to disk, VAD chunking, transcript + LLM meeting minutes
+- `src-tauri/src/memo.rs` - Stored memos: chunked re-transcription of a WAV (also used by the local API) + LLM meeting minutes
 - `src/hooks/useTranscription.ts` - React hook for hotkey transcription state
-- `src/hooks/useContinuousListening.ts` - React hook for always-on listening state
-- `src/hooks/useTranscriptionHistory.ts` - React hook for history queries (pagination, search)
-- `src/components/TranscriptionHistory.tsx` - History UI with search and infinite scroll
+- `src/hooks/useMemos.ts` / `src/components/MemoSection.tsx` - The list of stored meetings
+- `scripts/echo-transcribe` - Transcribe files from the shell through the local API
 - `src/lib/tauri.ts` - TypeScript bindings for Tauri commands
 - `rust-asr/` - in-process Rust ASR engines (Whisper, Parakeet-JA, Cohere) + Qwen3 post-processor; consumed by `transcription.rs`
 
@@ -287,11 +288,11 @@ Gemma 4 (`llm/gemma4.rs`, the default E4B), Qwen3.5 (`llm/qwen3_5.rs`) and Qwen3
 (`llm/qwen3.rs`) — all 4-bit (quantized_matmul + dequantize; tied lm_head except
 Qwen3.6-27B's separate one) and run in **BF16** to match mlx-lm. Checkpoints split
 into shards are read via `model.safetensors.index.json`. `ASREngine.postprocess_text` /
-`summarize_transcriptions` / `*_postprocess_model` route to it; each model's chat
+`*_postprocess_model` route to it; each model's chat
 template is applied manually with thinking off. Models: Gemma 4 E4B (default),
 Qwen3.5-4B/2B-4bit and the older Qwen3-8B/4B/1.7B-4bit.
 
-**Notes model** (voice-memo minutes, meeting notes) is chosen separately
+**Notes model** (memo minutes, meeting notes) is chosen separately
 (`Settings.notes_model`, `ASREngine::notes_llm`) and favors quality over speed:
 **Qwen3.6-27B-4bit** (Qwen3.5 architecture, ~16 GB) by default on Macs with
 ≥32 GB, else Gemma 4 E4B. Picked on a meeting-notes evaluation (2 synthetic
@@ -347,8 +348,7 @@ conv + gated delta-rule state, run as a custom Metal kernel in
 `llm/gated_delta.rs` via raw `mlx-sys`); every fourth is gated GQA attention with
 partial RoPE. The checkpoint's vision tower is not loaded. Qwen3.5 must not be
 run in thinking mode: under our greedy decoding its reasoning trace loops and
-never reaches the answer, so summaries and minutes use no-think (Qwen3 still
-summarizes in thinking mode). The same port runs Qwen3.6-27B (the notes model).
+never reaches the answer, so minutes and notes use no-think. The same port runs Qwen3.6-27B (the notes model).
 
 With ASR (Whisper/Parakeet/Cohere) and post-processing (Qwen3) all in-process,
 the **Python sidecar is no longer needed** for the default experience — it stays
@@ -367,9 +367,9 @@ still use `--test-threads=1`; `rust-asr/tests/threads.rs` covers the threading.
 
 `ASREngine` in `transcription.rs` dispatches internally: for Whisper/Cohere it
 routes `load_model`/`transcribe`/`warmup`/status/cache to the in-process engine;
-everything else (VAD, post-processing, summarization — and any other ASR model)
-still uses the Python sidecar. All call sites (hotkey, commands, always-on
-pipeline) are unchanged. The Python sidecar is **optional**: if its binary is
+everything else (VAD, post-processing — and any other ASR model)
+still uses the Python sidecar. All call sites (hotkey, commands, meetings)
+are unchanged. The Python sidecar is **optional**: if its binary is
 missing/empty, `start()` logs a warning and continues — the in-process models
 still work. Removes Python-interpreter + import startup for these paths
 (~0.7 s vs ~3.1 s spawn→result for Cohere). Qwen3-ASR is **not** ported (it would
@@ -455,12 +455,11 @@ passes `createUpdaterArtifacts` only there, so local builds need no key) and
 dmg) checks `releases/latest/download/latest.json` 1 min after launch and every
 6 h via `tauri-plugin-updater`, installs a newer version into the bundle in the
 background, and shows a "Restart now" banner. It restarts by itself only when
-quiet: 2 min without keyboard/mouse input, 2 min without sound for always-on
-(`continuous::seconds_since_sound`), and no dictation, memo recording, meeting,
-or memo still transcribing/summarizing. The relaunch waits for the old process
-to exit before `open`ing the bundle (no overlap on the hotkey or the DB);
-always-on that was on is resumed after it (`resume_listening` store key →
-`continuous-listening-resumed`). The CI build fails if `plugins.updater.pubkey`
+quiet: 2 min without keyboard/mouse input, 2 min without talk heard by meeting
+standby (`standby::seconds_since_talk`), and no dictation, meeting, or memo
+still transcribing/summarizing. The relaunch waits for the old process
+to exit before `open`ing the bundle (no overlap on the hotkey or the DB).
+The CI build fails if `plugins.updater.pubkey`
 is empty. The private key lives at `~/.tauri/echo.key` (password in the
 keychain item "echo updater signing key") — **losing it means installed copies
 can no longer auto-update**; back it up.
@@ -477,10 +476,9 @@ can no longer auto-update**; back it up.
 - Active app detection happens on hotkey press, providing context for both ASR and post-processing
 - Before a Rust build, check `du -sh src-tauri/target` (`src-tauri` and `rust-asr` share this directory). Cargo never removes stale artifacts, so if it is over 15 GB, run `cargo clean` in `src-tauri/` first, then build. A clean debug build takes ~5 min. Delete a leftover `rust-asr/target` too; it is no longer used
 
-### Always-On Pipeline Notes
+### Live Capture Notes (meetings, standby)
 
 - The audio thread must never block on ASR: frames go cpal callback → bounded(256) channel → audio thread, and chunks go audio thread → unbounded channel → ASR worker
 - Chunking constants (4–15 s, pause = 0.5 s at 18 dB below speech, −55 dBFS silence, prominence of 15 dB over the 30 s noise floor) live in `live.rs` and are shared with meetings
 - No temp WAV files: chunks go to `transcribe_samples` from memory
-- The `continuous-activity` event (`{active}`) drives the float window's ambient indicator. An unmuted frame above −40 dBFS turns it on, and it stays on for 0.8 s
 - Check changes with `cargo test live_end_to_end -- --ignored --nocapture` against a two-track recording (see the test's doc comment)

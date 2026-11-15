@@ -2,13 +2,9 @@ import { useState, useEffect, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit, listen } from "@tauri-apps/api/event";
 import { SettingsPanel } from "./components/SettingsPanel";
-import { TranscriptionHistory } from "./components/TranscriptionHistory";
-import { SummaryModal } from "./components/SummaryModal";
 import { MemoSection } from "./components/MemoSection";
 import { MeetingCard } from "./components/MeetingCard";
 import { useTranscription } from "./hooks/useTranscription";
-import { useContinuousListening } from "./hooks/useContinuousListening";
-import { useSummarize } from "./hooks/useSummarize";
 import {
   pingAsrEngine,
   startAsrEngine,
@@ -41,12 +37,11 @@ type LoadingPhase =
   | "ready"
   | "error";
 
-type Tab = "input" | "log" | "memos";
+type Tab = "input" | "memos";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "input", label: "Input" },
-  { id: "log", label: "Log" },
-  { id: "memos", label: "Memos" },
+  { id: "memos", label: "Meetings" },
 ];
 
 const TAB_KEY = "echo.mainTab";
@@ -80,18 +75,6 @@ function App() {
     isTranscribing,
     recordingDuration,
   } = useTranscription();
-
-  const {
-    isListening,
-    isSpeechDetected,
-    toggleListening,
-    systemAudio,
-    warning: listeningWarning,
-    error: listeningError,
-  } = useContinuousListening();
-
-  const { summary, isSummarizing, error: summaryError, entryCount, processingTime, summarize, dismiss: dismissSummary } = useSummarize();
-  const [summaryWindowMinutes, setSummaryWindowMinutes] = useState(30);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [tab, setTab] = useState<Tab>(loadTab);
@@ -146,11 +129,11 @@ function App() {
   // ran after FloatApp's own placement, pushed the pill below the screen.
 
   // Emit state to float window
-  type FloatState = "idle" | "recording" | "processing" | "success" | "ambient" | "ambient-active";
+  type FloatState = "idle" | "recording" | "processing" | "success";
   const emitFloatState = useCallback(
-    async (state: FloatState, duration: number, isListening: boolean) => {
+    async (state: FloatState, duration: number) => {
       try {
-        await emit("float-state", { state, duration, isListening });
+        await emit("float-state", { state, duration });
       } catch (e) {
         console.error("Failed to emit float state:", e);
       }
@@ -158,58 +141,38 @@ function App() {
     []
   );
 
+  const floatState: FloatState = showSuccess
+    ? "success"
+    : isRecording
+    ? "recording"
+    : isTranscribing
+    ? "processing"
+    : "idle";
+
   // Update float window when state changes
   useEffect(() => {
-    const state: FloatState = showSuccess
-      ? "success"
-      : isRecording
-      ? "recording"
-      : isTranscribing
-      ? "processing"
-      : isListening
-      ? (isSpeechDetected ? "ambient-active" : "ambient")
-      : "ambient";
-    emitFloatState(state, recordingDuration, isListening);
+    emitFloatState(floatState, recordingDuration);
 
     // Auto-hide success after delay
     if (showSuccess) {
       const timer = setTimeout(() => {
         setShowSuccess(false);
-        emitFloatState(isListening ? "ambient" : "ambient", 0, isListening);
+        emitFloatState("idle", 0);
       }, 600);
       return () => clearTimeout(timer);
     }
-  }, [isRecording, isTranscribing, showSuccess, recordingDuration, isListening, isSpeechDetected, emitFloatState]);
+  }, [floatState, showSuccess, recordingDuration, emitFloatState]);
 
   // Re-send the current state when the float window (re)mounts — it may have
   // missed the initial emit while its webview was still loading.
   useEffect(() => {
     const unlisten = listen("float-ready", () => {
-      const state: FloatState = showSuccess
-        ? "success"
-        : isRecording
-        ? "recording"
-        : isTranscribing
-        ? "processing"
-        : isListening
-        ? (isSpeechDetected ? "ambient-active" : "ambient")
-        : "ambient";
-      emitFloatState(state, recordingDuration, isListening);
+      emitFloatState(floatState, recordingDuration);
     });
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [isRecording, isTranscribing, showSuccess, recordingDuration, isListening, isSpeechDetected, emitFloatState]);
-
-  // Listen for toggle-listening requests from float window hover panel
-  useEffect(() => {
-    const unlisten = listen("request-toggle-listening", () => {
-      toggleListening();
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, [toggleListening]);
+  }, [floatState, recordingDuration, emitFloatState]);
 
   // Window controls
   const handleClose = useCallback(async () => {
@@ -573,9 +536,6 @@ function App() {
             }}
           >
             {label}
-            {id === "log" && isListening && (
-              <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: "var(--glow-idle)" }} aria-label="Always-on is on" />
-            )}
           </button>
         ))}
       </nav>
@@ -774,61 +734,7 @@ function App() {
           </div>
         </div>
 
-        {/* Log: always-on + history */}
-        <div className={`flex-1 min-h-0 px-5 py-4 flex-col gap-4 ${tab === "log" ? "flex" : "hidden"}`}>
-          {/* Always-on Card */}
-          <div className="flex items-center gap-2 rounded-xl bg-surface px-3 py-2.5 border shadow-sm" style={{ borderColor: "#E8E4DF" }}>
-            <div className="flex flex-col min-w-0 flex-1">
-              <span className="text-[13px] font-semibold leading-tight truncate" style={{ color: "var(--text-primary)" }}>
-                Always-on
-              </span>
-              <span
-                className="text-[10px] leading-tight truncate"
-                style={{ color: listeningWarning ? "#8A6438" : "var(--text-tertiary)" }}
-                title={listeningWarning ?? "Continuously transcribe the mic and system audio into the log"}
-              >
-                {!isListening ? "Mic + system audio" : systemAudio ? "Logging mic + system audio" : "Logging mic only"}
-              </span>
-            </div>
-            <button
-              onClick={toggleListening}
-              className="w-10 h-[22px] rounded-full flex items-center transition-all duration-200 shrink-0"
-              style={{
-                backgroundColor: isListening ? "var(--glow-idle)" : "var(--border-subtle)",
-                padding: "2px",
-              }}
-            >
-              <div
-                className="w-[18px] h-[18px] rounded-full bg-white transition-transform duration-200"
-                style={{
-                  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.15)",
-                  transform: isListening ? "translateX(18px)" : "translateX(0)",
-                }}
-              />
-            </button>
-        </div>
-
-          {/* Listening Error */}
-          {listeningError && (
-            <div
-              className="px-3 py-2 rounded-lg text-xs"
-              style={{ backgroundColor: "rgba(198, 125, 99, 0.15)", color: "var(--glow-recording)" }}
-            >
-              {listeningError}
-            </div>
-          )}
-
-          {/* Transcription History */}
-          <TranscriptionHistory
-            onSummarize={(minutes) => {
-              setSummaryWindowMinutes(minutes);
-              summarize(minutes);
-            }}
-            isSummarizing={isSummarizing}
-          />
-        </div>
-
-        {/* Memos: voice memos + meeting companion */}
+        {/* Meetings: the meeting companion and its recordings */}
         <div className={`flex-1 min-h-0 overflow-y-auto px-5 py-4 flex-col gap-4 ${tab === "memos" ? "flex" : "hidden"}`}>
           <MeetingCard />
           <MemoSection />
@@ -921,16 +827,6 @@ function App() {
         }}
       />
 
-      {/* Summary Modal */}
-      {(summary !== null || summaryError) && (
-        <SummaryModal
-          summary={summary || summaryError || ""}
-          entryCount={entryCount}
-          processingTime={processingTime}
-          windowMinutes={summaryWindowMinutes}
-          onClose={dismissSummary}
-        />
-      )}
     </div>
   );
 }

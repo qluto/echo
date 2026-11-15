@@ -1,12 +1,9 @@
-use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
 use crate::active_app;
 use crate::audio_capture;
 use crate::clipboard;
-use crate::continuous;
 use crate::database;
-use crate::export;
 use crate::handy_keys;
 use crate::input::EnigoState;
 use crate::meeting;
@@ -517,207 +514,7 @@ pub fn get_postprocess_model_status(state: tauri::State<'_, AppState>) -> Result
     asr_engine.get_postprocess_status().map_err(|e| e.to_string())
 }
 
-// ===== Continuous listening commands =====
-
-/// Off the main thread: it waits for the microphone's first audio.
-#[tauri::command(async)]
-pub fn start_continuous_listening(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<continuous::ContinuousListeningStatus, String> {
-    let mut pipeline = state.continuous_pipeline.lock().map_err(|e| e.to_string())?;
-    if pipeline.is_some() {
-        return Err("Already listening".to_string());
-    }
-
-    let (language, device_name) = {
-        let settings = state.settings.lock().map_err(|e| e.to_string())?;
-        ((settings.language != "auto").then(|| settings.language.clone()), settings.device_name.clone())
-    };
-    let p = continuous::ContinuousPipeline::start(
-        app,
-        Arc::clone(&state.asr_engine),
-        Arc::clone(&state.transcription_db),
-        language,
-        device_name,
-    )
-    .map_err(|e| format!("{e:#}"))?;
-    let status = p.status();
-    *pipeline = Some(p);
-    Ok(status)
-}
-
-#[tauri::command(async)]
-pub fn stop_continuous_listening(
-    state: tauri::State<'_, AppState>,
-) -> Result<u32, String> {
-    let mut pipeline = state.continuous_pipeline.lock().map_err(|e| e.to_string())?;
-    match pipeline.take() {
-        Some(p) => Ok(p.stop()),
-        None => Err("Not listening".to_string()),
-    }
-}
-
-/// Off the main thread: the pipeline lock is held while listening starts.
-#[tauri::command(async)]
-pub fn get_continuous_listening_status(
-    state: tauri::State<'_, AppState>,
-) -> Result<continuous::ContinuousListeningStatus, String> {
-    let pipeline = state.continuous_pipeline.lock().map_err(|e| e.to_string())?;
-    Ok(pipeline
-        .as_ref()
-        .map_or_else(continuous::ContinuousListeningStatus::idle, |p| p.status()))
-}
-
-// ===== Transcription history commands =====
-
-#[tauri::command]
-pub fn get_transcription_history(
-    limit: Option<u32>,
-    offset: Option<u32>,
-    state: tauri::State<'_, AppState>,
-) -> Result<database::HistoryPage, String> {
-    let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
-    db.get_all(limit.unwrap_or(20), offset.unwrap_or(0))
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn search_transcription_history(
-    query: String,
-    limit: Option<u32>,
-    offset: Option<u32>,
-    state: tauri::State<'_, AppState>,
-) -> Result<database::HistoryPage, String> {
-    let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
-    db.search(&query, limit.unwrap_or(20), offset.unwrap_or(0))
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn delete_transcription_entry(
-    id: i64,
-    state: tauri::State<'_, AppState>,
-) -> Result<bool, String> {
-    let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
-    db.delete(id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn clear_transcription_history(
-    state: tauri::State<'_, AppState>,
-) -> Result<u32, String> {
-    let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
-    db.delete_all().map_err(|e| e.to_string())
-}
-
-/// Export the full transcription history to a user-chosen file.
-/// Returns the saved path, or None if the user cancelled the dialog.
-/// Async so the blocking save dialog runs off the main thread.
-#[tauri::command]
-pub async fn export_transcription_history(
-    format: export::ExportFormat,
-    app: tauri::AppHandle,
-) -> Result<Option<String>, String> {
-    use tauri_plugin_dialog::DialogExt;
-
-    let file_path = app
-        .dialog()
-        .file()
-        .set_file_name(format!("echo-transcripts.{}", format.extension()))
-        .add_filter(format.filter_name(), &[format.extension()])
-        .blocking_save_file();
-
-    let Some(file_path) = file_path else {
-        return Ok(None);
-    };
-    let path = file_path.into_path().map_err(|e| e.to_string())?;
-
-    let state = app.state::<AppState>();
-    let entries = {
-        let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
-        db.export_all().map_err(|e| e.to_string())?
-    };
-
-    let content = export::format_entries(format, &entries)?;
-    std::fs::write(&path, content).map_err(|e| e.to_string())?;
-    log::info!(
-        "Exported {} transcription entries to {:?}",
-        entries.len(),
-        path
-    );
-    Ok(Some(path.to_string_lossy().into_owned()))
-}
-
-// ===== Summarization commands =====
-
-#[tauri::command]
-pub async fn summarize_recent_transcriptions(
-    minutes: Option<u32>,
-    app: tauri::AppHandle,
-) -> Result<SummarizeResult, String> {
-    let state = app.state::<AppState>();
-    let minutes = minutes.unwrap_or(30);
-
-    // Query DB for recent entries
-    let entries = {
-        let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
-        db.get_recent(minutes).map_err(|e| e.to_string())?
-    };
-
-    if entries.is_empty() {
-        return Ok(SummarizeResult {
-            success: true,
-            summary: String::new(),
-            processing_time_ms: Some(0.0),
-            error: None,
-            entry_count: 0,
-        });
-    }
-
-    let entry_count = entries.len();
-
-    // Convert to SummarizeEntry
-    let texts: Vec<SummarizeEntry> = entries
-        .iter()
-        .map(|e| SummarizeEntry {
-            text: e.text.clone(),
-            created_at: e.created_at.clone(),
-        })
-        .collect();
-
-    // Detect dominant language from entries
-    let language_hint = entries
-        .iter()
-        .filter_map(|e| e.language.as_deref())
-        .next()
-        .map(|s| s.to_string());
-
-    // Read custom summary prompt from settings
-    let custom_summary_prompt = state
-        .settings
-        .lock()
-        .ok()
-        .and_then(|s| s.postprocess.custom_summary_prompt.clone());
-
-    // Run summarization in blocking thread (LLM inference takes seconds)
-    let asr_engine = Arc::clone(&state.asr_engine);
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut result = ASREngine::summarize_transcriptions(
-            &asr_engine,
-            &texts,
-            language_hint.as_deref(),
-            custom_summary_prompt.as_deref(),
-        )
-        .map_err(|e| e.to_string())?;
-        result.entry_count = entry_count;
-        Ok(result)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-// ===== Notes model (voice-memo minutes, meeting notes) =====
+// ===== Notes model (memo minutes, meeting notes) =====
 
 #[tauri::command(async)]
 pub fn get_notes_model_status(state: tauri::State<'_, AppState>) -> Result<PostProcessModelStatus, String> {
@@ -792,83 +589,6 @@ pub fn check_claude_code() -> Result<crate::claude_code::CliInfo, String> {
 
 // ===== Voice memo commands =====
 
-/// Start recording a voice memo. Runs off the main thread: it waits for the
-/// input device to deliver its first audio.
-#[tauri::command(async)]
-pub fn start_memo_recording(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<database::Memo, String> {
-    let mut recorder = state.memo_recorder.lock().map_err(|e| e.to_string())?;
-    if recorder.is_some() {
-        return Err("Already recording a memo".to_string());
-    }
-    let device_name = state.settings.lock().map_err(|e| e.to_string())?.device_name.clone();
-    let dir = memo::recordings_dir(&app).map_err(|e| e.to_string())?;
-
-    let new_memo = {
-        let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
-        db.insert_memo(&dir).map_err(|e| e.to_string())?
-    };
-    let audio_path = std::path::Path::new(&new_memo.audio_path);
-    match memo::MemoRecorder::start(new_memo.id, device_name, audio_path) {
-        Ok(r) => {
-            *recorder = Some(r);
-            continuous::set_muted(continuous::Mute::Memo, true);
-            Ok(new_memo)
-        }
-        Err(e) => {
-            let _ = std::fs::remove_file(audio_path);
-            let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
-            db.delete_memo(new_memo.id).map_err(|e| e.to_string())?;
-            Err(e.to_string())
-        }
-    }
-}
-
-/// Stop the memo recording and start transcribing it in the background
-/// (progress arrives as "memo-progress" events).
-#[tauri::command(async)]
-pub fn stop_memo_recording(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<database::Memo, String> {
-    let recorder = state
-        .memo_recorder
-        .lock()
-        .map_err(|e| e.to_string())?
-        .take()
-        .ok_or("Not recording a memo")?;
-    let (id, duration) = recorder.stop();
-    continuous::set_muted(continuous::Mute::Memo, false);
-    let started = (|| -> anyhow::Result<()> {
-        state
-            .transcription_db
-            .lock()
-            .map_err(|e| anyhow::anyhow!("{e}"))?
-            .set_memo_duration(id, duration)?;
-        memo::start_processing(&app, id, true)
-    })();
-    if let Err(e) = started {
-        // The recording is over; don't leave the row looking like it's live.
-        // The audio is on disk and the memo can be re-processed from the UI.
-        if let Ok(db) = state.transcription_db.lock() {
-            let _ = db.set_memo_status(id, database::MemoStatus::Error, Some(&format!("{e:#}")));
-        }
-        return Err(e.to_string());
-    }
-    get_memo(id, state)?.ok_or_else(|| "Memo not found".to_string())
-}
-
-/// Off the main thread: the recorder lock is held while a recording starts.
-#[tauri::command(async)]
-pub fn get_memo_recording_status(
-    state: tauri::State<'_, AppState>,
-) -> Result<Option<memo::MemoRecordingStatus>, String> {
-    let recorder = state.memo_recorder.lock().map_err(|e| e.to_string())?;
-    Ok(recorder.as_ref().map(|r| r.status()))
-}
-
 #[tauri::command]
 pub fn list_memos(state: tauri::State<'_, AppState>) -> Result<Vec<database::MemoListItem>, String> {
     let db = state.transcription_db.lock().map_err(|e| e.to_string())?;
@@ -906,19 +626,13 @@ pub fn reprocess_memo(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    let is_recording = state
-        .memo_recorder
-        .lock()
-        .map_err(|e| e.to_string())?
-        .as_ref()
-        .is_some_and(|r| r.status().memo_id == id);
     let in_meeting = state
         .meeting
         .lock()
         .map_err(|e| e.to_string())?
         .as_ref()
         .is_some_and(|m| m.is_active() && m.memo_id() == id);
-    if is_recording || in_meeting {
+    if in_meeting {
         return Err("Memo is still recording".to_string());
     }
     memo::start_processing(&app, id, retranscribe).map_err(|e| e.to_string())
@@ -1055,7 +769,6 @@ pub fn start_meeting(
             return Err("A meeting is already in progress".to_string());
         }
         let session = meeting::MeetingSession::start(&app).map_err(|e| format!("{e:#}"))?;
-        continuous::set_muted(continuous::Mute::Meeting, true);
         let snapshot = session.snapshot();
         *current = Some(session);
         Ok(snapshot)
@@ -1077,7 +790,6 @@ pub fn stop_meeting(
     let mut current = state.meeting.lock().map_err(|e| e.to_string())?;
     let session = current.as_mut().ok_or("No meeting in progress")?;
     session.stop(&app);
-    continuous::set_muted(continuous::Mute::Meeting, false);
     Ok(session.snapshot())
 }
 

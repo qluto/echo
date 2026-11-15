@@ -1,10 +1,8 @@
 use std::sync::{Arc, Mutex};
 use tauri_plugin_store::StoreExt;
 
-use crate::continuous;
 use crate::database;
 use crate::meeting;
-use crate::memo;
 use crate::standby;
 use crate::transcription::ASREngine;
 
@@ -164,8 +162,8 @@ pub struct TranscriptionSegment {
     pub text: String,
 }
 
-/// Structured status event ("transcription-status") shared by the hotkey and
-/// always-on paths, so silence and failures are visible in the UI instead of
+/// Structured status event ("transcription-status") from hotkey dictation, so
+/// silence and failures are visible in the UI instead of
 /// being indistinguishable from success.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TranscriptionStatusEvent {
@@ -182,7 +180,6 @@ pub enum StatusKind {
     NoSpeech,
     AsrError,
     EngineBusy,
-    DbError,
     AudioError,
     /// Reserved for mic-permission detection (macOS denial currently
     /// manifests as silent audio, i.e. NoSpeech); kept so the event
@@ -195,7 +192,6 @@ pub enum StatusKind {
 #[serde(rename_all = "snake_case")]
 pub enum StatusSource {
     Hotkey,
-    Continuous,
 }
 
 impl TranscriptionStatusEvent {
@@ -231,9 +227,6 @@ pub struct PostProcessSettings {
     /// Model name for post-processing LLM. If None, uses default.
     #[serde(default)]
     pub model_name: Option<String>,
-    /// Custom system prompt for summarization. If None, uses default.
-    #[serde(default)]
-    pub custom_summary_prompt: Option<String>,
     /// Per-app post-processing profiles, matched by exact bundle_id.
     #[serde(default)]
     pub app_profiles: Vec<AppProfile>,
@@ -246,7 +239,6 @@ impl Default for PostProcessSettings {
             dictionary: std::collections::HashMap::new(),
             custom_prompt: None,
             model_name: None,
-            custom_summary_prompt: None,
             app_profiles: Vec::new(),
         }
     }
@@ -301,32 +293,12 @@ pub struct PostProcessResult {
     pub error: Option<String>,
 }
 
-/// A transcription entry for summarization requests
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SummarizeEntry {
-    pub text: String,
-    pub created_at: String,
-}
-
-/// Summarization result
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SummarizeResult {
-    pub success: bool,
-    pub summary: String,
-    pub processing_time_ms: Option<f64>,
-    pub error: Option<String>,
-    pub entry_count: usize,
-}
-
 /// Application state
 pub struct AppState {
     pub asr_engine: Arc<Mutex<ASREngine>>,
     pub settings: Mutex<Settings>,
     pub recording_state: Mutex<RecordingState>,
     pub transcription_db: Arc<Mutex<database::TranscriptionDb>>,
-    pub continuous_pipeline: Mutex<Option<continuous::ContinuousPipeline>>,
-    /// The voice memo being recorded, if any.
-    pub memo_recorder: Mutex<Option<memo::MemoRecorder>>,
     /// The meeting in progress, or the last one this session (for its window).
     pub meeting: Mutex<Option<meeting::MeetingSession>>,
     /// Meeting standby. Lock it before `meeting` when holding both.

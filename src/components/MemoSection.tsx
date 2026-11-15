@@ -6,7 +6,6 @@ import { MemoListItem } from "../lib/tauri";
 
 /** Rows shown before the list is expanded. */
 const COLLAPSED_COUNT = 3;
-const LEVEL_BARS = 5;
 
 /** "2026-10-02 14:30:05" → "10/02 14:30" */
 const formatCreatedAt = (createdAt: string) => {
@@ -15,14 +14,14 @@ const formatCreatedAt = (createdAt: string) => {
   return `${date.slice(5).replace("-", "/")} ${time.slice(0, 5)}`;
 };
 
+/** The stored meetings (and voice memos from earlier versions). */
 export function MemoSection() {
-  const { memos, recording, progress, isBusy, error, start, stop, remove, refresh } = useMemos();
+  const { memos, progress, error, remove, refresh } = useMemos();
   const [openId, setOpenId] = useState<number | null>(null);
   const [expanded, setExpanded] = useState(false);
 
-  const isRecording = recording !== null;
-  // The memo being recorded is represented by the card itself.
-  const finished = memos.filter((m) => m.id !== recording?.memo_id);
+  // The meeting in progress is shown by the Meeting card.
+  const finished = memos.filter((m) => m.status !== "recording");
   const visible = expanded ? finished : finished.slice(0, COLLAPSED_COUNT);
 
   const statusColor = (m: MemoListItem) =>
@@ -32,60 +31,6 @@ export function MemoSection() {
 
   return (
     <div className="flex flex-col gap-2">
-      {/* Recorder card */}
-      <div
-        className="flex items-center gap-3 rounded-xl bg-surface px-3 py-2.5 border shadow-sm"
-        style={{ borderColor: isRecording ? "var(--glow-recording)" : "#E8E4DF" }}
-      >
-        <div className="flex flex-col min-w-0 flex-1">
-          <span className="text-[13px] font-semibold leading-tight truncate" style={{ color: "var(--text-primary)" }}>
-            Voice Memo
-          </span>
-          {isRecording ? (
-            <div className="flex items-center gap-2 mt-0.5">
-              <span className="font-mono text-[11px] leading-tight" style={{ color: "var(--glow-recording)" }}>
-                {formatClock(recording.elapsed_seconds)}
-              </span>
-              <div className="flex items-end gap-[2px] h-3" aria-hidden>
-                {Array.from({ length: LEVEL_BARS }, (_, i) => (
-                  <div
-                    key={i}
-                    className="w-[3px] rounded-full transition-all duration-100"
-                    style={{
-                      height: `${25 + (i + 1) * 15}%`,
-                      backgroundColor:
-                        recording.level * LEVEL_BARS > i ? "var(--glow-recording)" : "var(--border-subtle)",
-                    }}
-                  />
-                ))}
-              </div>
-            </div>
-          ) : (
-            <span
-              className="text-[10px] leading-tight truncate"
-              style={{ color: "var(--text-tertiary)" }}
-              title="Record a meeting, then get a transcript and minutes when you stop"
-            >
-              Record, then get minutes
-            </span>
-          )}
-        </div>
-
-        <button
-          onClick={isRecording ? stop : start}
-          disabled={isBusy}
-          title={isRecording ? "録音を終了して書き起こす" : "録音を開始"}
-          aria-label={isRecording ? "録音を終了して書き起こす" : "録音を開始"}
-          className="w-8 h-8 rounded-full flex items-center justify-center border shrink-0 transition-colors hover:bg-surface-elevated disabled:opacity-50"
-          style={{ borderColor: isRecording ? "var(--glow-recording)" : "#E0DDD8" }}
-        >
-          <div
-            className={`transition-all duration-150 ${isRecording ? "w-3 h-3 rounded-[3px]" : "w-3.5 h-3.5 rounded-full"}`}
-            style={{ backgroundColor: "var(--glow-recording)" }}
-          />
-        </button>
-      </div>
-
       {error && (
         <div
           className="px-3 py-2 rounded-lg text-xs"
