@@ -7,8 +7,9 @@ dist/
 build/
 target/
 
-# Tauri
+# Tauri (gen/schemas is regenerated on every build)
 src-tauri/target/
+src-tauri/gen/schemas/
 
 # Python (echo-cli)
 **/__pycache__/
