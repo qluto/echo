@@ -69,7 +69,7 @@ export function ChangelogModal({ since, upTo, onClose }: { since?: string; upTo?
       >
         <div className="flex items-center justify-between px-5 py-3 border-b border-subtle flex-shrink-0">
           <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-            {since ? `Echo ${upTo ?? ""} の変更点` : "変更履歴"}
+            {since ? `What's new in Echo ${upTo ?? ""}` : "Changelog"}
           </h2>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-surface-elevated transition-colors text-sm leading-none" aria-label="閉じる" style={{ color: "var(--text-tertiary)" }}>
             ×
@@ -80,7 +80,7 @@ export function ChangelogModal({ since, upTo, onClose }: { since?: string; upTo?
             sections.map((s) => <Section key={s.title} section={s} />)
           ) : (
             <p className="text-xs" style={{ color: "var(--text-tertiary)" }}>
-              変更履歴がありません。
+              No changes recorded.
             </p>
           )}
         </div>
