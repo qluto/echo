@@ -1,40 +1,40 @@
-# 変更履歴
+# Changelog
 
-アプリの「変更点」画面と GitHub のリリースノートに、この内容がそのまま表示されます。
-リリースのたびに `## Unreleased` を `## vX.Y.Z — YYYY-MM-DD` に書き換えてからタグを打ってください（節がないとリリースが失敗します）。
+The app's "What's new" screen and the GitHub release notes show this file as is.
+Before each release, rename `## Unreleased` to `## vX.Y.Z — YYYY-MM-DD`, then tag (the release fails without the section).
 
 ## Unreleased
 
 ## v0.16.0 — 2026-11-16
 
-### 新機能
-- 会議の自動検知で、何分続いた会話で会議を始めるかを 1〜4分 から選べるようにしました（設定 → Meeting Detection）。会話の割合などの条件も、この長さに合わせて変わります。
-- 会議を自動検知したとき、メニューバーの Echo アイコンの下に通知を出すようにしました。別のデスクトップで作業していても気づけます。
-- メニューバーのメニューと設定画面から、アップデートを確認できるようにしました。
-- アップデート後の初回起動時に、メニューバーの通知から変更点を見られるようにしました。設定画面からも変更履歴を開けます。
+### Added
+- Choose how long a conversation must go on before automatic meeting detection starts a meeting: 1–4 minutes (Settings → Meeting Detection). The other detection conditions scale with it.
+- When automatic meeting detection starts a meeting, a notice appears just below Echo's menu bar icon, so you notice it even while working on another desktop.
+- Check for updates from the menu bar menu and from Settings.
+- After an update, the menu bar notice links to what's new. Settings → About shows the full changelog.
 
 ## v0.15.0 — 2026-11-15
 
-### 新機能
-- ホットキーを押したときと、書き起こしが終わったときに効果音を鳴らすようにしました。
+### Added
+- Sounds when you press the hotkey and when the transcript is ready.
 
-### 変更
-- 常時録音（Log タブ）を廃止しました。会話は会議の自動検知で記録できます。これまでの履歴はデータベースに残っていますが、アプリには表示されません。
-- Voice Memo の録音を廃止し、Meeting に一本化しました。タブ名を「Meetings」に変えました。過去の Voice Memo は、会議の一覧から開けます。
+### Changed
+- Removed always-on transcription (the Log tab). Automatic meeting detection records conversations instead. Your existing history stays in the database but is no longer shown in the app.
+- Removed the voice memo recorder in favor of Meetings, and renamed the tab to "Meetings". Earlier voice memos open from the meeting list.
 
 ## v0.14.0 — 2026-11-14
 
-### 新機能
-- 会議の自動検知（オプション）：会話が3分続くと、会話の始まりから自動で会議の記録を始めます。
+### Added
+- Automatic meeting detection (optional): once a conversation goes on for 3 minutes, Echo starts recording a meeting from the beginning of the conversation.
 
 ## v0.13.4 — 2026-11-12
 
-### 新機能
-- ローカル書き起こし API（オプション）：このMac上のほかのアプリから、HTTP と WebSocket ストリーミングで Echo の書き起こしを使えます。
+### Added
+- Local transcription API (optional): other apps on this Mac can use Echo's transcription over HTTP and WebSocket streaming.
 
 ## v0.13.3 — 2026-11-11
 
-### 新機能
-- GitHub Releases からの自動アップデート。
+### Added
+- Automatic updates from GitHub Releases.
 
-それより前の変更は [GitHub のリリース](https://github.com/qluto/echo/releases) を参照してください。
+For earlier changes, see the [GitHub releases](https://github.com/qluto/echo/releases).

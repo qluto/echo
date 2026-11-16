@@ -126,7 +126,7 @@ Used when meeting standby starts a meeting, for a check for updates from the tra
 
 ### Changelog
 
-`CHANGELOG.md` (Japanese, user-facing) is bundled into the frontend (`src/lib/changelog.ts`, `?raw`) and shown by
+`CHANGELOG.md` (user-facing, **in English**; `### Added` / `### Changed` / `### Fixed`) is bundled into the frontend (`src/lib/changelog.ts`, `?raw`) and shown by
 `ChangelogModal` — after an update (the notice's "変更点を見る" → `show-changelog`, or the banner's 変更点) only
 the sections newer than the previous version, from Settings → About every release. New entries go under
 `## Unreleased` in the PR that makes the change; a release renames it (see Common Commands).
