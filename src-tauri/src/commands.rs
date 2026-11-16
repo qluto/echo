@@ -166,6 +166,7 @@ pub fn update_settings(
         settings.notes_claude = current.notes_claude.clone();
         settings.local_api = current.local_api.clone();
         settings.meeting_standby = current.meeting_standby;
+        settings.meeting_standby_seconds = current.meeting_standby_seconds;
     }
 
     // Detect whether the effective HF token changed so we can push it into the sidecar.
@@ -846,6 +847,29 @@ pub fn set_meeting_standby(
         crate::standby::pause(&app);
     }
     Ok(crate::standby::status(&app))
+}
+
+/// Set how long a conversation goes on before standby starts a meeting
+/// (clamped to 60–240 s in 10 s steps). A standby already listening uses it
+/// from its next 10 s bucket.
+#[tauri::command(async)]
+pub fn set_meeting_standby_seconds(
+    seconds: u32,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<crate::standby::StandbyStatus, String> {
+    let seconds = crate::standby::clamp_detect_seconds(seconds);
+    let settings = {
+        let mut current = state.settings.lock().map_err(|e| e.to_string())?;
+        current.meeting_standby_seconds = seconds;
+        current.clone()
+    };
+    save_settings_to_store(&app, &settings)?;
+    crate::standby::set_detect_seconds(seconds);
+    log::info!("Meeting standby: detect after {seconds}s of conversation");
+    let status = crate::standby::status(&app);
+    let _ = app.emit("meeting-standby", status.clone());
+    Ok(status)
 }
 
 // ===== Local transcription API =====

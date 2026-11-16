@@ -161,3 +161,14 @@ Meeting standby replaces always-on; meetings cover voice memos (both land in the
 - every frontend `invoke("…")` (58) is a registered command; tsc + vite build clean
 - Kept: `transcriptions` table on disk (not dropped, no longer created), `resume_listening` store key unused
 - Gotcha: `say -v Otoya/Reed` writes a 0.01 s file with exit 0 when the voice isn't downloaded — check durations
+
+# Meeting detection length as an Advanced setting (2026-11-16)
+- [x] `meeting_standby_seconds` (60–240 s, 10 s steps; default 180) + `set_meeting_standby_seconds`
+- [x] detector `Window` scales talk / mic bucket counts with the length; live standby picks a change up per bucket
+- [x] Settings → Meeting Detection (1–4 min, 30 s steps); Meeting card text follows the setting
+- [x] tests: window scaling, 1-min detection, 1 min of system audio alone is not a meeting; replay `ECHO_STANDBY_SECONDS`
+
+## Review
+- Synthetic in-person conversation (`say`, talk from 20 s): 1 min → 80 s, 2 min → 140 s, 3 min → 200 s, all recorded from 10 s;
+  45 s of talk with the 1-min setting → no meeting
+- `sounds_load_and_play` failed on main too (NSSound play returns NO with no usable audio output) → now checks decoding only

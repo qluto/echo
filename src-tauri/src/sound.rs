@@ -77,16 +77,13 @@ mod macos {
     mod tests {
         use super::*;
 
+        /// Playing depends on an audio output being available, so only
+        /// decoding is checked.
         #[test]
-        fn sounds_load_and_play() {
+        fn sounds_decode() {
             for sound in [Sound::DictationStart, Sound::DictationDone] {
-                unsafe {
-                    let ns_sound = load(sound);
-                    assert!(ns_sound != nil, "WAV did not decode");
-                    let started: bool = msg_send![ns_sound, play];
-                    assert!(started, "NSSound refused to play");
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                }
+                let ns_sound = unsafe { load(sound) };
+                assert!(ns_sound != nil, "WAV did not decode");
             }
         }
     }
