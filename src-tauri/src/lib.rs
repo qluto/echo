@@ -303,6 +303,7 @@ pub fn run() {
             commands::open_meeting_window,
             commands::get_meeting_standby,
             commands::set_meeting_standby,
+            commands::set_meeting_standby_seconds,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

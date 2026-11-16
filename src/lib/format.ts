@@ -34,3 +34,10 @@ export const formatClock = (seconds: number): string => {
   const s = (total % 60).toString().padStart(2, "0");
   return h > 0 ? `${h}:${m.toString().padStart(2, "0")}:${s}` : `${m}:${s}`;
 };
+
+/** Seconds as a Japanese length: 90 → "1分30秒", 60 → "1分". */
+export const formatMinutesJa = (seconds: number): string => {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m > 0 ? `${m}分` : ""}${s > 0 || m === 0 ? `${s}秒` : ""}`;
+};

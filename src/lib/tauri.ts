@@ -609,6 +609,8 @@ export async function openMeetingWindow(): Promise<void> {
 /** Meeting standby: listens for a conversation and starts a meeting by itself. */
 export interface MeetingStandbyStatus {
   enabled: boolean;
+  /** How long a conversation goes on before a meeting starts (seconds, 60–240). */
+  detect_seconds: number;
   /** Listening now (not while a meeting runs). */
   listening: boolean;
   warning: string | null;
@@ -622,6 +624,11 @@ export async function getMeetingStandby(): Promise<MeetingStandbyStatus> {
 /** Starting to listen finishes in the background; "meeting-standby" reports it. */
 export async function setMeetingStandby(enabled: boolean): Promise<MeetingStandbyStatus> {
   return invoke("set_meeting_standby", { enabled });
+}
+
+/** How long a conversation must go on before standby starts a meeting (60–240 s, 10 s steps). */
+export async function setMeetingStandbySeconds(seconds: number): Promise<MeetingStandbyStatus> {
+  return invoke("set_meeting_standby_seconds", { seconds });
 }
 
 export function onMeetingStandby(callback: (status: MeetingStandbyStatus) => void): Promise<UnlistenFn> {
