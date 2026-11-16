@@ -421,6 +421,7 @@ fn format_minutes(d: Duration) -> String {
 }
 
 fn start_meeting(app: &AppHandle, handoff: Handoff) {
+    let preroll = handoff.preroll;
     let state = app.state::<AppState>();
     let started = (|| -> Result<bool> {
         let mut current = state.meeting.lock().map_err(|e| anyhow!("{e}"))?;
@@ -441,6 +442,14 @@ fn start_meeting(app: &AppHandle, handoff: Handoff) {
                     log::warn!("Failed to show the meeting window: {e}");
                 }
             }
+            // The window may be on another desktop: say so under the menu bar icon too.
+            crate::notice::show(
+                app,
+                "会議を検知して記録を始めました",
+                Some(format!("{}前の会話から記録しています。", format_minutes(preroll))),
+                Some(crate::notice::NoticeAction::OpenMeeting),
+                12000,
+            );
             emit_status(app);
         }
         Err(e) => {

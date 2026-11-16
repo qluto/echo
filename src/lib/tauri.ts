@@ -305,9 +305,53 @@ export async function restartForUpdate(): Promise<void> {
   return invoke("restart_for_update");
 }
 
-/** The version the app just moved to (once after an update), else null. */
-export async function getJustUpdated(): Promise<string | null> {
+/** This run is newer than the last one: the version it moved to, and from. */
+export interface JustUpdated {
+  version: string;
+  previous: string;
+}
+
+/** The update this run is (newer than the last run), else null. */
+export async function getJustUpdated(): Promise<JustUpdated | null> {
   return invoke("just_updated");
+}
+
+export type UpdateCheck =
+  | { status: "up_to_date"; current: string }
+  | { status: "installed"; version: string }
+  | { status: "unsupported" };
+
+/** Check for an update now; a newer version is downloaded and installed (restart to use it). */
+export async function checkForUpdate(): Promise<UpdateCheck> {
+  return invoke("check_for_update");
+}
+
+/** Ask the main window to show the changelog (from the update notice). */
+export function onShowChangelog(callback: () => void): Promise<UnlistenFn> {
+  return listen("show-changelog", () => callback());
+}
+
+// The popup under the menu bar icon (notice.rs)
+export type NoticeAction = "open_meeting" | "restart_for_update" | "show_changelog";
+
+export interface Notice {
+  id: number;
+  title: string;
+  body: string | null;
+  action: NoticeAction | null;
+  timeout_ms: number;
+}
+
+export async function getNotice(): Promise<Notice | null> {
+  return invoke("get_notice");
+}
+
+export async function dismissNotice(id: number): Promise<void> {
+  return invoke("dismiss_notice", { id });
+}
+
+export async function noticeAction(action: NoticeAction): Promise<void> {
+  return invoke("notice_action", { action });
 }
 
 export function onUpdateReady(callback: (version: string) => void): Promise<UnlistenFn> {

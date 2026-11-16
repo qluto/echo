@@ -37,6 +37,8 @@ cd rust-asr && cargo build --release
 ../src-tauri/target/release/rust-asr pp "<text>" [qwen3-model]       # Post-processing
 
 # Release (creates tag and triggers GitHub Actions)
+# First rename CHANGELOG.md's "## Unreleased" to "## v0.x.x — YYYY-MM-DD" and merge that:
+# the workflow fails without the section (node scripts/changelog-section.mjs 0.x.x checks it)
 git tag -a v0.x.x -m "Release v0.x.x - description"
 git push origin v0.x.x
 ```
@@ -70,7 +72,7 @@ The main window's Meeting card toggles `meeting_standby` (`set_meeting_standby`)
 
 1. **Listen** → `standby::resume` starts `live::start_captures` (mic + system audio) in `standby.rs`. Every frame goes into a 5-min ring buffer in memory (~40 MB)
 2. **Detect** → a frame is speech when Silero hears it or it stays ≥ 12 dB over the noise floor for ≥ 4 frames (Silero heard ~0% of two real meetings on one mic). 10 s buckets with ≥ 10% speech count as talk. A meeting starts once a conversation has gone on for 3 min, with talk in 14 of the last 18 buckets, and the user (mic) talking in 6 of them and for ≥ 15% of the 3 min (27 s). The length is a setting (Settings → Meeting Detection, `meeting_standby_seconds`, 60–240 s in 10 s steps, `set_meeting_standby_seconds`); the bucket counts scale with it (`Window`: 1 min = talk in 5 of 6, mic in 2) and a listening standby picks a change up at its next bucket. 240 s is the cap so the window and its lead-in fit in the 5-min ring. System audio alone never starts one: listening to a recording or a webinar, even with a remark now and then, is not a meeting. Mic speech doesn't count while system audio is loud (speaker echo; a recording played through speakers as loud as −3 dB was heard as 0 s on the mic) or during hotkey dictation (`standby::set_dictating`). Check with `standby_playback` too
-3. **Handoff** → the running captures and the buffered frames from 10 s before the conversation began go to `MeetingSession::start_with(Handoff)`. `Inputs::prepend` replays them into `audio_loop` ahead of live audio, so the WAV and transcript are one recording. The memo's `created_at` is moved back (`backdate_memo`). The meeting window is shown without taking focus, with a `notice`. The first notes round runs as soon as the buffered audio is transcribed (`Shared::caught_up`: the audio thread is past it and the ASR worker is waiting for a chunk), not 3 min later
+3. **Handoff** → the running captures and the buffered frames from 10 s before the conversation began go to `MeetingSession::start_with(Handoff)`. `Inputs::prepend` replays them into `audio_loop` ahead of live audio, so the WAV and transcript are one recording. The memo's `created_at` is moved back (`backdate_memo`). The meeting window is shown without taking focus, with a `notice`, and a popup appears under the menu bar icon (`notice::show`, below) since the window may be on another Space. The first notes round runs as soon as the buffered audio is transcribed (`Shared::caught_up`: the audio thread is past it and the ASR worker is waiting for a chunk), not 3 min later
 4. **Auto-stop** → a meeting standby started stops itself after 3 min without a transcribed line (`AUTO_STOP_QUIET`)
 5. **Resume** → standby pauses while any meeting runs (`start_meeting` calls `standby::pause`) and `notes_loop` resumes it when the meeting is done. The updater won't restart within 2 min of talk standby heard (`seconds_since_talk`)
 6. Check detection with `ECHO_STANDBY_WAVS=a.wav,b.wav [ECHO_STANDBY_SECONDS=60] cargo test standby_replay -- --ignored --nocapture`; time the catch-up over the buffered audio with `standby_catch_up` (Haas-ja, M5, release: 190 s caught up in ~2 s, first line after 0.1 s)
@@ -112,6 +114,22 @@ that also keeps web pages out, since the server never answers CORS preflights.
   (see their doc comments; run both with Parakeet and Whisper via `ECHO_API_MODEL`)
 - `scripts/echo-transcribe [-l ja] [-f text|json|verbose_json] <audio>...` transcribes files from the
   shell through this API (port and token from `settings.json`; needs the app running with the API on)
+
+### Notice Popup (`notice.rs`)
+
+A small window (`notice`, `NoticeApp.tsx`) placed just below the menu bar icon (`tray_by_id(TRAY_ID).rect()`;
+top right of the primary screen if that fails). It is `focusable: false` and shown with `orderFrontRegardless`, so it
+never takes focus, and `make_window_transparent(…, false)` keeps it on every Space and over full-screen apps.
+`notice::show(app, title, body, action, timeout_ms)` replaces the current notice; it hides itself after the timeout
+unless hovered. One optional button: `open_meeting`, `restart_for_update` or `show_changelog` (`notice_action`).
+Used when meeting standby starts a meeting, for a check for updates from the tray, and after an update.
+
+### Changelog
+
+`CHANGELOG.md` (Japanese, user-facing) is bundled into the frontend (`src/lib/changelog.ts`, `?raw`) and shown by
+`ChangelogModal` — after an update (the notice's "変更点を見る" → `show-changelog`, or the banner's 変更点) only
+the sections newer than the previous version, from Settings → About every release. New entries go under
+`## Unreleased` in the PR that makes the change; a release renames it (see Common Commands).
 
 ### Key Patterns
 
@@ -171,6 +189,7 @@ Optional LLM-based cleanup using Gemma 4 E4B (`mlx-community/gemma-4-e4b-it-4bit
 
 - `src-tauri/src/lib.rs` - Tauri commands, app state (Settings, RecordingState, ASREngine, PostProcessSettings)
 - `src-tauri/src/hotkey.rs` - Hotkey press/release handling, coordinates recording + transcription
+- `src-tauri/src/notice.rs` - Popup under the menu bar icon (meeting detected, update checks, after an update)
 - `src-tauri/src/sound.rs` - Dictation sounds (`sounds/dictation-start.wav` when the popup appears, `dictation-done.wav` when the transcript is ready), embedded and played with NSSound
 - `src-tauri/src/transcription.rs` - `ASREngine`: owns + dispatches the in-process Rust engines (ASR + post-processing)
 - `src-tauri/src/active_app.rs` - Active application detection via NSWorkspace API
@@ -455,11 +474,14 @@ passes `createUpdaterArtifacts` only there, so local builds need no key) and
 `latest.json`. The app in `/Applications` (only there — not dev builds or the
 dmg) checks `releases/latest/download/latest.json` 1 min after launch and every
 6 h via `tauri-plugin-updater`, installs a newer version into the bundle in the
-background, and shows a "Restart now" banner. It restarts by itself only when
+background, and shows a "Restart now" banner. The user can also check now: the tray's "アップデートを確認…"
+(answered with a notice) and Settings → About (`check_for_update`). `CHECKING` serializes checks, so the periodic
+and the manual one never download twice, and a check after an install reports the version already waiting. It restarts by itself only when
 quiet: 2 min without keyboard/mouse input, 2 min without talk heard by meeting
 standby (`standby::seconds_since_talk`), and no dictation, meeting, or memo
 still transcribing/summarizing. The relaunch waits for the old process
-to exit before `open`ing the bundle (no overlap on the hotkey or the DB).
+to exit before `open`ing the bundle (no overlap on the hotkey or the DB). At startup `note_version` compares the
+version with the last run's; a newer one (`just_updated`) gets a notice that opens the changelog.
 The CI build fails if `plugins.updater.pubkey`
 is empty. The private key lives at `~/.tauri/echo.key` (password in the
 keychain item "echo updater signing key") — **losing it means installed copies

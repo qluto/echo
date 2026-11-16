@@ -38,6 +38,7 @@ import { AppProfilesSection } from "./AppProfilesSection";
 import { DictionarySection } from "./DictionarySection";
 import { NotesModelSection } from "./NotesModelSection";
 import { LocalApiSection } from "./LocalApiSection";
+import { AboutSection } from "./AboutSection";
 import { MeetingStandbySection } from "./MeetingStandbySection";
 
 interface SettingsPanelProps {
@@ -1220,6 +1221,9 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 </div>
               </section>
 
+
+              {/* Version, update check, changelog */}
+              <AboutSection />
             </>
           )}
         </main>

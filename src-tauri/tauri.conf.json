@@ -54,6 +54,25 @@
         "visible": false,
         "focus": false,
         "shadow": false
+      },
+      {
+        "label": "notice",
+        "title": "Echo Notice",
+        "url": "notice.html",
+        "width": 340,
+        "height": 128,
+        "resizable": false,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "visibleOnAllWorkspaces": true,
+        "acceptFirstMouse": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": false,
+        "focusable": false,
+        "shadow": false
       }
     ],
     "security": {
