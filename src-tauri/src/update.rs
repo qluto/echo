@@ -2,10 +2,12 @@
 //! the updater key). The download and the install happen in the background;
 //! the restart waits until nothing would be cut off: no dictation or meeting,
 //! no memo still being processed, no talk heard by meeting standby, and no
-//! input from the user for a while.
+//! input from the user for a while. The user can also check now (tray menu,
+//! Settings); the answer comes as a notice under the menu bar icon.
 
 use std::{path::PathBuf, process::Command, sync::Mutex, thread, time::Duration};
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_store::StoreExt;
 use tauri_plugin_updater::UpdaterExt;
@@ -22,27 +24,103 @@ const QUIET_SECONDS: f64 = 120.0;
 const VERSION_KEY: &str = "last_version";
 /// The version installed into the bundle and waiting for a restart.
 static READY: Mutex<Option<String>> = Mutex::new(None);
+/// Held while checking / installing, so a check by hand and the periodic one
+/// never download twice.
+static CHECKING: Mutex<()> = Mutex::new(());
+/// Set at startup when this run is a newer version than the last one.
+static JUST_UPDATED: Mutex<Option<JustUpdated>> = Mutex::new(None);
 
 /// Only the app in /Applications updates itself: a dev build or an app still
 /// running from the dmg would replace the wrong copy.
+fn installed() -> bool {
+    bundle().is_some_and(|b| b.starts_with("/Applications"))
+}
+
 pub fn start(app: AppHandle) {
-    if !bundle().is_some_and(|b| b.starts_with("/Applications")) {
+    if !installed() {
         log::info!("Auto-update off: not running from /Applications");
         return;
     }
     thread::spawn(move || {
         thread::sleep(FIRST_CHECK);
         loop {
-            match tauri::async_runtime::block_on(install(&app)) {
-                Ok(Some(version)) => {
-                    *READY.lock().unwrap() = Some(version.clone());
-                    let _ = app.emit("update-ready", version);
-                    return restart_when_quiet(&app);
-                }
-                Ok(None) => {}
+            match check(&app) {
+                Ok(CheckResult::Installed { .. }) => return, // restarting when quiet
+                Ok(_) => {}
                 Err(e) => log::warn!("Update check failed: {e}"),
             }
             thread::sleep(CHECK_EVERY);
+        }
+    });
+}
+
+/// The outcome of an update check.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum CheckResult {
+    /// No newer release.
+    UpToDate { current: String },
+    /// A newer version is installed and waits for a restart.
+    Installed { version: String },
+    /// Not the copy in /Applications, which is the only one that updates.
+    Unsupported,
+}
+
+/// Check now, and install a newer version (once: a later check reports the
+/// one already waiting). Blocks until the download is done.
+fn check(app: &AppHandle) -> Result<CheckResult, String> {
+    if !installed() {
+        return Ok(CheckResult::Unsupported);
+    }
+    let _checking = CHECKING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(version) = READY.lock().unwrap().clone() {
+        return Ok(CheckResult::Installed { version });
+    }
+    match tauri::async_runtime::block_on(install(app)).map_err(|e| e.to_string())? {
+        Some(version) => {
+            *READY.lock().unwrap() = Some(version.clone());
+            let _ = app.emit("update-ready", version.clone());
+            let app = app.clone();
+            thread::spawn(move || restart_when_quiet(&app));
+            Ok(CheckResult::Installed { version })
+        }
+        None => Ok(CheckResult::UpToDate { current: app.package_info().version.to_string() }),
+    }
+}
+
+/// Check for an update now (Settings). Off the main thread: it may download.
+#[tauri::command(async)]
+pub fn check_for_update(app: AppHandle) -> Result<CheckResult, String> {
+    check(&app)
+}
+
+/// Check from the tray menu and answer with a notice under the icon.
+pub fn check_and_notify(app: &AppHandle) {
+    let app = app.clone();
+    thread::spawn(move || {
+        use crate::notice::{show, NoticeAction};
+        match check(&app) {
+            Ok(CheckResult::UpToDate { current }) => {
+                show(&app, "Echo は最新です", Some(format!("バージョン {current}")), None, 5000)
+            }
+            Ok(CheckResult::Installed { version }) => show(
+                &app,
+                &format!("Echo {version} をインストールしました"),
+                Some("再起動すると新しいバージョンになります。手が空いたときに自動でも再起動します。".into()),
+                Some(NoticeAction::RestartForUpdate),
+                12000,
+            ),
+            Ok(CheckResult::Unsupported) => show(
+                &app,
+                "アップデートを確認できません",
+                Some("/Applications にインストールした Echo だけがアップデートできます。".into()),
+                None,
+                6000,
+            ),
+            Err(e) => {
+                log::warn!("Update check failed: {e}");
+                show(&app, "アップデートを確認できませんでした", Some(e), None, 8000)
+            }
         }
     });
 }
@@ -134,33 +212,69 @@ pub fn restart_for_update(app: AppHandle) -> Result<(), String> {
     relaunch(&app)
 }
 
-/// The version the app just moved to, once, so the UI can say so after an
-/// update. A first install says nothing.
-#[tauri::command]
-pub fn just_updated(app: AppHandle) -> Option<String> {
+/// This run is a newer version than the last: what the UI says after an update.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct JustUpdated {
+    pub version: String,
+    pub previous: String,
+}
+
+/// At startup: remember the version, and whether it is newer than the last
+/// run's (then say so under the menu bar icon, with the changelog a click away).
+/// A first install says nothing, and nor does running an older build.
+pub fn note_version(app: &AppHandle) {
     let current = app.package_info().version.to_string();
-    let store = app.store(SETTINGS_STORE_FILE).ok()?;
+    let Ok(store) = app.store(SETTINGS_STORE_FILE) else { return };
     let previous = store.get(VERSION_KEY).and_then(|v| v.as_str().map(String::from));
     if previous.as_deref() != Some(current.as_str()) {
-        if let Err(e) = save(&app, VERSION_KEY, serde_json::json!(current)) {
+        if let Err(e) = save(app, VERSION_KEY, serde_json::json!(current)) {
             log::warn!("Failed to save {VERSION_KEY}: {e}");
         }
     }
-    changed(previous.as_deref(), &current)
+    let Some(updated) = changed(previous.as_deref(), &current) else { return };
+    log::info!("Updated from {} to {}", updated.previous, updated.version);
+    *JUST_UPDATED.lock().unwrap() = Some(updated.clone());
+    let app = app.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(3)); // the menu bar icon and the popup load first
+        crate::notice::show(
+            &app,
+            &format!("Echo {} にアップデートしました", updated.version),
+            Some("変更点を見るには、ここをクリックしてください。".into()),
+            Some(crate::notice::NoticeAction::ShowChangelog),
+            15000,
+        );
+    });
 }
 
-fn changed(previous: Option<&str>, current: &str) -> Option<String> {
-    previous.filter(|p| *p != current).map(|_| current.to_string())
+/// The version the app just moved to (this run), so the UI can say so.
+#[tauri::command]
+pub fn just_updated() -> Option<JustUpdated> {
+    JUST_UPDATED.lock().unwrap().clone()
+}
+
+fn changed(previous: Option<&str>, current: &str) -> Option<JustUpdated> {
+    let previous = previous?;
+    (parse(current)? > parse(previous)?).then(|| JustUpdated { version: current.into(), previous: previous.into() })
+}
+
+fn parse(version: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = version.trim_start_matches('v').split('.').map(|p| p.parse().ok());
+    Some((parts.next()??, parts.next()??, parts.next()??))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::changed;
+    use super::{changed, JustUpdated};
 
     #[test]
-    fn only_a_version_change_is_announced() {
-        assert_eq!(changed(Some("0.13.2"), "0.13.3"), Some("0.13.3".into()));
+    fn only_a_newer_version_is_announced() {
+        let updated = |v: &str, p: &str| Some(JustUpdated { version: v.into(), previous: p.into() });
+        assert_eq!(changed(Some("0.13.2"), "0.13.3"), updated("0.13.3", "0.13.2"));
+        assert_eq!(changed(Some("0.9.0"), "0.10.0"), updated("0.10.0", "0.9.0"));
         assert_eq!(changed(Some("0.13.3"), "0.13.3"), None);
         assert_eq!(changed(None, "0.13.3"), None);
+        // A local build (0.1.0) run after a release
+        assert_eq!(changed(Some("0.15.0"), "0.1.0"), None);
     }
 }

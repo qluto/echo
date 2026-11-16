@@ -19,9 +19,9 @@ Offline voice input desktop application optimized for Apple Silicon
 ## System Requirements
 
 - **OS**: macOS 26.2 or later
-- **CPU**: Apple Silicon (M1/M2/M3/M4)
-- **Memory**: 8GB+ recommended
-- **Storage**: 2GB+ free space (varies by model size)
+- **CPU**: Apple Silicon (M1 or later)
+- **Memory**: 16GB+ recommended (32GB+ uses the larger meeting-notes model)
+- **Storage**: 2GB+ for speech recognition; 5–20GB more for post-processing and meeting notes
 
 ## Supported Models
 

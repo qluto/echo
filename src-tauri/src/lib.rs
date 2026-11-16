@@ -16,6 +16,7 @@ mod partial;
 mod input;
 mod memo;
 mod meeting;
+mod notice;
 mod sound;
 mod standby;
 mod system_audio;
@@ -36,10 +37,11 @@ pub use input::EnigoState;
 pub use transcription::{ASREngine, ModelCacheStatus, ModelStatus, WarmupResult};
 pub use types::*;
 
-/// Make a window fully transparent on macOS using with_webview
+/// Make a window fully transparent on macOS using with_webview, and keep it
+/// above other apps on every Space. `order_front` also shows it now.
 #[cfg(target_os = "macos")]
 #[allow(deprecated)]
-fn make_window_transparent(window: &tauri::WebviewWindow) {
+fn make_window_transparent(window: &tauri::WebviewWindow, order_front: bool) {
     use cocoa::base::{id, NO, YES};
 
     // First, configure the NSWindow
@@ -65,7 +67,9 @@ fn make_window_transparent(window: &tauri::WebviewWindow) {
             // NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary
             let collection_behavior: u64 = (1 << 0) | (1 << 8);
             let _: () = msg_send![ns_window, setCollectionBehavior: collection_behavior];
-            let _: () = msg_send![ns_window, orderFrontRegardless];
+            if order_front {
+                let _: () = msg_send![ns_window, orderFrontRegardless];
+            }
         }
     }
 
@@ -98,7 +102,7 @@ fn make_window_transparent(window: &tauri::WebviewWindow) {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn make_window_transparent(_window: &tauri::WebviewWindow) {
+fn make_window_transparent(_window: &tauri::WebviewWindow, _order_front: bool) {
     // No-op on other platforms
 }
 
@@ -174,15 +178,20 @@ pub fn run() {
 
             // Make float window transparent on macOS
             if let Some(float_window) = app.get_webview_window("float") {
-                make_window_transparent(&float_window);
+                make_window_transparent(&float_window, true);
                 let _ = float_window.set_always_on_top(true);
                 let _ = float_window.set_visible_on_all_workspaces(true);
+            }
+            // The notice under the menu bar icon: same overlay, shown only on demand.
+            if let Some(notice_window) = app.get_webview_window("notice") {
+                make_window_transparent(&notice_window, false);
             }
 
             // Setup system tray
             setup_system_tray(app)?;
 
             standby::resume(app.handle());
+            update::note_version(app.handle());
             update::start(app.handle().clone());
 
             // Initialize handy-keys and register saved hotkey
@@ -274,6 +283,10 @@ pub fn run() {
             update::update_ready,
             update::restart_for_update,
             update::just_updated,
+            update::check_for_update,
+            notice::get_notice,
+            notice::dismiss_notice,
+            notice::notice_action,
             commands::get_frontmost_app,
             commands::get_postprocess_settings,
             commands::update_postprocess_settings,
@@ -337,12 +350,13 @@ fn show_main_window(app: &AppHandle) {
 /// Setup system tray icon and menu
 fn setup_system_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let show_item = MenuItem::with_id(app, "show", "ウィンドウを表示", true, None::<&str>)?;
+    let update_item = MenuItem::with_id(app, "check_update", "アップデートを確認…", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+    let menu = Menu::with_items(app, &[&show_item, &update_item, &quit_item])?;
 
     const TRAY_ICON: Image<'_> = tauri::include_image!("icons/tray-icon.png");
 
-    let _tray = TrayIconBuilder::new()
+    let _tray = TrayIconBuilder::with_id(notice::TRAY_ID)
         .icon(TRAY_ICON)
         .icon_as_template(true)
         .tooltip("Echo - 音声入力")
@@ -350,6 +364,7 @@ fn setup_system_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>>
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_main_window(app),
+            "check_update" => update::check_and_notify(app),
             "quit" => {
                 log::info!("Quit requested from tray menu");
                 app.exit(0);

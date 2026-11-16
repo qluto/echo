@@ -4,6 +4,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { MemoSection } from "./components/MemoSection";
 import { MeetingCard } from "./components/MeetingCard";
+import { ChangelogModal } from "./components/ChangelogModal";
 import { useTranscription } from "./hooks/useTranscription";
 import {
   pingAsrEngine,
@@ -19,6 +20,8 @@ import {
   getUpdateReady,
   restartForUpdate,
   getJustUpdated,
+  onShowChangelog,
+  JustUpdated,
   onUpdateReady,
   loadPostprocessModel,
 } from "./lib/tauri";
@@ -93,15 +96,26 @@ function App() {
   const [showRestartPrompt, setShowRestartPrompt] = useState(false);
   // An installed update waiting for a restart, and the version just moved to
   const [updateReady, setUpdateReady] = useState<string | null>(null);
-  const [updatedTo, setUpdatedTo] = useState<string | null>(null);
+  const [updatedTo, setUpdatedTo] = useState<JustUpdated | null>(null);
+  // The changelog modal: what changed in the update just applied, or every release
+  const [changelogOpen, setChangelogOpen] = useState(false);
+  const [justUpdated, setJustUpdated] = useState<JustUpdated | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
 
   useEffect(() => {
     getUpdateReady().then(setUpdateReady).catch(() => {});
-    getJustUpdated().then(setUpdatedTo).catch(() => {});
+    getJustUpdated()
+      .then((u) => {
+        setUpdatedTo(u);
+        setJustUpdated(u);
+      })
+      .catch(() => {});
     const unlisten = onUpdateReady(setUpdateReady);
+    // "変更点を見る" on the notice under the menu bar icon
+    const unlistenChangelog = onShowChangelog(() => setChangelogOpen(true));
     return () => {
       unlisten.then((fn) => fn());
+      unlistenChangelog.then((fn) => fn());
     };
   }, []);
 
@@ -553,8 +567,17 @@ function App() {
               <span className="flex-1 min-w-0">
                 {updateReady
                   ? updateError ?? `Echo ${updateReady} is installed. It restarts when you're away.`
-                  : `Updated to Echo ${updatedTo}.`}
+                  : `Updated to Echo ${updatedTo?.version}.`}
               </span>
+              {!updateReady && (
+                <button
+                  onClick={() => setChangelogOpen(true)}
+                  className="px-2.5 py-1 rounded-md text-xs font-medium flex-shrink-0"
+                  style={{ backgroundColor: "var(--glow-idle)", color: "white" }}
+                >
+                  変更点
+                </button>
+              )}
               {updateReady ? (
                 <button
                   onClick={async () => {
@@ -827,6 +850,16 @@ function App() {
         }}
       />
 
+      {changelogOpen && (
+        <ChangelogModal
+          since={justUpdated?.previous}
+          upTo={justUpdated?.version}
+          onClose={() => {
+            setChangelogOpen(false);
+            setUpdatedTo(null);
+          }}
+        />
+      )}
     </div>
   );
 }
