@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { formatClock } from "../lib/format";
+import { formatClock, formatMinutesJa } from "../lib/format";
 import {
   getMeetingStandby,
   getMeetingStatus,
@@ -118,10 +118,10 @@ export function MeetingCard() {
             <span
               className="text-[10px] leading-tight truncate"
               style={{ color: "var(--text-tertiary)" }}
-              title="Keeps the last 5 minutes of audio in memory (never on disk) and starts a meeting from the beginning of a conversation that goes on for 3 minutes"
+              title={`Keeps the last 5 minutes of audio in memory (never on disk) and starts a meeting from the beginning of a conversation that goes on for ${formatMinutesJa(standby.detect_seconds)} (Settings → Meeting Detection)`}
             >
               {!standby.enabled
-                ? "3分続く会話を、始まりから記録"
+                ? `${formatMinutesJa(standby.detect_seconds)}続く会話を、始まりから記録`
                 : standby.listening
                   ? "待機中・直近5分をメモリに保持"
                   : active

@@ -39,6 +39,7 @@ import { DictionarySection } from "./DictionarySection";
 import { NotesModelSection } from "./NotesModelSection";
 import { LocalApiSection } from "./LocalApiSection";
 import { AboutSection } from "./AboutSection";
+import { MeetingStandbySection } from "./MeetingStandbySection";
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -1077,6 +1078,9 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
 
               {/* Minutes & meeting notes LLM */}
               <NotesModelSection />
+
+              {/* Automatic meeting detection length (Advanced) */}
+              <MeetingStandbySection />
 
               {/* Local transcription API (Advanced) */}
               <LocalApiSection />

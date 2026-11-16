@@ -30,6 +30,13 @@ pub struct Settings {
     /// Listen for conversations and start a meeting by itself (`standby.rs`).
     #[serde(default)]
     pub meeting_standby: bool,
+    /// How long a conversation goes on before standby starts a meeting (seconds, 60–240).
+    #[serde(default = "default_standby_seconds")]
+    pub meeting_standby_seconds: u32,
+}
+
+fn default_standby_seconds() -> u32 {
+    crate::standby::DEFAULT_DETECT_SECONDS
 }
 
 impl Default for Settings {
@@ -46,6 +53,7 @@ impl Default for Settings {
             notes_claude: NotesClaudeSettings::default(),
             local_api: LocalApiSettings::default(),
             meeting_standby: false,
+            meeting_standby_seconds: default_standby_seconds(),
         }
     }
 }

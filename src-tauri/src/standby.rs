@@ -6,7 +6,7 @@
 //!   └→ [standby thread] ─ every frame → 5 min ring buffer (memory only)
 //!                       └ Silero VAD or a sustained rise over the
 //!                         noise floor → TalkDetector (10 s buckets)
-//!          talk in 14 of the last 18 buckets (3 min), 6 of them from the mic
+//!          talk in 14 of the last 18 buckets (3 min; the length is a setting), 6 of them from the mic
 //!            → the captures and the buffered audio from the conversation's
 //!              start are handed to a meeting (`MeetingSession::start_with`)
 //! ```
@@ -21,7 +21,7 @@
 //! when the meeting is done.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -36,6 +36,20 @@ use crate::memo::frame_dbfs;
 use crate::types::AppState;
 use crate::vad::{VadProcessor, VAD_FRAME_SIZE, VAD_SAMPLE_RATE};
 
+/// How long a conversation must go on before a meeting starts (seconds; the setting).
+static DETECT_SECONDS: AtomicU32 = AtomicU32::new(DEFAULT_DETECT_SECONDS);
+
+/// The setting as stored: within bounds, in whole buckets.
+pub fn clamp_detect_seconds(seconds: u32) -> u32 {
+    let b = BUCKET_SECONDS;
+    (seconds.clamp(MIN_DETECT_SECONDS, MAX_DETECT_SECONDS) + b / 2) / b * b
+}
+
+/// Use a new detection length; a standby already listening picks it up at its next bucket.
+pub fn set_detect_seconds(seconds: u32) {
+    DETECT_SECONDS.store(clamp_detect_seconds(seconds), Ordering::Relaxed);
+}
+
 /// Hotkey dictation has the mic: what the user says then is not talk.
 static DICTATING: AtomicBool = AtomicBool::new(false);
 
@@ -46,19 +60,25 @@ pub fn set_dictating(on: bool) {
 /// The ring buffer keeps this much audio (per source)…
 const RING_FRAMES: usize = live::samples(300.0) / VAD_FRAME_SIZE;
 /// …and talk is judged in buckets this long.
-const BUCKET_FRAMES: usize = live::samples(10.0) / VAD_FRAME_SIZE;
+const BUCKET_SECONDS: u32 = 10;
+const BUCKET_FRAMES: usize = live::samples(BUCKET_SECONDS as f64) / VAD_FRAME_SIZE;
 const RING_BUCKETS: usize = RING_FRAMES / BUCKET_FRAMES;
 /// A bucket is talk when a source has speech in this share of its frames (1 s of 10).
 const TALK_SHARE: f64 = 0.10;
-/// A meeting starts when, of the last `WINDOW_BUCKETS` (3 min)…
-const WINDOW_BUCKETS: usize = 18;
-/// …this many are talk (lulls are fine: real conversations scored 11 of 14 to
-/// all buckets, scattered remarks half)…
-const MIN_TALK_BUCKETS: usize = 14;
-/// …and the user (the mic) takes part: talking in this many buckets, for this
-/// share of the window in all (27 s). Listening to a recording or a webinar,
-/// with a remark now and then ("なるほど"), is not a meeting.
-const MIN_MIC_BUCKETS: usize = 6;
+/// A meeting starts when, of the last window of buckets (`DEFAULT_DETECT_SECONDS`,
+/// 3 min, unless the user set another length; `Window`)…
+pub const DEFAULT_DETECT_SECONDS: u32 = 180;
+/// …which the setting keeps within these bounds (the window plus its lead-in
+/// must fit in the ring)…
+pub const MIN_DETECT_SECONDS: u32 = 60;
+pub const MAX_DETECT_SECONDS: u32 = 240;
+/// …this share are talk (14 of 18 buckets in 3 min; lulls are fine: real
+/// conversations scored 11 of 14 to all buckets, scattered remarks half)…
+const TALK_BUCKETS_SHARE: (usize, usize) = (14, 18);
+/// …and the user (the mic) takes part: talking in this share of the buckets (6
+/// of 18), for this share of the window in all (27 s of 3 min). Listening to a
+/// recording or a webinar, with a remark now and then ("なるほど"), is not a meeting.
+const MIC_BUCKETS_SHARE: (usize, usize) = (6, 18);
 const MIN_MIC_SHARE: f64 = 0.15;
 /// The conversation began after the last run of more than this many quiet buckets…
 const MAX_GAP_BUCKETS: usize = 2;
@@ -119,10 +139,41 @@ fn is_talk(speech_frames: usize) -> bool {
     speech_frames as f64 >= TALK_SHARE * BUCKET_FRAMES as f64
 }
 
+/// What counts as a conversation, for a window of `buckets`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Window {
+    buckets: usize,
+    talk_buckets: usize,
+    mic_buckets: usize,
+}
+
+impl Window {
+    fn new(buckets: usize) -> Self {
+        let share = |(n, d): (usize, usize)| (buckets * n).div_ceil(d);
+        Self { buckets, talk_buckets: share(TALK_BUCKETS_SHARE), mic_buckets: share(MIC_BUCKETS_SHARE) }
+    }
+
+    fn from_seconds(seconds: u32) -> Self {
+        Self::new((clamp_detect_seconds(seconds) / BUCKET_SECONDS) as usize)
+    }
+
+    /// The current setting.
+    fn current() -> Self {
+        Self::from_seconds(DETECT_SECONDS.load(Ordering::Relaxed))
+    }
+}
+
+impl Default for Window {
+    fn default() -> Self {
+        Self::from_seconds(DEFAULT_DETECT_SECONDS)
+    }
+}
+
 /// Decides from per-frame "speech or not" whether a conversation is going on.
 /// The mic's frames are the clock (system audio may be absent).
 #[derive(Default)]
 struct TalkDetector {
+    window: Window,
     mic_frames: usize,
     /// Speech frames per source in the bucket being filled.
     speech: [usize; 2],
@@ -131,7 +182,7 @@ struct TalkDetector {
 }
 
 impl TalkDetector {
-    /// Add one frame. When a conversation has gone on for 3 min, returns how
+    /// Add one frame. When a conversation has gone on for the window, returns how
     /// many mic frames back the meeting should start (its beginning, plus a
     /// lead-in).
     fn push(&mut self, source: Source, speech: bool) -> Option<usize> {
@@ -154,19 +205,20 @@ impl TalkDetector {
         self.conversation(start).then(|| (self.buckets.len() - start.saturating_sub(LEAD_IN_BUCKETS)) * BUCKET_FRAMES)
     }
 
-    /// A conversation beginning at bucket `start` has gone on for 3 min, with
-    /// enough talk and enough of it from the user.
+    /// A conversation beginning at bucket `start` has gone on for the window,
+    /// with enough talk and enough of it from the user.
     fn conversation(&self, start: usize) -> bool {
-        if self.buckets.len() - start < WINDOW_BUCKETS || !self.buckets.back().is_some_and(|b| b.talk) {
+        let w = self.window;
+        if self.buckets.len() - start < w.buckets || !self.buckets.back().is_some_and(|b| b.talk) {
             return false;
         }
-        let window = || self.buckets.iter().rev().take(WINDOW_BUCKETS);
+        let window = || self.buckets.iter().rev().take(w.buckets);
         let talk = window().filter(|b| b.talk).count();
         let mic_buckets = window().filter(|b| b.mic_talk()).count();
         let mic_speech: usize = window().map(|b| b.mic_speech).sum();
-        talk >= MIN_TALK_BUCKETS
-            && mic_buckets >= MIN_MIC_BUCKETS
-            && mic_speech as f64 >= MIN_MIC_SHARE * (WINDOW_BUCKETS * BUCKET_FRAMES) as f64
+        talk >= w.talk_buckets
+            && mic_buckets >= w.mic_buckets
+            && mic_speech as f64 >= MIN_MIC_SHARE * (w.buckets * BUCKET_FRAMES) as f64
     }
 
     /// The first bucket of the current conversation: the earliest talk not
@@ -339,6 +391,7 @@ fn listen(
             LAST_TALK.store(now_secs(), Ordering::Relaxed);
         }
         ring.push(source, frame);
+        detector.window = Window::current();
         let Some(back) = detector.push(source, speech) else { continue };
 
         let Some(captures) = captures.lock().ok().and_then(|mut c| c.take()) else {
@@ -422,6 +475,8 @@ pub struct Standby {
 pub struct StandbyStatus {
     /// The setting.
     pub enabled: bool,
+    /// How long a conversation goes on before a meeting starts (seconds; the setting).
+    pub detect_seconds: u32,
     /// Listening now (not while a meeting runs).
     pub listening: bool,
     pub warning: Option<String>,
@@ -430,11 +485,15 @@ pub struct StandbyStatus {
 
 pub fn status(app: &AppHandle) -> StandbyStatus {
     let state = app.state::<AppState>();
-    let enabled = state.settings.lock().is_ok_and(|s| s.meeting_standby);
+    let (enabled, detect_seconds) = state
+        .settings
+        .lock()
+        .map_or((false, DEFAULT_DETECT_SECONDS), |s| (s.meeting_standby, s.meeting_standby_seconds));
     let standby = state.standby.lock().unwrap_or_else(|e| e.into_inner());
     let running = standby.running.as_ref().filter(|r| r.is_listening());
     StandbyStatus {
         enabled,
+        detect_seconds: clamp_detect_seconds(detect_seconds),
         listening: running.is_some(),
         warning: running.and_then(|r| r.warning.clone()),
         error: standby.error.clone(),
@@ -475,7 +534,10 @@ pub fn resume(app: &AppHandle) {
     let spawned = thread::Builder::new().name("echo-standby-start".into()).spawn(move || {
         let state = app.state::<AppState>();
         let (enabled, device_name) = match state.settings.lock() {
-            Ok(s) => (s.meeting_standby, s.device_name.clone()),
+            Ok(s) => {
+                set_detect_seconds(s.meeting_standby_seconds);
+                (s.meeting_standby, s.device_name.clone())
+            }
             Err(_) => return,
         };
         // Lock order: standby, then meeting.
@@ -512,6 +574,50 @@ pub fn restart(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The default window (3 min).
+    const WINDOW_BUCKETS: usize = 18;
+
+    /// A detector for the replay tests: `ECHO_STANDBY_SECONDS` tries another
+    /// detection length, as the setting would.
+    fn replay_detector() -> TalkDetector {
+        let seconds = std::env::var("ECHO_STANDBY_SECONDS").ok().and_then(|s| s.parse().ok());
+        let window = seconds.map_or_else(Window::default, Window::from_seconds);
+        println!("window: {} s ({window:?})", window.buckets as u32 * BUCKET_SECONDS);
+        TalkDetector { window, ..Default::default() }
+    }
+
+    #[test]
+    fn the_window_scales_with_the_setting() {
+        assert_eq!(Window::default(), Window { buckets: 18, talk_buckets: 14, mic_buckets: 6 });
+        assert_eq!(Window::from_seconds(60), Window { buckets: 6, talk_buckets: 5, mic_buckets: 2 });
+        assert_eq!(Window::from_seconds(90), Window { buckets: 9, talk_buckets: 7, mic_buckets: 3 });
+        assert_eq!(Window::from_seconds(240), Window { buckets: 24, talk_buckets: 19, mic_buckets: 8 });
+        // Out of bounds, or between buckets
+        assert_eq!(clamp_detect_seconds(10), MIN_DETECT_SECONDS);
+        assert_eq!(clamp_detect_seconds(1000), MAX_DETECT_SECONDS);
+        assert_eq!(clamp_detect_seconds(95), 100);
+        // The longest window and its lead-in fit in the ring.
+        assert!(Window::from_seconds(MAX_DETECT_SECONDS).buckets + LEAD_IN_BUCKETS + MAX_GAP_BUCKETS < RING_BUCKETS);
+    }
+
+    #[test]
+    fn one_minute_setting_starts_after_one_minute_of_conversation() {
+        let mut d = TalkDetector { window: Window::from_seconds(60), ..Default::default() };
+        for _ in 0..12 {
+            assert_eq!(bucket(&mut d, 0.0, 0.0), None);
+        }
+        // A conversation: the user and the other side take turns.
+        let at = (0..WINDOW_BUCKETS).find(|i| bucket(&mut d, if i % 2 == 0 { 0.4 } else { 0.0 }, if i % 2 == 0 { 0.0 } else { 0.4 }).is_some());
+        assert_eq!(at, Some(5), "starts once 1 min is in");
+    }
+
+    #[test]
+    fn one_minute_setting_still_needs_the_user() {
+        // A minute of the other side alone (a video) is not a meeting.
+        let mut d = TalkDetector { window: Window::from_seconds(60), ..Default::default() };
+        assert!((0..WINDOW_BUCKETS).all(|_| bucket(&mut d, 0.0, 0.5).is_none()));
+    }
 
     /// Feed one bucket's worth of mic frames (speech in the first `mic_share`
     /// of them) and system audio frames (`others_share`); returns the detector's answer.
@@ -630,7 +736,7 @@ mod tests {
     /// Recordings through the real VAD and detector, as if heard by the mic:
     /// prints each bucket's speech share and where a meeting would start.
     /// `ECHO_STANDBY_WAVS=<a.wav>[,<b.wav>…] (16 kHz mono) \
-    ///  cargo test standby_replay -- --ignored --nocapture`
+    ///  [ECHO_STANDBY_SECONDS=<detection length, 60–240>] cargo test standby_replay -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn standby_replay() {
@@ -640,7 +746,7 @@ mod tests {
             let audio: Vec<f32> = reader.samples::<i16>().map(|s| s.unwrap() as f32 / 32768.0).collect();
             println!("\n{path} ({:.0}s)", audio.len() as f64 / VAD_SAMPLE_RATE as f64);
             let mut listener = Listener::new().unwrap();
-            let mut detector = TalkDetector::default();
+            let mut detector = replay_detector();
             let mut speech = 0;
             let mut shares = String::new();
             for (i, frame) in audio.chunks_exact(VAD_FRAME_SIZE).enumerate() {
@@ -684,7 +790,7 @@ mod tests {
     /// the mic hears it too (`ECHO_STANDBY_ECHO_DB` quieter, default 20 dB,
     /// `ECHO_STANDBY_ECHO_MS` later, default 80 ms) over room noise. With
     /// `ECHO_STANDBY_MIC=<voice.wav>`, the user's own voice is added to the mic.
-    /// `ECHO_STANDBY_WAVS=<a.wav>[,…] cargo test standby_playback -- --ignored --nocapture`
+    /// `ECHO_STANDBY_WAVS=<a.wav>[,…] [ECHO_STANDBY_SECONDS=…] cargo test standby_playback -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn standby_playback() {
@@ -711,7 +817,7 @@ mod tests {
                 })
                 .collect();
             let mut listener = Listener::new().unwrap();
-            let mut detector = TalkDetector::default();
+            let mut detector = replay_detector();
             let (mut heard, mut detected) = ([0usize; 2], None);
             for (i, (m, o)) in mic.chunks_exact(VAD_FRAME_SIZE).zip(sys.chunks_exact(VAD_FRAME_SIZE)).enumerate() {
                 for (source, frame) in [(Source::Others, o), (Source::Me, m)] {
